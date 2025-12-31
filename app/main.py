@@ -84,7 +84,7 @@ async def telegram_webhook(
 
     msg = update.channel_post
     text = msg.text or msg.caption or "(no text)"
-    timestamp = datetime.fromtimestamp(msg.date).strftime("%H:%M")
+    timestamp = datetime.fromtimestamp(msg.date).strftime("%H:%M %p")
 
     logger.info(
         "📨 %s | %s | %s",
