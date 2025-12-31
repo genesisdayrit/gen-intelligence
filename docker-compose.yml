@@ -1,0 +1,38 @@
+services:
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    env_file:
+      - ./app/.env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # Optional: for local development with Telegram webhook
+  # Usage: docker compose --profile dev up
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles:
+      - dev
+    command: http app:8000
+    env_file:
+      - ./app/.env
+    ports:
+      - "4040:4040"
+    depends_on:
+      - app
+
+volumes:
+  redis_data:

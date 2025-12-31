@@ -4,6 +4,7 @@ import logging
 import os
 from datetime import datetime
 
+import pytz
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 # Config
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET")
+SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
 # Telegram models (minimal)
@@ -84,7 +86,8 @@ async def telegram_webhook(
 
     msg = update.channel_post
     text = msg.text or msg.caption or "(no text)"
-    timestamp = datetime.fromtimestamp(msg.date).strftime("%H:%M %p")
+    tz = pytz.timezone(SYSTEM_TIMEZONE)
+    timestamp = datetime.fromtimestamp(msg.date, tz).strftime("%H:%M %p")
 
     logger.info(
         "📨 %s | %s | %s",
