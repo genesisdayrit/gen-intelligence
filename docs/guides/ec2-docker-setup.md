@@ -4,7 +4,7 @@ Deploy Gen Intelligence API on EC2 using Docker.
 
 ## Prerequisites
 
-- EC2 instance with port 8000 open in security group
+- EC2 instance with ports 8000 and 4040 open in security group
 - SSH access to the instance
 
 ## 1. Install Docker
@@ -49,32 +49,42 @@ nano .env
 Update these values in `.env`:
 - `DROPBOX_ACCESS_KEY`, `DROPBOX_ACCESS_SECRET`, `DROPBOX_REFRESH_TOKEN`
 - `BOT_TOKEN`, `TG_WEBHOOK_SECRET`
-- `WEBHOOK_URL` - set to `http://<your-ec2-public-ip>:8000/telegram/webhook`
+- `NGROK_AUTHTOKEN` - get from https://dashboard.ngrok.com/get-started/your-authtoken
+- `WEBHOOK_URL` - leave blank for now, will update after starting services
 
 ## 4. Start Services
 
 ```bash
-# Build and start
+# Build and start (includes ngrok for HTTPS)
 docker compose up -d
 
 # Check logs
 docker compose logs -f app
 ```
 
-## 5. Register Telegram Webhook
+## 5. Get ngrok URL and Register Webhook
+
+ngrok provides an HTTPS tunnel required by Telegram.
 
 ```bash
-# Enter the app container
-docker compose exec app bash
+# Get the ngrok HTTPS URL
+curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'
+```
 
-# Set webhook
-uv run python scripts/set_webhook.py set
+Or visit `http://<your-ec2-ip>:4040` in your browser.
+
+Update `WEBHOOK_URL` in `.env` with the ngrok URL + `/telegram/webhook`:
+```
+WEBHOOK_URL=https://abc123.ngrok-free.app/telegram/webhook
+```
+
+Then recreate the app container and register the webhook:
+```bash
+docker compose up -d --force-recreate app
+docker compose exec app uv run python scripts/set_webhook.py set
 
 # Verify
-uv run python scripts/set_webhook.py info
-
-# Exit container
-exit
+docker compose exec app uv run python scripts/set_webhook.py info
 ```
 
 ## 6. Verify
@@ -117,6 +127,14 @@ docker compose exec redis redis-cli ping
 ```
 
 **Webhook not receiving:**
-- Check EC2 security group allows inbound on port 8000
-- Verify `WEBHOOK_URL` in `.env` uses your public IP
-- Re-run `set_webhook.py set`
+- Check EC2 security group allows inbound on ports 8000 and 4040
+- Verify ngrok is running: `docker compose logs ngrok`
+- Check the ngrok URL matches `WEBHOOK_URL` in `.env`
+- Recreate app after `.env` changes: `docker compose up -d --force-recreate app`
+- Re-run `docker compose exec app uv run python scripts/set_webhook.py set`
+
+**ngrok URL changed after restart:**
+The free ngrok tier gives a new URL on each restart. When this happens:
+1. Get new URL: `curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'`
+2. Update `WEBHOOK_URL` in `.env`
+3. Recreate and re-register: `docker compose up -d --force-recreate app && docker compose exec app uv run python scripts/set_webhook.py set`
