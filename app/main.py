@@ -9,7 +9,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from services.obsidian_telegram_log import append_telegram_log
+from services.obsidian.add_telegram_log import append_telegram_log
 
 load_dotenv()
 
