@@ -125,12 +125,13 @@ def append_telegram_log(message_text: str) -> None:
             continue
 
         if section_found:
-            if line.strip().startswith('- '):
+            # Top-level bullet only (no leading whitespace)
+            if line.startswith('- '):
                 insert_index = i + 1
-            elif line.strip().startswith('#'):
+            # Next heading = end of section
+            elif line.startswith('#'):
                 break
-            elif line.strip() and not line.strip().startswith('- '):
-                break
+            # Everything else (indented notes, stray text, empty lines) = continue
 
     if not section_found:
         updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"- {message_text}\n"
