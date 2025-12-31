@@ -20,12 +20,9 @@ services:
       - redis_data:/data
     restart: unless-stopped
 
-  # Optional: for local development with Telegram webhook
-  # Usage: docker compose --profile dev up
+  # ngrok provides HTTPS tunnel for Telegram webhook
   ngrok:
     image: ngrok/ngrok:latest
-    profiles:
-      - dev
     command: http app:8000
     env_file:
       - ./app/.env
