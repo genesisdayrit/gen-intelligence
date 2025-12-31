@@ -1,6 +1,7 @@
 """Dropbox journal helper for writing to Obsidian daily notes."""
 
 import os
+import re
 from datetime import datetime
 
 import dropbox
@@ -21,6 +22,7 @@ redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_pass
 timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 TELEGRAM_LOGS_HEADER = "### Telegram Logs:"
+LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
 
 
 def _refresh_access_token() -> str:
@@ -125,18 +127,22 @@ def append_telegram_log(message_text: str) -> None:
             continue
 
         if section_found:
-            # Top-level bullet only (no leading whitespace)
-            if line.startswith('- '):
+            # Log entry starts with [HH:MM pattern
+            if LOG_ENTRY_PATTERN.match(line):
                 insert_index = i + 1
-            # Next heading = end of section
-            elif line.startswith('#'):
+            # Next heading or markdown separator = end of section
+            elif line.startswith('#') or line.strip() == '---':
                 break
-            # Everything else (indented notes, stray text, empty lines) = continue
+            # Non-empty content = update insert position
+            elif line.strip():
+                insert_index = i + 1
+            # Empty lines = don't advance (insert after last content, not before next section)
 
     if not section_found:
-        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"- {message_text}\n"
+        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"{message_text}\n"
     else:
-        new_lines.insert(insert_index, f"- {message_text}")
+        # Insert new entry directly after last content (no blank lines between entries)
+        new_lines.insert(insert_index, message_text)
         updated_content = '\n'.join(new_lines)
 
     dbx.files_upload(

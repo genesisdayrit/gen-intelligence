@@ -1,4 +1,5 @@
 import os
+import re
 import dropbox
 from datetime import datetime
 import pytz
@@ -30,6 +31,7 @@ redis_password = os.getenv('REDIS_PASSWORD', None)
 r = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
 
 TELEGRAM_LOGS_HEADER = "### Telegram Logs:"
+LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
 
 
 def refresh_access_token():
@@ -115,7 +117,7 @@ def get_journal_content(dbx, file_path):
 
 
 def find_telegram_logs_section(content):
-    """Find and extract the Telegram Logs section with its bullet points."""
+    """Find and extract the Telegram Logs section with its log entries."""
     lines = content.split('\n')
     section_lines = []
     in_section = False
@@ -127,22 +129,14 @@ def find_telegram_logs_section(content):
             continue
 
         if in_section:
-            # Stop if we hit another heading
-            if line.strip().startswith('#'):
+            # Stop if we hit another heading or markdown separator
+            if line.startswith('#') or line.strip() == '---':
                 break
-            # Capture bullet points
-            if line.strip().startswith('- '):
-                section_lines.append(line)
-            # Stop if we hit a non-bullet, non-empty line after bullets
-            elif line.strip() and section_lines:
-                break
-            # Allow empty lines between bullets
-            elif not line.strip() and len(section_lines) > 1:
-                # Stop on empty line after we have bullets
-                break
+            # Include all content until next section
+            section_lines.append(line)
 
     if section_lines:
-        return '\n'.join(section_lines)
+        return '\n'.join(section_lines).rstrip()
     return None
 
 
@@ -162,8 +156,8 @@ def add_telegram_logs_section(dbx, file_path, content):
     return updated_content
 
 
-def add_bullet_to_telegram_logs(dbx, file_path, content, bullet_text):
-    """Add a bullet point to the Telegram Logs section."""
+def add_telegram_log_entry(dbx, file_path, content, log_text):
+    """Add a log entry to the Telegram Logs section."""
     lines = content.split('\n')
     new_lines = []
     section_found = False
@@ -178,21 +172,23 @@ def add_bullet_to_telegram_logs(dbx, file_path, content, bullet_text):
             continue
 
         if section_found:
-            # Keep tracking the last bullet point position
-            if line.strip().startswith('- '):
+            # Log entry starts with [HH:MM pattern
+            if LOG_ENTRY_PATTERN.match(line):
                 insert_index = i + 1
-            # Stop if we hit another heading or non-bullet content
-            elif line.strip().startswith('#'):
+            # Stop if we hit another heading or markdown separator
+            elif line.startswith('#') or line.strip() == '---':
                 break
-            elif line.strip() and not line.strip().startswith('- '):
-                break
+            # Non-empty content = update insert position
+            elif line.strip():
+                insert_index = i + 1
+            # Empty lines = don't advance (insert after last content, not before next section)
 
     if not section_found:
-        # Section doesn't exist, create it with the bullet
-        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"- {bullet_text}\n"
+        # Section doesn't exist, create it with the entry
+        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"{log_text}\n"
     else:
-        # Insert the bullet at the correct position
-        new_lines.insert(insert_index, f"- {bullet_text}")
+        # Insert new entry directly after last content (no blank lines between entries)
+        new_lines.insert(insert_index, log_text)
         updated_content = '\n'.join(new_lines)
 
     # Upload the updated file
@@ -202,7 +198,7 @@ def add_bullet_to_telegram_logs(dbx, file_path, content, bullet_text):
         mode=dropbox.files.WriteMode.overwrite
     )
 
-    logger.info(f"Added bullet '- {bullet_text}' to Telegram Logs section")
+    logger.info(f"Added log entry '{log_text[:50]}...' to Telegram Logs section")
     return updated_content
 
 
@@ -240,9 +236,9 @@ def main():
             print("TELEGRAM LOGS SECTION NOT FOUND")
             print("=" * 50 + "\n")
 
-        # Add test bullet point
-        print("\nAdding 'test log' bullet point...")
-        updated_content = add_bullet_to_telegram_logs(dbx, file_path, content, "test log")
+        # Add test log entry
+        print("\nAdding test log entry...")
+        updated_content = add_telegram_log_entry(dbx, file_path, content, "[00:00 PM] test log")
 
         # Show updated section
         updated_section = find_telegram_logs_section(updated_content)
