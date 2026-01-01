@@ -16,8 +16,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+WEBHOOK_BASE_URL = os.environ.get("WEBHOOK_BASE_URL")
 SECRET_TOKEN = os.environ.get("TG_WEBHOOK_SECRET")
+
+# Endpoint path (matches FastAPI route in main.py)
+TELEGRAM_WEBHOOK_PATH = "/telegram/webhook"
 
 if not BOT_TOKEN:
     print("Error: BOT_TOKEN not set in environment")
@@ -28,19 +31,20 @@ API_BASE = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 def set_webhook():
     """Register webhook with Telegram."""
-    if not WEBHOOK_URL:
-        print("Error: WEBHOOK_URL not set in environment")
+    if not WEBHOOK_BASE_URL:
+        print("Error: WEBHOOK_BASE_URL not set in environment")
         sys.exit(1)
     if not SECRET_TOKEN:
         print("Error: TG_WEBHOOK_SECRET not set in environment")
         sys.exit(1)
-    
-    print(f"Setting webhook to: {WEBHOOK_URL}")
-    
+
+    webhook_url = f"{WEBHOOK_BASE_URL}{TELEGRAM_WEBHOOK_PATH}"
+    print(f"Setting webhook to: {webhook_url}")
+
     response = httpx.post(
         f"{API_BASE}/setWebhook",
         json={
-            "url": WEBHOOK_URL,
+            "url": webhook_url,
             "secret_token": SECRET_TOKEN,
             "allowed_updates": ["channel_post"],
             "drop_pending_updates": True,
