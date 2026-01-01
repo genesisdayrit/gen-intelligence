@@ -46,7 +46,7 @@ def set_webhook():
         json={
             "url": webhook_url,
             "secret_token": SECRET_TOKEN,
-            "allowed_updates": ["channel_post"],
+            "allowed_updates": ["channel_post", "edited_channel_post"],
             "drop_pending_updates": True,
         },
     )

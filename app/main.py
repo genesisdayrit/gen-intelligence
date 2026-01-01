@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.add_todoist_completed import append_todoist_completed
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
+from services.obsidian.update_telegram_log import update_telegram_log
 
 load_dotenv()
 
@@ -49,6 +50,7 @@ class Message(BaseModel):
 class TelegramUpdate(BaseModel):
     update_id: int
     channel_post: Message | None = None
+    edited_channel_post: Message | None = None
 
 
 # FastAPI app
@@ -86,32 +88,58 @@ async def telegram_webhook(
         logger.warning("Failed to parse update: %s", e)
         raise HTTPException(status_code=400, detail="Invalid update format")
 
-    # Only handle channel posts
-    if not update.channel_post:
-        return JSONResponse(content={"status": "ignored"})
+    # Handle new channel posts
+    if update.channel_post:
+        msg = update.channel_post
+        text = msg.text or msg.caption or "(no text)"
+        tz = pytz.timezone(SYSTEM_TIMEZONE)
+        timestamp = datetime.fromtimestamp(msg.date, tz).strftime("%H:%M %p")
 
-    msg = update.channel_post
-    text = msg.text or msg.caption or "(no text)"
-    tz = pytz.timezone(SYSTEM_TIMEZONE)
-    timestamp = datetime.fromtimestamp(msg.date, tz).strftime("%H:%M %p")
+        logger.info(
+            "📨 %s | %s | %s",
+            msg.chat.title or msg.chat.id,
+            timestamp,
+            text[:100],
+        )
 
-    logger.info(
-        "📨 %s | %s | %s",
-        msg.chat.title or msg.chat.id,
-        timestamp,
-        text[:100],
-    )
+        # Write to Obsidian journal
+        try:
+            log_entry = f"[{timestamp}] {text}"
+            append_telegram_log(log_entry, message_id=msg.message_id)
+            logger.info("Written to journal")
+        except Exception as e:
+            logger.error("Failed to write to journal: %s", e)
+            # Still return 200 - don't want Telegram to retry
 
-    # Write to Obsidian journal
-    try:
-        log_entry = f"[{timestamp}] {text}"
-        append_telegram_log(log_entry)
-        logger.info("Written to journal")
-    except Exception as e:
-        logger.error("Failed to write to journal: %s", e)
-        # Still return 200 - don't want Telegram to retry
+        return JSONResponse(content={"status": "ok"})
 
-    return JSONResponse(content={"status": "ok"})
+    # Handle edited channel posts
+    if update.edited_channel_post:
+        msg = update.edited_channel_post
+        new_text = msg.text or msg.caption or "(no text)"
+
+        logger.info(
+            "✏️ %s | msg_id=%s | %s",
+            msg.chat.title or msg.chat.id,
+            msg.message_id,
+            new_text[:100],
+        )
+
+        # Update entry in Obsidian journal
+        try:
+            updated = update_telegram_log(msg.message_id, new_text)
+            if updated:
+                logger.info("Updated in journal")
+            else:
+                logger.info("Entry not found in journal (may be from a different day or before tracking)")
+        except Exception as e:
+            logger.error("Failed to update journal: %s", e)
+            # Still return 200 - don't want Telegram to retry
+
+        return JSONResponse(content={"status": "ok"})
+
+    # Neither channel_post nor edited_channel_post
+    return JSONResponse(content={"status": "ignored"})
 
 
 # Todoist webhook

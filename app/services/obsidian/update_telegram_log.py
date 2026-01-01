@@ -1,8 +1,7 @@
-"""Dropbox journal helper for writing to Obsidian daily notes."""
+"""Dropbox helper for updating Telegram log entries in Obsidian journal."""
 
 import os
 import re
-from datetime import datetime
 
 import dropbox
 import pytz
@@ -22,7 +21,6 @@ redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_pass
 timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 TELEGRAM_LOGS_HEADER = "### Telegram Logs:"
-LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
 
 
 def _refresh_access_token() -> str:
@@ -81,6 +79,7 @@ def _find_daily_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
 def _get_today_journal_path(journal_folder_path: str) -> str:
     """Get file path for today's journal."""
     system_tz = pytz.timezone(timezone_str)
+    from datetime import datetime
     now = datetime.now(system_tz)
     formatted_date = f"{now.strftime('%b')} {now.day}, {now.strftime('%Y')}"
     return f"{journal_folder_path}/{formatted_date}.md"
@@ -97,12 +96,20 @@ def _get_journal_content(dbx: dropbox.Dropbox, file_path: str) -> str:
         raise
 
 
-def append_telegram_log(message_text: str, message_id: int | None = None) -> None:
-    """Add a message to today's Telegram Logs section in Obsidian journal.
+def update_telegram_log(message_id: int, new_text: str) -> bool:
+    """Update a Telegram log entry in today's journal by message_id.
 
-    Creates the section if it doesn't exist.
-    If message_id is provided, stores the timestamp in Redis for later edit tracking.
+    Looks up the original timestamp from Redis, finds the matching entry,
+    and updates it with the new text.
+
+    Returns True if entry was updated, False if not found.
     """
+    # Look up the original timestamp from Redis
+    timestamp = redis_client.get(f'telegram:msg:{message_id}')
+    if not timestamp:
+        # Message not tracked (sent before tracking was enabled, or TTL expired)
+        return False
+
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
         raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
@@ -111,40 +118,49 @@ def append_telegram_log(message_text: str, message_id: int | None = None) -> Non
     daily_folder = _find_daily_folder(dbx, vault_path)
     journal_folder = f"{daily_folder}/_Journal"
     file_path = _get_today_journal_path(journal_folder)
-    content = _get_journal_content(dbx, file_path)
 
-    # Find section and insert bullet
+    try:
+        content = _get_journal_content(dbx, file_path)
+    except FileNotFoundError:
+        # No journal file for today
+        return False
+
+    # Check if Telegram section exists
+    if TELEGRAM_LOGS_HEADER not in content:
+        return False
+
+    # Find and update the line with matching timestamp
     lines = content.split('\n')
-    new_lines = []
-    section_found = False
-    insert_index = None
+    updated_lines = []
+    entry_updated = False
+    in_telegram_section = False
 
-    for i, line in enumerate(lines):
-        new_lines.append(line)
+    # Pattern to match the timestamp at the start of a log entry
+    timestamp_pattern = re.compile(rf'^\[{re.escape(timestamp)}\]')
 
+    for line in lines:
         if line.strip() == TELEGRAM_LOGS_HEADER:
-            section_found = True
-            insert_index = i + 1
+            in_telegram_section = True
+            updated_lines.append(line)
             continue
 
-        if section_found:
-            # Log entry starts with [HH:MM pattern
-            if LOG_ENTRY_PATTERN.match(line):
-                insert_index = i + 1
-            # Next heading or markdown separator = end of section
-            elif line.startswith('#') or line.strip() == '---':
-                break
-            # Non-empty content = update insert position
-            elif line.strip():
-                insert_index = i + 1
-            # Empty lines = don't advance (insert after last content, not before next section)
+        if in_telegram_section:
+            # Check if this line has the matching timestamp
+            if timestamp_pattern.match(line) and not entry_updated:
+                # Replace with new content, preserving timestamp
+                updated_lines.append(f"[{timestamp}] {new_text}")
+                entry_updated = True
+                continue
+            # Check if we've exited the section (hit another header)
+            if line.startswith('#') or line.strip() == '---':
+                in_telegram_section = False
 
-    if not section_found:
-        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"{message_text}\n"
-    else:
-        # Insert new entry directly after last content (no blank lines between entries)
-        new_lines.insert(insert_index, message_text)
-        updated_content = '\n'.join(new_lines)
+        updated_lines.append(line)
+
+    if not entry_updated:
+        return False
+
+    updated_content = '\n'.join(updated_lines)
 
     dbx.files_upload(
         updated_content.encode('utf-8'),
@@ -152,10 +168,4 @@ def append_telegram_log(message_text: str, message_id: int | None = None) -> Non
         mode=dropbox.files.WriteMode.overwrite
     )
 
-    # Store message_id -> timestamp mapping in Redis for edit tracking (24h TTL)
-    if message_id is not None:
-        # Extract timestamp from message_text (format: "[HH:MM AM/PM] content")
-        timestamp_match = re.match(r'^\[(\d{2}:\d{2} [AP]M)\]', message_text)
-        if timestamp_match:
-            timestamp = timestamp_match.group(1)
-            redis_client.set(f'telegram:msg:{message_id}', timestamp, ex=86400)
+    return True
