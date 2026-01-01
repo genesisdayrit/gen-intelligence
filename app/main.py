@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.add_todoist_completed import append_todoist_completed
+from services.obsidian.remove_todoist_completed import remove_todoist_completed
 
 load_dotenv()
 
@@ -173,6 +174,32 @@ async def todoist_webhook(
         except Exception as e:
             logger.error("Failed to write to Daily Action: %s", e)
             # Still return 200 - don't want Todoist to retry
+
+    # Handle item:uncompleted events
+    elif event_name == "item:uncompleted":
+        task_content = event_data.get("content", "(no content)")
+        task_id = event_data.get("id")
+        project_id = event_data.get("project_id")
+
+        logger.info(
+            "↩️ Todoist task uncompleted | user=%s | task_id=%s | project=%s | content=%s",
+            user_id,
+            task_id,
+            project_id,
+            task_content[:100],
+        )
+
+        # Remove from Daily Action
+        try:
+            removed = remove_todoist_completed(task_content)
+            if removed:
+                logger.info("Removed from Daily Action")
+            else:
+                logger.info("Task not found in Daily Action (may have been completed on a different day)")
+        except Exception as e:
+            logger.error("Failed to remove from Daily Action: %s", e)
+            # Still return 200 - don't want Todoist to retry
+
     else:
         logger.info("Todoist event: %s (ignored)", event_name)
 
