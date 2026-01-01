@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.obsidian.add_telegram_log import append_telegram_log
+from services.obsidian.add_todoist_completed import append_todoist_completed
 
 load_dotenv()
 
@@ -164,6 +165,14 @@ async def todoist_webhook(
             project_id,
             task_content[:100],
         )
+
+        # Write to Daily Action
+        try:
+            append_todoist_completed(task_content)
+            logger.info("Written to Daily Action")
+        except Exception as e:
+            logger.error("Failed to write to Daily Action: %s", e)
+            # Still return 200 - don't want Todoist to retry
     else:
         logger.info("Todoist event: %s (ignored)", event_name)
 
