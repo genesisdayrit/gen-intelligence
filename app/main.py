@@ -1,5 +1,8 @@
 """Gen Intelligence API - Personal services hub."""
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 from datetime import datetime
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Config
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET")
+TODOIST_CLIENT_SECRET = os.getenv("TODOIST_CLIENT_SECRET")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -104,6 +108,64 @@ async def telegram_webhook(
     except Exception as e:
         logger.error("Failed to write to journal: %s", e)
         # Still return 200 - don't want Telegram to retry
+
+    return JSONResponse(content={"status": "ok"})
+
+
+# Todoist webhook
+def verify_todoist_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Verify Todoist webhook HMAC-SHA256 signature."""
+    expected = base64.b64encode(
+        hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+    ).decode()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/todoist/webhook")
+async def todoist_webhook(
+    request: Request,
+    x_todoist_hmac_sha256: str | None = Header(None),
+):
+    """Receive Todoist webhook events."""
+    # Get raw payload for signature verification
+    payload = await request.body()
+
+    # Verify signature
+    if TODOIST_CLIENT_SECRET and x_todoist_hmac_sha256:
+        if not verify_todoist_signature(payload, x_todoist_hmac_sha256, TODOIST_CLIENT_SECRET):
+            logger.warning("Invalid Todoist signature")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    elif TODOIST_CLIENT_SECRET and not x_todoist_hmac_sha256:
+        logger.warning("Missing Todoist signature header")
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    # Parse payload
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.debug("Todoist webhook received: %s", data)
+
+    event_name = data.get("event_name", "unknown")
+    event_data = data.get("event_data", {})
+    user_id = data.get("user_id")
+
+    # Handle item:completed events
+    if event_name == "item:completed":
+        task_content = event_data.get("content", "(no content)")
+        task_id = event_data.get("id")
+        project_id = event_data.get("project_id")
+
+        logger.info(
+            "✅ Todoist task completed | user=%s | task_id=%s | project=%s | content=%s",
+            user_id,
+            task_id,
+            project_id,
+            task_content[:100],
+        )
+    else:
+        logger.info("Todoist event: %s (ignored)", event_name)
 
     return JSONResponse(content={"status": "ok"})
 
