@@ -73,18 +73,19 @@ Your webhook URL will be: `https://your-ngrok-url.ngrok-free.app/todoist/webhook
 3. Find the **Webhooks** section
 4. Click **Add webhook** or configure the existing one:
    - **Webhook URL**: `https://your-ngrok-url.ngrok-free.app/todoist/webhook`
-   - **Events**: Select `item:completed` (and any others you want)
+   - **Events**: Select `item:completed` and `item:uncompleted`
 5. Save the webhook configuration
 
 ### Watched Events
 
 Common events to watch:
 - `item:completed` - When a task is marked complete
+- `item:uncompleted` - When a completed task is marked incomplete (reopened)
 - `item:added` - When a new task is created
 - `item:updated` - When a task is modified
 - `item:deleted` - When a task is deleted
 
-For this setup, we primarily use `item:completed`.
+For this setup, we use `item:completed` and `item:uncompleted` to track task completions and remove them when uncompleted.
 
 ## 4. Update Environment Variables
 
@@ -131,11 +132,18 @@ The completed task should appear in your Obsidian Daily Action note under:
 
 ## How It Works
 
+### Task Completion
 1. You complete a task in Todoist
 2. Todoist sends a POST request to `/todoist/webhook` with event data
 3. The API verifies the HMAC-SHA256 signature using your Client Secret
 4. For `item:completed` events, the task content is extracted
 5. The task is appended to today's Daily Action note in Dropbox
+
+### Task Uncompletion
+1. You mark a completed task as incomplete (reopen it) in Todoist
+2. Todoist sends a POST request to `/todoist/webhook` with `item:uncompleted` event
+3. The API verifies the signature and extracts the task content
+4. The task entry is removed from today's Daily Action note (if it exists)
 
 ### Webhook Payload Example
 
