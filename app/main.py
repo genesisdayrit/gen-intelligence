@@ -13,7 +13,6 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from services.obsidian.add_github_activity import append_github_activity
 from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.add_todoist_completed import append_todoist_completed
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
@@ -374,18 +373,14 @@ async def github_webhook(
                 pr_title[:100],
             )
 
-            # Write to Daily Action
-            try:
-                append_github_activity(
-                    activity_type="pr",
-                    repo_name=repo_name,
-                    title=pr_title,
-                    number=pr_number,
-                    url=pr_url,
-                )
-                logger.info("Written to Daily Action")
-            except Exception as e:
-                logger.error("Failed to write to Daily Action: %s", e)
+            # Create and complete task in Todoist
+            # This will trigger Todoist's webhook which writes to Obsidian
+            task_content = f"{repo_name}#{pr_number}: {pr_title}"
+            result = create_completed_todoist_task(task_content)
+            if result["success"]:
+                logger.info("Created and completed Todoist task: id=%s", result["task_id"])
+            else:
+                logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
                 # Still return 200 - don't want GitHub to retry
 
         return JSONResponse(content={"status": "ok"})
@@ -426,18 +421,15 @@ async def github_webhook(
                 commit_message_first_line[:100],
             )
 
-            # Write to Daily Action
-            try:
-                append_github_activity(
-                    activity_type="commit",
-                    repo_name=repo_name,
-                    title=commit_message_first_line,
-                    sha=commit_sha,
-                    url=commit_url,
-                )
-                logger.info("Written to Daily Action")
-            except Exception as e:
-                logger.error("Failed to write to Daily Action: %s", e)
+            # Create and complete task in Todoist
+            # This will trigger Todoist's webhook which writes to Obsidian
+            short_message = commit_message_first_line[:50] + "..." if len(commit_message_first_line) > 50 else commit_message_first_line
+            task_content = f"{repo_name}: {short_message}"
+            result = create_completed_todoist_task(task_content)
+            if result["success"]:
+                logger.info("Created and completed Todoist task: id=%s", result["task_id"])
+            else:
+                logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
                 # Still return 200 - don't want GitHub to retry
 
         return JSONResponse(content={"status": "ok"})
