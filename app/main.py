@@ -17,6 +17,7 @@ from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.add_todoist_completed import append_todoist_completed
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
+from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
 
@@ -293,12 +294,13 @@ async def linear_webhook(
             action,
         )
 
-        # Write to Daily Action (reuse Todoist function)
-        try:
-            append_todoist_completed(task_content)
-            logger.info("Written to Daily Action")
-        except Exception as e:
-            logger.error("Failed to write to Daily Action: %s", e)
+        # Create and complete task in Todoist
+        # This will trigger Todoist's webhook which writes to Obsidian
+        result = create_completed_todoist_task(task_content)
+        if result["success"]:
+            logger.info("Created and completed Todoist task: id=%s", result["task_id"])
+        else:
+            logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
             # Still return 200 - don't want Linear to retry
 
     else:
