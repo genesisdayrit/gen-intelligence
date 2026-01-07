@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Config
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET")
 TODOIST_CLIENT_SECRET = os.getenv("TODOIST_CLIENT_SECRET")
+LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -230,6 +231,78 @@ async def todoist_webhook(
 
     else:
         logger.info("Todoist event: %s (ignored)", event_name)
+
+    return JSONResponse(content={"status": "ok"})
+
+
+# Linear webhook
+def verify_linear_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Verify Linear webhook HMAC-SHA256 signature (hex-encoded)."""
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/linear/webhook")
+async def linear_webhook(
+    request: Request,
+    linear_signature: str | None = Header(None, alias="Linear-Signature"),
+):
+    """Receive Linear webhook events."""
+    # Get raw payload for signature verification
+    payload = await request.body()
+
+    # Verify signature
+    if LINEAR_WEBHOOK_SECRET and linear_signature:
+        if not verify_linear_signature(payload, linear_signature, LINEAR_WEBHOOK_SECRET):
+            logger.warning("Invalid Linear signature")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    elif LINEAR_WEBHOOK_SECRET and not linear_signature:
+        logger.warning("Missing Linear signature header")
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    # Parse payload
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.debug("Linear webhook received: %s", data)
+
+    # Extract event data
+    action = data.get("action")
+    event_type = data.get("type")
+    issue_data = data.get("data", {})
+
+    # Handle issue completion
+    # An issue is completed when completedAt is set
+    if event_type == "Issue" and issue_data.get("completedAt"):
+        issue_title = issue_data.get("title", "(no title)")
+        issue_number = issue_data.get("number")
+        team = issue_data.get("team", {})
+        team_key = team.get("key", "")
+
+        # Format: ENG-123: Issue title
+        if team_key and issue_number:
+            task_content = f"{team_key}-{issue_number}: {issue_title}"
+        else:
+            task_content = issue_title
+
+        logger.info(
+            "✅ Linear issue completed | %s | %s",
+            task_content[:100],
+            action,
+        )
+
+        # Write to Daily Action (reuse Todoist function)
+        try:
+            append_todoist_completed(task_content)
+            logger.info("Written to Daily Action")
+        except Exception as e:
+            logger.error("Failed to write to Daily Action: %s", e)
+            # Still return 200 - don't want Linear to retry
+
+    else:
+        logger.info("Linear event: type=%s action=%s (ignored)", event_type, action)
 
     return JSONResponse(content={"status": "ok"})
 
