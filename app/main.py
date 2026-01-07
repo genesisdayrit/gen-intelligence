@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from services.obsidian.add_github_activity import append_github_activity
 from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.add_todoist_completed import append_todoist_completed
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 TG_WEBHOOK_SECRET = os.getenv("TG_WEBHOOK_SECRET")
 TODOIST_CLIENT_SECRET = os.getenv("TODOIST_CLIENT_SECRET")
 LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET")
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
+GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -305,6 +308,140 @@ async def linear_webhook(
         logger.info("Linear event: type=%s action=%s (ignored)", event_type, action)
 
     return JSONResponse(content={"status": "ok"})
+
+
+# GitHub webhook
+def verify_github_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Verify GitHub webhook HMAC-SHA256 signature (hex-encoded with sha256= prefix)."""
+    if not signature.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+@app.post("/github/webhook")
+async def github_webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: str | None = Header(None, alias="X-GitHub-Event"),
+):
+    """Receive GitHub webhook events for merged PRs and commits to main."""
+    # Get raw payload for signature verification
+    payload = await request.body()
+
+    # Verify signature
+    if GITHUB_WEBHOOK_SECRET and x_hub_signature_256:
+        if not verify_github_signature(payload, x_hub_signature_256, GITHUB_WEBHOOK_SECRET):
+            logger.warning("Invalid GitHub signature")
+            raise HTTPException(status_code=401, detail="Invalid signature")
+    elif GITHUB_WEBHOOK_SECRET and not x_hub_signature_256:
+        logger.warning("Missing GitHub signature header")
+        raise HTTPException(status_code=401, detail="Missing signature")
+
+    # Parse payload
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.debug("GitHub webhook received: %s", data)
+
+    # Handle pull_request events (merged PRs)
+    if x_github_event == "pull_request":
+        action = data.get("action")
+        pr = data.get("pull_request", {})
+
+        # Only process merged PRs
+        if action == "closed" and pr.get("merged"):
+            # Filter by author (not merger)
+            pr_author = pr.get("user", {}).get("login")
+            if GITHUB_USERNAME and pr_author != GITHUB_USERNAME:
+                logger.info("GitHub PR by %s (not target user %s), ignoring", pr_author, GITHUB_USERNAME)
+                return JSONResponse(content={"status": "ignored"})
+
+            repo = data.get("repository", {})
+            repo_name = repo.get("name", "unknown-repo")
+            pr_number = pr.get("number")
+            pr_title = pr.get("title", "(no title)")
+            pr_url = pr.get("html_url", "")
+
+            logger.info(
+                "🔀 GitHub PR merged | %s#%s | %s",
+                repo_name,
+                pr_number,
+                pr_title[:100],
+            )
+
+            # Write to Daily Action
+            try:
+                append_github_activity(
+                    activity_type="pr",
+                    repo_name=repo_name,
+                    title=pr_title,
+                    number=pr_number,
+                    url=pr_url,
+                )
+                logger.info("Written to Daily Action")
+            except Exception as e:
+                logger.error("Failed to write to Daily Action: %s", e)
+                # Still return 200 - don't want GitHub to retry
+
+        return JSONResponse(content={"status": "ok"})
+
+    # Handle push events (commits to main/master)
+    if x_github_event == "push":
+        ref = data.get("ref", "")
+
+        # Only process pushes to main or master
+        if ref not in ("refs/heads/main", "refs/heads/master"):
+            logger.info("GitHub push to %s (not main/master), ignoring", ref)
+            return JSONResponse(content={"status": "ignored"})
+
+        # Filter by pusher
+        pusher = data.get("pusher", {}).get("name")
+        if GITHUB_USERNAME and pusher != GITHUB_USERNAME:
+            logger.info("GitHub push by %s (not target user %s), ignoring", pusher, GITHUB_USERNAME)
+            return JSONResponse(content={"status": "ignored"})
+
+        repo = data.get("repository", {})
+        repo_name = repo.get("name", "unknown-repo")
+        commits = data.get("commits", [])
+
+        for commit in commits:
+            # Skip merge commits
+            commit_message = commit.get("message", "(no message)")
+            if commit_message.startswith("Merge pull request") or commit_message.startswith("Merge branch"):
+                continue
+
+            commit_message_first_line = commit_message.split("\n")[0]
+            commit_sha = commit.get("id", "")[:7]  # Short SHA
+            commit_url = commit.get("url", "")
+
+            logger.info(
+                "📝 GitHub commit | %s | %s | %s",
+                repo_name,
+                commit_sha,
+                commit_message_first_line[:100],
+            )
+
+            # Write to Daily Action
+            try:
+                append_github_activity(
+                    activity_type="commit",
+                    repo_name=repo_name,
+                    title=commit_message_first_line,
+                    sha=commit_sha,
+                    url=commit_url,
+                )
+                logger.info("Written to Daily Action")
+            except Exception as e:
+                logger.error("Failed to write to Daily Action: %s", e)
+                # Still return 200 - don't want GitHub to retry
+
+        return JSONResponse(content={"status": "ok"})
+
+    logger.info("GitHub event: %s (ignored)", x_github_event)
+    return JSONResponse(content={"status": "ignored"})
 
 
 if __name__ == "__main__":
