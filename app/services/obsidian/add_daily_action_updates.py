@@ -210,8 +210,11 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
         system_tz = pytz.timezone(timezone_str)
         now = datetime.now(system_tz)
         timestamp = now.strftime("%H:%M")  # 24-hour format
-        # Normalize bullet points: convert * and + to -
-        normalized_content = re.sub(r'^(\s*)[\*\+](\s+)', r'\1-\2', content, flags=re.MULTILINE)
+        # Convert bullet points to Obsidian format with proper indentation
+        # Second-level bullets (+ → 8 spaces + dash)
+        normalized_content = re.sub(r'^(\s*)\+(\s+)', r'\1        -\2', content, flags=re.MULTILINE)
+        # First-level bullets (* → 4 spaces + dash)
+        normalized_content = re.sub(r'^(\s*)\*(\s+)', r'\1    -\2', normalized_content, flags=re.MULTILINE)
         # Preserve multiline content with bullet points, indent continuation lines
         content_lines = normalized_content.strip().split('\n')
         # First line gets the timestamp and link
@@ -220,8 +223,8 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
             # Single line, no bullets - keep on same line
             log_entry = f"{header_line} {content_lines[0].strip()}"
         else:
-            # Multiline or has bullets - preserve structure with indentation
-            indented_content = '\n'.join(f"\t{line}" for line in content_lines if line.strip())
+            # Multiline or has bullets - content starts on new line at column 0
+            indented_content = '\n'.join(line for line in content_lines if line.strip())
             log_entry = f"{header_line}\n{indented_content}"
 
         # Parse YAML frontmatter
