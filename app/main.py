@@ -415,44 +415,6 @@ async def github_webhook(
 
     logger.debug("GitHub webhook received: %s", data)
 
-    # Handle pull_request events (merged PRs)
-    if x_github_event == "pull_request":
-        action = data.get("action")
-        pr = data.get("pull_request", {})
-
-        # Only process merged PRs
-        if action == "closed" and pr.get("merged"):
-            # Filter by author (not merger)
-            pr_author = pr.get("user", {}).get("login")
-            if GITHUB_USERNAME and pr_author != GITHUB_USERNAME:
-                logger.info("GitHub PR by %s (not target user %s), ignoring", pr_author, GITHUB_USERNAME)
-                return JSONResponse(content={"status": "ignored"})
-
-            repo = data.get("repository", {})
-            repo_name = repo.get("name", "unknown-repo")
-            pr_number = pr.get("number")
-            pr_title = pr.get("title", "(no title)")
-            pr_url = pr.get("html_url", "")
-
-            logger.info(
-                "🔀 GitHub PR merged | %s#%s | %s",
-                repo_name,
-                pr_number,
-                pr_title[:100],
-            )
-
-            # Create and complete task in Todoist
-            # This will trigger Todoist's webhook which writes to Obsidian
-            task_content = f"{repo_name}#{pr_number}: {pr_title}"
-            result = create_completed_todoist_task(task_content)
-            if result["success"]:
-                logger.info("Created and completed Todoist task: id=%s", result["task_id"])
-            else:
-                logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
-                # Still return 200 - don't want GitHub to retry
-
-        return JSONResponse(content={"status": "ok"})
-
     # Handle push events (commits to main/master)
     if x_github_event == "push":
         ref = data.get("ref", "")
