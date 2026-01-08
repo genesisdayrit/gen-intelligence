@@ -88,7 +88,7 @@ The completed issue should appear in your Obsidian Daily Action note under:
 2. Linear sends a POST request to `/linear/webhook` with the update data
 3. The API extracts: parent name, update body, and Linear URL
 4. The update is written directly to the Weekly Cycle file (bypasses Todoist)
-5. Format: `[HH:MM AM/PM] [link](url) Parent Name: Update content`
+5. Format: `[HH:MM] - [Parent Name](url): Update content`
 
 Section ordering in Weekly Cycle:
 
@@ -96,13 +96,13 @@ Section ordering in Weekly Cycle:
 ### Wednesday -
 
 ##### Initiative Updates:
-[03:15 PM] [link](https://linear.app/.../initiative-update-abc123) Initiative Name: Update content
+[03:15] - [Initiative Name](https://linear.app/.../initiative-update-abc123): Update content
 
 ##### Project Updates:
-[04:00 PM] [link](https://linear.app/.../project-update-def456) Project Name: Update content
+[04:00] - [Project Name](https://linear.app/.../project-update-def456): Update content
 
 ##### Completed Tasks:
-[10:30 AM] Task content
+[10:30] - Task content
 ```
 
 **Upsert behavior**: If you edit an existing update on the same day, the entry is replaced (not duplicated). The Linear URL serves as the unique identifier.

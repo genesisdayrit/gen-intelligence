@@ -28,7 +28,7 @@ COMPLETED_TASKS_HEADER = "##### Completed Tasks:"
 
 # Patterns
 DAY_SECTION_PATTERN = re.compile(r'^### (Wednesday|Thursday|Friday|Saturday|Sunday|Monday|Tuesday) -', re.MULTILINE)
-LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
+LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}\]')
 
 
 def _refresh_access_token() -> str:
@@ -203,7 +203,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
         # Preserve multiline content with bullet points, indent continuation lines
         content_lines = normalized_content.strip().split('\n')
         # First line gets the timestamp and link
-        header_line = f"[{timestamp}] [{parent_name}]({url}):"
+        header_line = f"[{timestamp}] - [{parent_name}]({url}):"
         if len(content_lines) == 1 and not content_lines[0].strip().startswith(('*', '-', '+')):
             # Single line, no bullets - keep on same line
             log_entry = f"{header_line} {content_lines[0].strip()}"
