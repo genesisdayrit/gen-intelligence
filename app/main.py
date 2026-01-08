@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.obsidian.add_telegram_log import append_telegram_log
-from services.obsidian.add_todoist_completed import append_todoist_completed
+from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.todoist.client import create_completed_todoist_task
@@ -199,12 +199,15 @@ async def todoist_webhook(
             task_content[:100],
         )
 
-        # Write to Daily Action
+        # Write to Daily Action and Weekly Cycle
         try:
-            append_todoist_completed(task_content)
-            logger.info("Written to Daily Action")
+            result = append_completed_task(task_content)
+            if not result["daily_action_success"]:
+                logger.error("Failed to write to Daily Action: %s", result["daily_action_error"])
+            if not result["weekly_cycle_success"]:
+                logger.error("Failed to write to Weekly Cycle: %s", result["weekly_cycle_error"])
         except Exception as e:
-            logger.error("Failed to write to Daily Action: %s", e)
+            logger.error("Failed to write completed task: %s", e)
             # Still return 200 - don't want Todoist to retry
 
     # Handle item:uncompleted events
