@@ -277,14 +277,22 @@ async def linear_webhook(
     # Extract event data
     action = data.get("action")
     event_type = data.get("type")
-    issue_data = data.get("data", {})
+    event_data = data.get("data", {})
+
+    # TEMPORARY: Log full payload for ProjectUpdate and Initiative events
+    if event_type in ("ProjectUpdate", "Initiative", "InitiativeUpdate"):
+        import json
+        logger.info("=" * 60)
+        logger.info("CAPTURED %s EVENT (action=%s):", event_type, action)
+        logger.info(json.dumps(data, indent=2))
+        logger.info("=" * 60)
 
     # Handle issue completion
     # An issue is completed when completedAt is set
-    if event_type == "Issue" and issue_data.get("completedAt"):
-        issue_title = issue_data.get("title", "(no title)")
-        issue_number = issue_data.get("number")
-        team = issue_data.get("team", {})
+    if event_type == "Issue" and event_data.get("completedAt"):
+        issue_title = event_data.get("title", "(no title)")
+        issue_number = event_data.get("number")
+        team = event_data.get("team", {})
         team_key = team.get("key", "")
 
         # Format: ENG-123: Issue title
