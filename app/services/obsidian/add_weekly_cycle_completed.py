@@ -112,7 +112,7 @@ def _find_weekly_cycle_file(dbx: dropbox.Dropbox, weekly_cycles_folder_path: str
     while True:
         for entry in result.entries:
             if isinstance(entry, dropbox.files.FileMetadata) and date_range in entry.name:
-                return entry.path_lower, entry.name
+                return entry.path_display, entry.name
 
         if not result.has_more:
             break
