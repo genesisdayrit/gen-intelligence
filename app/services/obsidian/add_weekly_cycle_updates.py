@@ -227,7 +227,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 continue
 
             if day_section_start is not None and day_section_end is None:
-                if line.strip() == '---' or (line.startswith('###') and i != day_section_start):
+                if line.strip() == '---':
                     day_section_end = i
                     break
 

@@ -193,7 +193,7 @@ def append_weekly_cycle_completed(task_content: str) -> None:
         if day_section_start is not None and day_section_end is None:
             if line.strip() == COMPLETED_TASKS_HEADER:
                 completed_header_index = i
-            elif line.strip() == '---' or line.startswith('###'):
+            elif line.strip() == '---':
                 # End of section (separator or next section header)
                 day_section_end = i
                 break
