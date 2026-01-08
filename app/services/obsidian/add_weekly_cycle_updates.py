@@ -197,10 +197,20 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
 
         # Format the log entry with timestamp
         now = datetime.now(system_tz)
-        timestamp = now.strftime("%I:%M %p")  # 12-hour format with AM/PM
-        # Clean up content: replace newlines with spaces, strip excess whitespace
-        clean_content = ' '.join(content.split())
-        log_entry = f"[{timestamp}] [link]({url}) {parent_name}: {clean_content}"
+        timestamp = now.strftime("%H:%M")  # 24-hour format
+        # Normalize bullet points: convert * and + to -
+        normalized_content = re.sub(r'^(\s*)[\*\+](\s+)', r'\1-\2', content, flags=re.MULTILINE)
+        # Preserve multiline content with bullet points, indent continuation lines
+        content_lines = normalized_content.strip().split('\n')
+        # First line gets the timestamp and link
+        header_line = f"[{timestamp}] [{parent_name}]({url}):"
+        if len(content_lines) == 1 and not content_lines[0].strip().startswith(('*', '-', '+')):
+            # Single line, no bullets - keep on same line
+            log_entry = f"{header_line} {content_lines[0].strip()}"
+        else:
+            # Multiline or has bullets - preserve structure with indentation
+            indented_content = '\n'.join(f"\t{line}" for line in content_lines if line.strip())
+            log_entry = f"{header_line}\n{indented_content}"
 
         # Get current day name and find the section
         day_name = _get_current_day_name(system_tz)
