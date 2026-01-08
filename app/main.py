@@ -14,8 +14,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from services.obsidian.add_telegram_log import append_telegram_log
-from services.obsidian.add_weekly_cycle_updates import upsert_weekly_cycle_update
 from services.obsidian.append_completed_task import append_completed_task
+from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.todoist.client import create_completed_todoist_task
@@ -280,7 +280,7 @@ async def linear_webhook(
     event_type = data.get("type")
     event_data = data.get("data", {})
 
-    # Handle ProjectUpdate events (direct to Obsidian Weekly Cycle)
+    # Handle ProjectUpdate events (direct to Obsidian Daily Action and Weekly Cycle)
     if event_type == "ProjectUpdate" and action in ("create", "update"):
         project_name = event_data.get("project", {}).get("name", "(unknown project)")
         update_body = event_data.get("body", "(no content)")
@@ -293,22 +293,26 @@ async def linear_webhook(
             update_body[:100],
         )
 
-        # Write directly to Weekly Cycle (bypasses Todoist)
-        result = upsert_weekly_cycle_update(
+        # Write to both Daily Action and Weekly Cycle
+        result = upsert_linear_update(
             section_type="project",
             url=update_url,
             parent_name=project_name,
             content=update_body,
         )
-        if result["success"]:
-            logger.info("Written to Weekly Cycle: action=%s", result["action"])
+        if result["daily_action_success"]:
+            logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
         else:
-            logger.error("Failed to write to Weekly Cycle: %s", result.get("error"))
+            logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
+        if result["weekly_cycle_success"]:
+            logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+        else:
+            logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
             # Still return 200 - don't want Linear to retry
 
         return JSONResponse(content={"status": "ok"})
 
-    # Handle InitiativeUpdate events (direct to Obsidian Weekly Cycle)
+    # Handle InitiativeUpdate events (direct to Obsidian Daily Action and Weekly Cycle)
     if event_type == "InitiativeUpdate" and action in ("create", "update"):
         initiative_name = event_data.get("initiative", {}).get("name", "(unknown initiative)")
         update_body = event_data.get("body", "(no content)")
@@ -321,17 +325,21 @@ async def linear_webhook(
             update_body[:100],
         )
 
-        # Write directly to Weekly Cycle (bypasses Todoist)
-        result = upsert_weekly_cycle_update(
+        # Write to both Daily Action and Weekly Cycle
+        result = upsert_linear_update(
             section_type="initiative",
             url=update_url,
             parent_name=initiative_name,
             content=update_body,
         )
-        if result["success"]:
-            logger.info("Written to Weekly Cycle: action=%s", result["action"])
+        if result["daily_action_success"]:
+            logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
         else:
-            logger.error("Failed to write to Weekly Cycle: %s", result.get("error"))
+            logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
+        if result["weekly_cycle_success"]:
+            logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+        else:
+            logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
             # Still return 200 - don't want Linear to retry
 
         return JSONResponse(content={"status": "ok"})
