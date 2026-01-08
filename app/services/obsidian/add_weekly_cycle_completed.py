@@ -106,13 +106,16 @@ def _format_date_range(cycle_start: datetime, cycle_end: datetime) -> str:
 
 
 def _find_weekly_cycle_file(dbx: dropbox.Dropbox, weekly_cycles_folder_path: str, date_range: str) -> tuple[str, str]:
-    """Find the weekly cycle file matching the given date range."""
+    """Find the weekly cycle file matching the given date range.
+
+    Returns tuple of (path_display, name) to preserve original casing.
+    """
     result = dbx.files_list_folder(weekly_cycles_folder_path)
 
     while True:
         for entry in result.entries:
             if isinstance(entry, dropbox.files.FileMetadata) and date_range in entry.name:
-                return entry.path_lower, entry.name
+                return entry.path_display, entry.name
 
         if not result.has_more:
             break
