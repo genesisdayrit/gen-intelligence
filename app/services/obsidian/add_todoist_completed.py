@@ -2,7 +2,7 @@
 
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import dropbox
 import pytz
@@ -23,6 +23,14 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
 LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
+DAY_ROLLOVER_HOUR = 3  # Tasks before 3am count as previous day
+
+
+def _get_effective_date(now: datetime) -> datetime:
+    """Get the effective date, treating midnight-3am as the previous day."""
+    if now.hour < DAY_ROLLOVER_HOUR:
+        return now - timedelta(days=1)
+    return now
 
 
 def _refresh_access_token() -> str:
@@ -95,10 +103,15 @@ def _find_daily_action_folder(dbx: dropbox.Dropbox, daily_folder_path: str) -> s
 
 
 def _get_today_daily_action_path(daily_action_folder_path: str) -> str:
-    """Get file path for today's Daily Action."""
+    """Get file path for today's Daily Action.
+
+    Uses a 3-hour buffer: tasks completed between midnight and 3am
+    are logged to the previous day's file.
+    """
     system_tz = pytz.timezone(timezone_str)
     now = datetime.now(system_tz)
-    formatted_date = now.strftime('%Y-%m-%d')
+    effective_date = _get_effective_date(now)
+    formatted_date = effective_date.strftime('%Y-%m-%d')
     return f"{daily_action_folder_path}/DA {formatted_date}.md"
 
 
