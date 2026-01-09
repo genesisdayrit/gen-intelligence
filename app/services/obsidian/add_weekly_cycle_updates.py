@@ -249,8 +249,31 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 break
 
         if existing_line_index is not None:
-            # Update existing entry
-            lines[existing_line_index] = log_entry
+            # Update existing entry - need to find and replace the entire block
+            # Entry ends at: next timestamp [HH:MM] or section header #
+            entry_end = existing_line_index + 1
+            for i in range(existing_line_index + 1, day_section_end):
+                line = lines[i]
+                if LOG_ENTRY_PATTERN.match(line):
+                    # Next entry starts here
+                    break
+                elif line.strip().startswith('#'):
+                    # Section header
+                    break
+                else:
+                    # Content line or blank line - part of this entry
+                    entry_end = i + 1
+
+            # Remove all lines of the old entry
+            del lines[existing_line_index:entry_end]
+            # Insert new entry at the same position
+            lines.insert(existing_line_index, log_entry)
+            # Add blank line after if next line is another entry and no blank exists
+            next_line_index = existing_line_index + 1
+            if next_line_index < len(lines):
+                next_line = lines[next_line_index]
+                if LOG_ENTRY_PATTERN.match(next_line):
+                    lines.insert(next_line_index, '')
             action = "updated"
         else:
             # Insert new entry - need to find or create the appropriate section
@@ -265,17 +288,23 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                         header_positions[header] = i
 
             if target_header in header_positions:
-                # Header exists - insert after it and any existing entries
+                # Header exists - insert after all existing entries
+                # Entry boundaries: only timestamp lines [HH:MM] or section headers #
+                # Everything else (content, blank lines, user notes) belongs to the section
                 header_index = header_positions[target_header]
                 insert_index = header_index + 1
                 for i in range(header_index + 1, day_section_end):
                     line = lines[i]
-                    if LOG_ENTRY_PATTERN.match(line):
-                        insert_index = i + 1
-                    elif line.strip() == '':
-                        continue
-                    else:
+                    if line.strip().startswith('#'):
+                        # Section header - stop here, insert before it
                         break
+                    else:
+                        # Any other line (content, blank, notes) - keep going
+                        insert_index = i + 1
+                # Add blank line before new entry if there isn't one already
+                if insert_index > 0 and lines[insert_index - 1].strip() != '':
+                    lines.insert(insert_index, '')
+                    insert_index += 1
                 lines.insert(insert_index, log_entry)
             else:
                 # Header doesn't exist - need to create it in the right position
