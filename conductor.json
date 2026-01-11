@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "setup": "ln -sf \"$CONDUCTOR_ROOT_PATH/app/.env\" app/.env && (cd app && uv sync)",
+    "setup": "ln -sf \"$CONDUCTOR_ROOT_PATH/app/.env\" app/.env && mkdir -p \"$CONDUCTOR_ROOT_PATH/app/tests/data\" && ln -sfn \"$CONDUCTOR_ROOT_PATH/app/tests/data\" app/tests/data && (cd app && uv sync)",
     "run": "cd app && uv run uvicorn main:app --reload"
   }
 }
