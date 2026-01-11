@@ -10,6 +10,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from app.services.obsidian.utils.date_helpers import get_effective_date
+
 load_dotenv()
 
 # Redis configuration
@@ -85,13 +87,17 @@ def _find_cycles_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
 
 
 def _get_current_week_bounds(tz) -> tuple[datetime, datetime]:
-    """Calculate the Wednesday-Tuesday bounds for the current week's cycle."""
+    """Calculate the Wednesday-Tuesday bounds for the current week's cycle.
+
+    Uses a 3-hour buffer: updates between midnight and 3am count as the previous day.
+    """
     now = datetime.now(tz)
+    effective_now = get_effective_date(now)
 
     # Wednesday is weekday 2 (Monday=0, Tuesday=1, Wednesday=2, ...)
-    days_since_wednesday = (now.weekday() - 2) % 7
+    days_since_wednesday = (effective_now.weekday() - 2) % 7
 
-    cycle_start = now - timedelta(days=days_since_wednesday)
+    cycle_start = effective_now - timedelta(days=days_since_wednesday)
     cycle_end = cycle_start + timedelta(days=6)  # Tuesday
 
     return cycle_start, cycle_end
@@ -136,9 +142,13 @@ def _get_weekly_cycle_content(dbx: dropbox.Dropbox, file_path: str) -> str:
 
 
 def _get_current_day_name(tz) -> str:
-    """Get the current day of week name."""
+    """Get the effective day of week name.
+
+    Uses a 3-hour buffer: midnight-3am counts as the previous day.
+    """
     now = datetime.now(tz)
-    return now.strftime('%A')  # Returns "Wednesday", "Thursday", etc.
+    effective_now = get_effective_date(now)
+    return effective_now.strftime('%A')  # Returns "Wednesday", "Thursday", etc.
 
 
 def _get_section_header(section_type: str) -> str:

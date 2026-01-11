@@ -10,6 +10,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from app.services.obsidian.utils.date_helpers import get_effective_date
+
 load_dotenv()
 
 # Redis configuration
@@ -79,10 +81,15 @@ def _find_daily_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
 
 
 def _get_today_journal_path(journal_folder_path: str) -> str:
-    """Get file path for today's journal."""
+    """Get file path for today's journal.
+
+    Uses a 3-hour buffer: messages between midnight and 3am
+    are logged to the previous day's file.
+    """
     system_tz = pytz.timezone(timezone_str)
     now = datetime.now(system_tz)
-    formatted_date = f"{now.strftime('%b')} {now.day}, {now.strftime('%Y')}"
+    effective_date = get_effective_date(now)
+    formatted_date = f"{effective_date.strftime('%b')} {effective_date.day}, {effective_date.strftime('%Y')}"
     return f"{journal_folder_path}/{formatted_date}.md"
 
 

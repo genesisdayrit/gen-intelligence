@@ -10,6 +10,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from app.services.obsidian.utils.date_helpers import get_effective_date
+
 load_dotenv()
 
 # Redis configuration
@@ -23,14 +25,6 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
 LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
-DAY_ROLLOVER_HOUR = 3  # Tasks before 3am count as previous day
-
-
-def _get_effective_date(now: datetime) -> datetime:
-    """Get the effective date, treating midnight-3am as the previous day."""
-    if now.hour < DAY_ROLLOVER_HOUR:
-        return now - timedelta(days=1)
-    return now
 
 
 def _refresh_access_token() -> str:
@@ -110,7 +104,7 @@ def _get_today_daily_action_path(daily_action_folder_path: str) -> str:
     """
     system_tz = pytz.timezone(timezone_str)
     now = datetime.now(system_tz)
-    effective_date = _get_effective_date(now)
+    effective_date = get_effective_date(now)
     formatted_date = effective_date.strftime('%Y-%m-%d')
     return f"{daily_action_folder_path}/DA {formatted_date}.md"
 
