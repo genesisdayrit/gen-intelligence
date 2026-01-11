@@ -8,6 +8,8 @@ import requests
 from dotenv import load_dotenv
 import logging
 
+from services.obsidian.add_todoist_completed import append_todoist_completed
+
 # --- Logging Configuration ---
 logging.basicConfig(
     level=logging.INFO,
@@ -203,8 +205,11 @@ def find_todoist_section(content):
     return None
 
 
-def add_todoist_entry(dbx, file_path, content, log_text):
-    """Add a log entry to the Todoist Completed Tasks section."""
+def add_todoist_entry_legacy(dbx, file_path, content, log_text):
+    """Legacy function - use append_todoist_completed from services instead.
+
+    This is kept for reference but the main() function now uses the service.
+    """
     yaml_section, main_content = parse_yaml_frontmatter(content)
 
     if TODOIST_COMPLETED_HEADER in main_content:
@@ -299,16 +304,14 @@ def main():
             print("TODOIST COMPLETED TASKS SECTION NOT FOUND")
             print("=" * 50 + "\n")
 
-        # Add test log entry
-        system_tz = pytz.timezone(timezone_str)
-        now = datetime.now(system_tz)
-        timestamp = now.strftime("%H:%M %p")
-        test_entry = f"[{timestamp}] Test completed task"
+        # Add test log entry using the service function
+        # This now correctly positions after Initiative/Project Updates
+        test_task = "Test completed task"
+        print(f"\nAdding test task: {test_task}")
+        append_todoist_completed(test_task)
 
-        print(f"\nAdding test log entry: {test_entry}")
-        updated_content = add_todoist_entry(dbx, file_path, content, test_entry)
-
-        # Show updated section
+        # Fetch updated content to show the result
+        updated_content = get_daily_action_content(dbx, file_path)
         updated_section = find_todoist_section(updated_content)
         print("\n" + "=" * 50)
         print("UPDATED TODOIST COMPLETED TASKS SECTION")
