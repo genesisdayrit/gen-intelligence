@@ -82,15 +82,41 @@ The completed issue should appear in your Obsidian Daily Action note under:
 4. If the issue has a `completedAt` timestamp, it's treated as completed
 5. The issue is formatted as `TEAM-123: Title` and routed through Todoist to Daily Action
 
-### Initiative & Project Updates (Direct to Weekly Cycle)
+### Initiative & Project Updates (Dual Write)
 
 1. You post an update to an Initiative or Project in Linear
 2. Linear sends a POST request to `/linear/webhook` with the update data
 3. The API extracts: parent name, update body, and Linear URL
-4. The update is written directly to the Weekly Cycle file (bypasses Todoist)
+4. The update is written to **both** Daily Action and Weekly Cycle files
 5. Format: `[HH:MM] - [Parent Name](url): Update content`
 
-Section ordering in Weekly Cycle:
+#### Section Ordering in Daily Action
+
+```
+---
+(YAML frontmatter)
+---
+
+Daily Review:
+(review content)
+---
+
+### Initiative Updates:
+[HH:MM] - [Initiative Name](url): Update content
+
+### Project Updates:
+[HH:MM] - [Project Name](url): Update content
+
+### Completed Tasks on Todoist:
+[HH:MM AM/PM] Task content
+
+Vision Objective 1:
+(template content)
+```
+
+Sections are created in order: Initiative Updates → Project Updates → Todoist. All are inserted **before** the template boundary (`Vision Objective 1:`).
+
+#### Section Ordering in Weekly Cycle
 
 ```markdown
 ### Wednesday -

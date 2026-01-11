@@ -26,6 +26,13 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
 LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
 
+# Related section headers that should come before Todoist
+INITIATIVE_UPDATES_HEADER = "### Initiative Updates:"
+PROJECT_UPDATES_HEADER = "### Project Updates:"
+
+# Template section boundary (marks end of tracked sections)
+TEMPLATE_BOUNDARY = "Vision Objective 1:"
+
 
 def _refresh_access_token() -> str:
     """Refresh the Dropbox access token using the refresh token."""
@@ -149,35 +156,104 @@ def _parse_yaml_frontmatter(content: str) -> tuple[str, str]:
     return yaml_section, main_content
 
 
-def _find_daily_review_end(content: str) -> int | None:
-    """Find the index after Daily Review's ending '---'.
+def _find_daily_review_end_line(content: str) -> int | None:
+    """Find the line index after Daily Review's ending '---'.
 
-    Returns the character index right after the '---' line, or None if not found.
+    Returns the line index right after the '---' line, or None if not found.
     """
     lines = content.split('\n')
     in_daily_review = False
-    char_count = 0
 
     for i, line in enumerate(lines):
         if 'Daily Review:' in line:
             in_daily_review = True
 
         if in_daily_review and line.strip() == '---':
-            # Found the ending separator
-            # Return position after this line (including newline)
-            char_count += len(line) + 1  # +1 for newline
-            return char_count
-
-        char_count += len(line) + 1  # +1 for newline
+            # Found the ending separator, return the next line index
+            return i + 1
 
     return None
+
+
+def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) -> int:
+    """Find the correct line index to insert the Todoist section.
+
+    The Todoist section should be inserted:
+    1. After Initiative Updates section (if exists)
+    2. After Project Updates section (if exists)
+    3. Before Template Boundary (Vision Objective 1:)
+    4. After Daily Review if no other sections exist
+
+    Returns the line index where Todoist section should be inserted.
+    """
+    # Find positions of relevant sections
+    initiative_end = None
+    project_end = None
+    template_boundary_line = None
+
+    in_initiative = False
+    in_project = False
+
+    for i, line in enumerate(lines):
+        if i < daily_review_end_line:
+            continue
+
+        stripped = line.strip()
+
+        # Check for section headers
+        if stripped == INITIATIVE_UPDATES_HEADER:
+            in_initiative = True
+            in_project = False
+            continue
+        elif stripped == PROJECT_UPDATES_HEADER:
+            in_project = True
+            in_initiative = False
+            # Mark end of initiative section
+            if initiative_end is None and any(INITIATIVE_UPDATES_HEADER in lines[j] for j in range(daily_review_end_line, i)):
+                initiative_end = i
+            continue
+        elif stripped.startswith('#') or stripped == '---':
+            # Another section header or separator - end current section
+            if in_initiative:
+                initiative_end = i
+                in_initiative = False
+            if in_project:
+                project_end = i
+                in_project = False
+
+        # Check for template boundary
+        if stripped == TEMPLATE_BOUNDARY:
+            template_boundary_line = i
+            if in_initiative:
+                initiative_end = i
+            if in_project:
+                project_end = i
+            break
+
+    # If we're still in a section at end of file
+    if in_initiative and initiative_end is None:
+        initiative_end = len(lines)
+    if in_project and project_end is None:
+        project_end = len(lines)
+
+    # Determine insert position based on what exists
+    # Priority: after Project Updates > after Initiative Updates > before template > after daily review
+    if project_end is not None:
+        return project_end
+    elif initiative_end is not None:
+        return initiative_end
+    elif template_boundary_line is not None:
+        return template_boundary_line
+    else:
+        return daily_review_end_line
 
 
 def append_todoist_completed(task_content: str) -> None:
     """Add a completed task to today's Todoist section in Daily Action.
 
     Creates the section if it doesn't exist.
-    Positions section after Daily Review if present, otherwise after YAML.
+    Positions section after Initiative/Project Updates if present,
+    before Vision Objectives, otherwise after Daily Review.
     """
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
@@ -197,11 +273,16 @@ def append_todoist_completed(task_content: str) -> None:
 
     # Parse YAML frontmatter
     yaml_section, main_content = _parse_yaml_frontmatter(content)
+    lines = main_content.split('\n')
+
+    # Find Daily Review end line for positioning reference
+    daily_review_end_line = _find_daily_review_end_line(main_content)
+    if daily_review_end_line is None:
+        daily_review_end_line = 0
 
     # Check if Todoist section already exists
     if TODOIST_COMPLETED_HEADER in main_content:
         # Append to existing section
-        lines = main_content.split('\n')
         section_found = False
         insert_index = None
 
@@ -226,25 +307,24 @@ def append_todoist_completed(task_content: str) -> None:
         # Insert at the found position
         if insert_index is not None:
             lines.insert(insert_index, log_entry)
-
-        updated_main_content = '\n'.join(lines)
     else:
-        # Create new section
-        new_section = f"{TODOIST_COMPLETED_HEADER}\n{log_entry}\n\n"
+        # Create new section - find correct position
+        insert_pos = _find_todoist_insert_position(lines, daily_review_end_line)
 
-        # Find where to insert
-        daily_review_end = _find_daily_review_end(main_content)
+        # Insert: blank line (if needed), header, entry, blank line
+        new_lines = []
+        if insert_pos > 0 and lines[insert_pos - 1].strip() != '':
+            new_lines.append('')
+        new_lines.append(TODOIST_COMPLETED_HEADER)
+        new_lines.append(log_entry)
+        # Add trailing blank line if next content isn't a blank line
+        if insert_pos < len(lines) and lines[insert_pos].strip() != '':
+            new_lines.append('')
 
-        if daily_review_end is not None:
-            # Insert after Daily Review's ---
-            updated_main_content = (
-                main_content[:daily_review_end] +
-                "\n" + new_section +
-                main_content[daily_review_end:].lstrip('\n')
-            )
-        else:
-            # No Daily Review, insert at top
-            updated_main_content = new_section + main_content
+        for j, new_line in enumerate(new_lines):
+            lines.insert(insert_pos + j, new_line)
+
+    updated_main_content = '\n'.join(lines)
 
     # Reassemble and upload
     updated_content = yaml_section + updated_main_content

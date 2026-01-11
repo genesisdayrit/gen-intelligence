@@ -145,6 +145,40 @@ The completed task should appear in your Obsidian Daily Action note under:
 3. The API verifies the signature and extracts the task content
 4. The task entry is removed from today's Daily Action note (if it exists)
 
+### Daily Action Section Ordering
+
+The Todoist section is positioned according to a specific order in the Daily Action note:
+
+```
+---
+(YAML frontmatter)
+---
+
+Daily Review:
+(review content)
+---
+
+### Initiative Updates:
+[HH:MM] - [Initiative Name](url): Update content
+
+### Project Updates:
+[HH:MM] - [Project Name](url): Update content
+
+### Completed Tasks on Todoist:
+[HH:MM AM/PM] Task content
+
+Vision Objective 1:
+(template content)
+```
+
+When creating a new Todoist section, the system:
+1. Looks for existing Initiative Updates or Project Updates sections
+2. Inserts the Todoist section **after** those sections
+3. Always inserts **before** the template boundary (`Vision Objective 1:`)
+4. Falls back to inserting after Daily Review if no other sections exist
+
+This ensures completed Todoist tasks appear in the correct position relative to Linear initiative/project updates.
+
 ### Webhook Payload Example
 
 ```json
