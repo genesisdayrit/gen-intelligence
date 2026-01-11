@@ -10,7 +10,7 @@ import redis
 import requests
 from dotenv import load_dotenv
 
-from app.services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.date_helpers import get_effective_date
 
 load_dotenv()
 
