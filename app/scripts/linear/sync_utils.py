@@ -643,7 +643,7 @@ def format_issues_section(issues: list[dict]) -> str:
 
 
 def format_documents_links(documents: list[dict], parent_name: str) -> str:
-    """Format document links as Obsidian wikilinks."""
+    """Format document links as markdown hyperlinks."""
     if not documents:
         return "_No documents._"
 
@@ -651,15 +651,13 @@ def format_documents_links(documents: list[dict], parent_name: str) -> str:
     for doc in documents:
         title = doc.get("title", "Untitled")
         url = doc.get("url", "")
-        # Wikilink format: [[filename]](url)
-        filename = f"{sanitize_filename(title)} - ({sanitize_filename(parent_name)})"
-        lines.append(f"- [[{filename}]]({url})")
+        lines.append(f"- [{title}]({url})")
 
     return "\n".join(lines)
 
 
 def format_projects_links(projects: list[dict]) -> str:
-    """Format project links as Obsidian wikilinks."""
+    """Format project links as markdown hyperlinks."""
     if not projects:
         return "_No projects._"
 
@@ -667,8 +665,7 @@ def format_projects_links(projects: list[dict]) -> str:
     for project in projects:
         name = project.get("name", "Untitled")
         url = project.get("url", "")
-        filename = f"(Project) {sanitize_filename(name)}"
-        lines.append(f"- [[{filename}]]({url})")
+        lines.append(f"- [{name}]({url})")
 
     return "\n".join(lines)
 
