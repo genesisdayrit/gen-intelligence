@@ -280,6 +280,75 @@ async def linear_webhook(
     event_type = data.get("type")
     event_data = data.get("data", {})
 
+    # Handle Project events (when projects are created/updated under initiatives)
+    if event_type == "Project" and action in ("create", "update"):
+        project_name = event_data.get("name", "(unknown project)")
+        project_id = event_data.get("id")
+
+        logger.info(
+            "📁 Linear project | %s | %s",
+            project_name,
+            action,
+        )
+
+        # Sync the parent initiative to Obsidian _Initiatives folder
+        if project_id:
+            try:
+                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                sync_result = sync_initiative_for_project(project_id)
+                if sync_result["errors"]:
+                    logger.error("Initiative sync errors: %s", sync_result["errors"])
+                else:
+                    logger.info("Synced initiative for project: %s", project_id)
+            except Exception as e:
+                logger.error("Failed to sync initiative for project: %s", e)
+
+        return JSONResponse(content={"status": "ok"})
+
+    # Handle Document events (only sync if document has a parent initiative via project or directly)
+    if event_type == "Document" and action in ("create", "update"):
+        doc_title = event_data.get("title", "(unknown document)")
+        project = event_data.get("project", {})
+        initiative = event_data.get("initiative", {})
+        project_id = project.get("id") if project else None
+        initiative_id = initiative.get("id") if initiative else None
+
+        logger.info(
+            "📄 Linear document | %s | %s",
+            doc_title,
+            action,
+        )
+
+        # Sync initiative if document is linked to a project (which has an initiative)
+        if project_id:
+            try:
+                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                sync_result = sync_initiative_for_project(project_id)
+                if sync_result["errors"]:
+                    logger.error("Initiative sync errors: %s", sync_result["errors"])
+                else:
+                    logger.info("Synced initiative for document's project: %s", project_id)
+            except Exception as e:
+                logger.error("Failed to sync initiative for document's project: %s", e)
+            return JSONResponse(content={"status": "ok"})
+
+        # Sync initiative if document is directly linked to an initiative
+        if initiative_id:
+            try:
+                from app.scripts.linear.sync_single_initiative import sync_initiative_by_id
+                sync_result = sync_initiative_by_id(initiative_id)
+                if sync_result["errors"]:
+                    logger.error("Initiative sync errors: %s", sync_result["errors"])
+                else:
+                    logger.info("Synced initiative for document: %s", initiative_id)
+            except Exception as e:
+                logger.error("Failed to sync initiative for document: %s", e)
+            return JSONResponse(content={"status": "ok"})
+
+        # No parent initiative - just log and return
+        logger.info("Document has no parent initiative, skipping sync")
+        return JSONResponse(content={"status": "ok"})
+
     # Handle ProjectUpdate events (direct to Obsidian Daily Action and Weekly Cycle)
     if event_type == "ProjectUpdate" and action in ("create", "update"):
         project_name = event_data.get("project", {}).get("name", "(unknown project)")
