@@ -10,12 +10,12 @@ The sync system creates a structured representation of your Linear workspace in 
 _Initiatives/
 ├── 00_Active/
 │   └── {Initiative Name}/
-│       ├── (Initiative) - {Initiative Name}.md
+│       ├── {Initiative Name}.md
 │       ├── _Docs/
 │       │   └── {Doc Title} - ({Initiative Name}).md
 │       └── _Projects/
 │           └── {Project Name}/
-│               ├── (Project) {Project Name}.md
+│               ├── {Project Name}.md
 │               └── _Docs/
 │                   └── {Doc Title} - ({Project Name}).md
 ├── 01_Planned/
@@ -56,9 +56,9 @@ python -m app.scripts.linear.sync_single_initiative --project-id <id>
 
 | Linear Entity | Obsidian Location | File Name |
 |--------------|-------------------|-----------|
-| Initiative | `_Initiatives/{status}/{name}/` | `(Initiative) - {name}.md` |
+| Initiative | `_Initiatives/{status}/{name}/` | `{name}.md` |
 | Initiative Document | `_Initiatives/{status}/{name}/_Docs/` | `{title} - ({initiative}).md` |
-| Project | `_Initiatives/{status}/{initiative}/_Projects/{name}/` | `(Project) {name}.md` |
+| Project | `_Initiatives/{status}/{initiative}/_Projects/{name}/` | `{name}.md` |
 | Project Document | `.../_Projects/{name}/_Docs/` | `{title} - ({project}).md` |
 
 ### Initiative Files Include
