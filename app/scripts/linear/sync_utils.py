@@ -598,7 +598,7 @@ def format_updates_section(updates: list[dict]) -> str:
             # Parse ISO format and format with full day name
             try:
                 dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                timestamp = dt.strftime("%A %Y-%m-%d %H:%M")
+                timestamp = dt.strftime("%A - %Y-%m-%d %H:%M")
             except ValueError:
                 timestamp = created_at[:16]
         else:
