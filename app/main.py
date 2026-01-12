@@ -310,6 +310,19 @@ async def linear_webhook(
             logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
             # Still return 200 - don't want Linear to retry
 
+        # Sync the parent initiative to Obsidian _Initiatives folder
+        project_id = event_data.get("project", {}).get("id")
+        if project_id:
+            try:
+                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                sync_result = sync_initiative_for_project(project_id)
+                if sync_result["errors"]:
+                    logger.error("Initiative sync errors: %s", sync_result["errors"])
+                else:
+                    logger.info("Synced initiative for project: %s", project_id)
+            except Exception as e:
+                logger.error("Failed to sync initiative for project: %s", e)
+
         return JSONResponse(content={"status": "ok"})
 
     # Handle InitiativeUpdate events (direct to Obsidian Daily Action and Weekly Cycle)
@@ -341,6 +354,19 @@ async def linear_webhook(
         else:
             logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
             # Still return 200 - don't want Linear to retry
+
+        # Sync the initiative to Obsidian _Initiatives folder
+        initiative_id = event_data.get("initiative", {}).get("id")
+        if initiative_id:
+            try:
+                from app.scripts.linear.sync_single_initiative import sync_initiative_by_id
+                sync_result = sync_initiative_by_id(initiative_id)
+                if sync_result["errors"]:
+                    logger.error("Initiative sync errors: %s", sync_result["errors"])
+                else:
+                    logger.info("Synced initiative: %s", initiative_id)
+            except Exception as e:
+                logger.error("Failed to sync initiative: %s", e)
 
         return JSONResponse(content={"status": "ok"})
 
