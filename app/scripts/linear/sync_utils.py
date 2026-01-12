@@ -981,7 +981,7 @@ def sync_project(
     create_folder_if_not_exists(dbx, project_folder)
 
     # Sync project markdown file
-    filename = f"(Project) {sanitized_name}.md"
+    filename = f"{sanitized_name}.md"
     file_path = f"{project_folder}/{filename}"
 
     content = generate_project_markdown(project, initiative_name)
@@ -1042,7 +1042,7 @@ def sync_initiative(
         create_folder_if_not_exists(dbx, target_folder)
 
     # Sync initiative markdown file
-    filename = f"(Initiative) - {sanitized_name}.md"
+    filename = f"{sanitized_name}.md"
     file_path = f"{target_folder}/{filename}"
 
     content = generate_initiative_markdown(initiative)
