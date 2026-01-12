@@ -227,8 +227,9 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
         normalized_content = re.sub(r'^(\s*)\*(\s+)', r'\1    -\2', normalized_content, flags=re.MULTILINE)
         # Preserve multiline content with bullet points, indent continuation lines
         content_lines = normalized_content.strip().split('\n')
-        # First line gets the timestamp and link
-        header_line = f"[{timestamp}] - [{parent_name}]({url}):"
+        # First line gets the timestamp and Obsidian wiki-link with Linear hyperlink
+        prefix = "(Initiative)" if section_type == "initiative" else "(Project)"
+        header_line = f"[{timestamp}] - [[{prefix} - {parent_name}]] ([link]({url})):"
         if len(content_lines) == 1 and not content_lines[0].strip().startswith(('*', '-', '+')):
             # Single line, no bullets - keep on same line
             log_entry = f"{header_line} {content_lines[0].strip()}"
