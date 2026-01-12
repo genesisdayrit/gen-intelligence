@@ -767,22 +767,19 @@ def generate_project_markdown(project: dict, initiative_name: str) -> str:
 
 def generate_document_markdown(document: dict, parent_name: str) -> str:
     """Generate full markdown for a document file."""
-    creator = document.get("creator", {})
-    creator_name = creator.get("name", "") if creator else ""
+    # Add parent to document for frontmatter generation
+    doc_with_parent = {**document, "parent": parent_name}
 
-    # YAML frontmatter
-    frontmatter_lines = [
-        "---",
-        f"id: {document.get('id', '')}",
-        f"title: {document.get('title', '')}",
-        f"url: {document.get('url', '')}",
-        f"createdAt: {document.get('createdAt', '')}",
-        f"updatedAt: {document.get('updatedAt', '')}",
-        f"creator: {creator_name}",
-        f"parent: {parent_name}",
-        "---",
-    ]
-    frontmatter = "\n".join(frontmatter_lines)
+    # YAML frontmatter using the standard function that handles special chars
+    frontmatter = generate_yaml_frontmatter(doc_with_parent, [
+        ("id", "id"),
+        ("title", "title"),
+        ("url", "url"),
+        ("createdAt", "createdAt"),
+        ("updatedAt", "updatedAt"),
+        ("creator", "creator"),
+        ("parent", "parent"),
+    ])
 
     content = document.get("content", "") or ""
 
