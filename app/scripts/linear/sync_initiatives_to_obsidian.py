@@ -11,8 +11,8 @@ Syncs:
 - Project Issues
 
 Usage:
-    python -m app.scripts.linear.sync_initiatives_to_obsidian
-    python -m app.scripts.linear.sync_initiatives_to_obsidian --include-archived
+    python -m scripts.linear.sync_initiatives_to_obsidian
+    python -m scripts.linear.sync_initiatives_to_obsidian --include-archived
 """
 
 import argparse
@@ -22,7 +22,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from app.scripts.linear.sync_utils import (
+from scripts.linear.sync_utils import (
     fetch_all_initiative_data,
     find_initiatives_base_path,
     get_dropbox_client,

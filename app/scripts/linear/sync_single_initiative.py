@@ -6,8 +6,8 @@ Can be triggered by:
 - Webhook handlers in app/main.py
 
 Usage:
-    python -m app.scripts.linear.sync_single_initiative --initiative-id <id>
-    python -m app.scripts.linear.sync_single_initiative --project-id <id>
+    python -m scripts.linear.sync_single_initiative --initiative-id <id>
+    python -m scripts.linear.sync_single_initiative --project-id <id>
 """
 
 import argparse
@@ -17,7 +17,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from app.scripts.linear.sync_utils import (
+from scripts.linear.sync_utils import (
     enrich_initiative_data,
     fetch_single_initiative,
     find_initiatives_base_path,

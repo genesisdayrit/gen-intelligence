@@ -294,7 +294,7 @@ async def linear_webhook(
         # Sync the parent initiative to Obsidian _Initiatives folder
         if project_id:
             try:
-                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                from scripts.linear.sync_single_initiative import sync_initiative_for_project
                 sync_result = sync_initiative_for_project(project_id)
                 if sync_result["errors"]:
                     logger.error("Initiative sync errors: %s", sync_result["errors"])
@@ -322,7 +322,7 @@ async def linear_webhook(
         # Sync initiative if document is linked to a project (which has an initiative)
         if project_id:
             try:
-                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                from scripts.linear.sync_single_initiative import sync_initiative_for_project
                 sync_result = sync_initiative_for_project(project_id)
                 if sync_result["errors"]:
                     logger.error("Initiative sync errors: %s", sync_result["errors"])
@@ -335,7 +335,7 @@ async def linear_webhook(
         # Sync initiative if document is directly linked to an initiative
         if initiative_id:
             try:
-                from app.scripts.linear.sync_single_initiative import sync_initiative_by_id
+                from scripts.linear.sync_single_initiative import sync_initiative_by_id
                 sync_result = sync_initiative_by_id(initiative_id)
                 if sync_result["errors"]:
                     logger.error("Initiative sync errors: %s", sync_result["errors"])
@@ -383,7 +383,7 @@ async def linear_webhook(
         project_id = event_data.get("project", {}).get("id")
         if project_id:
             try:
-                from app.scripts.linear.sync_single_initiative import sync_initiative_for_project
+                from scripts.linear.sync_single_initiative import sync_initiative_for_project
                 sync_result = sync_initiative_for_project(project_id)
                 if sync_result["errors"]:
                     logger.error("Initiative sync errors: %s", sync_result["errors"])
@@ -428,7 +428,7 @@ async def linear_webhook(
         initiative_id = event_data.get("initiative", {}).get("id")
         if initiative_id:
             try:
-                from app.scripts.linear.sync_single_initiative import sync_initiative_by_id
+                from scripts.linear.sync_single_initiative import sync_initiative_by_id
                 sync_result = sync_initiative_by_id(initiative_id)
                 if sync_result["errors"]:
                     logger.error("Initiative sync errors: %s", sync_result["errors"])
