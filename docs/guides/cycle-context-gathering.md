@@ -124,6 +124,120 @@ uv run python tests/test_todoist_cycle_completions.py --previous
 }
 ```
 
+### 3. Latest Headlines (Past Cycle)
+
+**Script**: `app/tests/generate_latest_headlines.py`
+
+Generates summary headlines from completed cycle data using a two-stage LLM process:
+- **Stage 1**: GPT-4o-mini generates 1-3 headlines per initiative
+- **Stage 2**: GPT-4o synthesizes all headlines into a cohesive markdown section
+
+**Usage**:
+```bash
+cd app
+
+# Current cycle (default)
+uv run python -m tests.generate_latest_headlines
+
+# Previous cycle
+uv run python -m tests.generate_latest_headlines --previous
+
+# With debug logging
+uv run python -m tests.generate_latest_headlines --debug
+```
+
+**Output location**: `app/tests/data/{timestamp}_latest_headlines_{start}-{end}.json`
+
+**Output structure**:
+```json
+{
+  "metadata": {
+    "generated_at": "2026-01-13T19:30:00.000000",
+    "cycle_type": "current",
+    "cycle_start": "2026-01-07",
+    "cycle_end": "2026-01-13",
+    "active_initiative_count": 5
+  },
+  "initiative_headlines": [...],
+  "other_headlines": {...},
+  "final_synthesis": {...},
+  "final_markdown_section": "### Latest Headlines\n\n1. [Initiative Name]\n   1. Headline..."
+}
+```
+
+**Extracting headlines**:
+```python
+# Load the latest headlines file
+with open("tests/data/latest_headlines.json") as f:
+    data = json.load(f)
+
+# Get the final formatted markdown section
+markdown_headlines = data["final_markdown_section"]
+
+# Or get raw headlines per initiative
+for init in data["initiative_headlines"]:
+    print(f"{init['initiative_name']}: {init['parsed_headlines']}")
+```
+
+### 4. Next Cycle Headlines (Projected)
+
+**Script**: `app/scripts/generate_next_cycle_headlines.py`
+
+Generates projected headlines for the upcoming cycle by extracting "This Week" sections from the latest initiative updates and processing them with an LLM.
+
+**Usage**:
+```bash
+# Generate headlines
+python app/scripts/generate_next_cycle_headlines.py
+
+# Show what would be sent to LLM (no API calls)
+python app/scripts/generate_next_cycle_headlines.py --dry-run
+
+# Use specific model
+python app/scripts/generate_next_cycle_headlines.py --model gpt-4o
+
+# With debug logging
+python app/scripts/generate_next_cycle_headlines.py --debug
+```
+
+**Output location**: `app/tests/data/{timestamp}_next_cycle_headlines.json`
+
+**Output structure**:
+```json
+{
+  "generated_at": "2026-01-13T19:30:00.000000Z",
+  "model": "gpt-4o-mini",
+  "total_initiatives": 5,
+  "headlines_generated": 4,
+  "headlines": [
+    {
+      "initiative_id": "uuid",
+      "initiative_name": "Product Engineering Processes",
+      "llm_input": {
+        "raw_update_body": "Full update text...",
+        "this_week_section": "Extracted 'This Week' content..."
+      },
+      "llm_output": {
+        "projected_headline": "Ship automated deployment pipeline for staging",
+        "raw_response": "..."
+      }
+    }
+  ]
+}
+```
+
+**Extracting projected headlines**:
+```python
+# Load the latest next cycle headlines file
+with open("tests/data/latest_next_cycle_headlines.json") as f:
+    data = json.load(f)
+
+# Get all projected headlines
+for h in data["headlines"]:
+    if h["llm_output"] and h["llm_output"].get("projected_headline"):
+        print(f"{h['initiative_name']}: {h['llm_output']['projected_headline']}")
+```
+
 ---
 
 ## Linear Data Structure
@@ -319,6 +433,104 @@ def match_todoist_to_linear(todoist_tasks, linear_issues):
     return matches
 ```
 
+### 5. Get Latest Headlines for Weekly Summary
+
+```python
+import glob
+import json
+
+def get_latest_headlines() -> str:
+    """Get the most recent cycle headlines markdown section."""
+    data_dir = "app/tests/data"
+
+    # Find the most recent headlines file
+    pattern = f"{data_dir}/*_latest_headlines_*.json"
+    files = sorted(glob.glob(pattern), reverse=True)
+
+    if not files:
+        return "No headlines found"
+
+    with open(files[0]) as f:
+        data = json.load(f)
+
+    return data.get("final_markdown_section", "")
+
+
+def get_projected_headlines() -> list[dict]:
+    """Get projected headlines for the upcoming cycle."""
+    data_dir = "app/tests/data"
+
+    # Find the most recent next cycle headlines file
+    pattern = f"{data_dir}/*_next_cycle_headlines.json"
+    files = sorted(glob.glob(pattern), reverse=True)
+
+    if not files:
+        return []
+
+    with open(files[0]) as f:
+        data = json.load(f)
+
+    return [
+        {
+            "initiative": h["initiative_name"],
+            "headline": h["llm_output"]["projected_headline"],
+        }
+        for h in data.get("headlines", [])
+        if h.get("llm_output", {}).get("projected_headline")
+    ]
+```
+
+### 6. Format Headlines for Obsidian Sections
+
+The headline scripts store parsed data separately from any synthesized output, allowing you to reconstruct custom formats. Use these helpers to generate the exact Obsidian section formats:
+
+```python
+def format_last_cycle_headlines(data: dict) -> str:
+    """Format headlines for 'Headlines from Last Cycle:' Obsidian section.
+
+    Args:
+        data: Loaded JSON from *_latest_headlines_*.json file
+    """
+    lines = ["### Headlines from Last Cycle:", ""]
+
+    idx = 1
+    for init in data["initiative_headlines"]:
+        headlines = init.get("parsed_headlines", [])
+        if not headlines:
+            continue
+        lines.append(f"{idx}. {init['initiative_name']}")
+        for i, h in enumerate(headlines, 1):
+            lines.append(f"   {i}. {h}")
+        idx += 1
+
+    # Add other headlines if present
+    other = data.get("other_headlines", {}).get("parsed_headlines", [])
+    if other:
+        lines.append(f"{idx}. Other")
+        for i, h in enumerate(other, 1):
+            lines.append(f"   {i}. {h}")
+
+    return "\n".join(lines)
+
+
+def format_projected_headlines(data: dict) -> str:
+    """Format headlines for 'New Projected Headlines' Obsidian section.
+
+    Args:
+        data: Loaded JSON from *_next_cycle_headlines.json file
+    """
+    lines = ["### New Projected Headlines (anticipate how you're going to win this week):", ""]
+
+    for idx, h in enumerate(data.get("headlines", []), 1):
+        headline = h.get("llm_output", {}).get("projected_headline")
+        if headline:
+            lines.append(f"{idx}. **{h['initiative_name']}**: {headline}")
+
+    return "\n".join(lines)
+```
+
+**Note:** The `final_markdown_section` from `generate_latest_headlines.py` uses a different header ("### Latest Headlines"). Use the parsed data with these formatters if you need the exact Obsidian section titles.
+
 ---
 
 ## Data File Naming Convention
@@ -367,6 +579,8 @@ SYSTEM_TIMEZONE=US/Pacific
 |------|---------|
 | `app/tests/test_generate_cycle_summary_data.py` | Linear cycle data collection |
 | `app/tests/test_todoist_cycle_completions.py` | Todoist completed tasks |
+| `app/tests/generate_latest_headlines.py` | Generate headlines from past cycle data |
+| `app/scripts/generate_next_cycle_headlines.py` | Generate projected headlines for next cycle |
 | `app/scripts/linear/sync_utils.py` | Linear API utilities |
 | `app/services/obsidian/utils/date_helpers.py` | Date/cycle utilities |
 | `docs/linear-api.md` | Linear API reference |
@@ -387,3 +601,7 @@ SYSTEM_TIMEZONE=US/Pacific
 5. **Consider the 3am rollover** - Tasks completed between midnight and 3am count as the previous day's work.
 
 6. **Regenerate data when needed** - If data seems stale, run the scripts again to get fresh information.
+
+7. **Use headlines for summaries** - The `final_markdown_section` from latest headlines provides a ready-to-use summary. For projected work, use the next cycle headlines.
+
+8. **Headlines vs raw data** - Use headline scripts for human-readable summaries; use cycle summary data for detailed analysis or custom processing.
