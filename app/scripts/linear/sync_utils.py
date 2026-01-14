@@ -70,6 +70,7 @@ query Initiatives($first: Int!, $after: String, $includeArchived: Boolean) {
       completedAt
       targetDate
       targetDateResolution
+      createdAt
       owner { id name email }
       creator { id name email }
     }
