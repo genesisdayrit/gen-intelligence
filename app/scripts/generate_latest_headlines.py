@@ -5,9 +5,9 @@ Uses GPT-4o-mini for incremental headline generation per initiative,
 and GPT-4o for final synthesis into a markdown section.
 
 Usage:
-    python -m tests.generate_latest_headlines              # Current cycle
-    python -m tests.generate_latest_headlines --previous   # Previous cycle
-    python -m tests.generate_latest_headlines --debug      # With debug logging
+    python -m scripts.generate_latest_headlines              # Current cycle
+    python -m scripts.generate_latest_headlines --previous   # Previous cycle
+    python -m scripts.generate_latest_headlines --debug      # With debug logging
 """
 
 import argparse
@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -85,11 +85,14 @@ Given these completed items NOT related to active initiatives:
 ## Completed Todoist Tasks:
 {todoist_text}
 
+{existing_headlines_section}
+
 Identify 0-3 items that are genuinely headline-worthy (significant accomplishments, not routine tasks).
 
 Rules:
 - Only include truly notable items
 - Ignore routine/administrative tasks (meetings, emails, small fixes)
+- Do NOT include headlines for work that is already covered in the existing headlines above
 - If nothing is headline-worthy, return an empty array
 
 Return your response as a JSON object with a "headlines" key containing an array of strings:
@@ -163,8 +166,11 @@ def fetch_todoist_completions(
         logger.warning("TODOIST_ACCESS_TOKEN not set - skipping Todoist fetch")
         return []
 
-    since_str = since.strftime("%Y-%m-%dT%H:%M:%S")
-    until_str = until.strftime("%Y-%m-%dT%H:%M:%S")
+    # Normalize to start of day for since, end at 3am next day for until (3-hour buffer)
+    # Tasks completed between midnight and 3am count as the previous day
+    since_str = since.strftime("%Y-%m-%dT00:00:00")
+    until_plus_one = until + timedelta(days=1)
+    until_str = until_plus_one.strftime("%Y-%m-%dT03:00:00")
 
     all_tasks: list[dict] = []
     cursor: str | None = None
@@ -367,14 +373,38 @@ def generate_other_headlines(
     client: OpenAI,
     other_issues: list[dict],
     todoist_tasks: list[dict],
+    existing_headlines: list[dict] | None = None,
 ) -> dict:
-    """Generate headlines for items not related to active initiatives."""
+    """Generate headlines for items not related to active initiatives.
+
+    Args:
+        client: OpenAI client
+        other_issues: Linear issues not in active initiatives
+        todoist_tasks: Completed Todoist tasks
+        existing_headlines: Optional list of dicts with 'initiative_name' and
+            'parsed_headlines' keys to avoid duplicating
+    """
     issues_text = format_issues_for_prompt(other_issues)
     todoist_text = format_todoist_for_prompt(todoist_tasks)
+
+    # Format existing headlines section
+    if existing_headlines:
+        headline_lines = ["## Existing Headlines (do not duplicate):"]
+        for item in existing_headlines:
+            init_name = item.get("initiative_name", "Unknown")
+            headlines = item.get("parsed_headlines", [])
+            if headlines:
+                headline_lines.append(f"\n{init_name}:")
+                for h in headlines:
+                    headline_lines.append(f"- {h}")
+        existing_headlines_section = "\n".join(headline_lines)
+    else:
+        existing_headlines_section = ""
 
     prompt = OTHER_HEADLINES_PROMPT.format(
         issues_text=issues_text,
         todoist_text=todoist_text,
+        existing_headlines_section=existing_headlines_section,
     )
 
     logger.debug("Generating other headlines")
@@ -483,7 +513,7 @@ def save_results(
     output: dict, cycle_start: datetime, cycle_end: datetime
 ) -> Path:
     """Save results to timestamped JSON file."""
-    data_dir = Path(__file__).parent / "data"
+    data_dir = Path(__file__).parent.parent / "tests" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -638,7 +668,9 @@ def main():
     # 5. Generate "Other" Headlines
     # ==========================================================================
     logger.info("Generating other headlines...")
-    other_headlines = generate_other_headlines(client, other_completed, todoist_tasks)
+    other_headlines = generate_other_headlines(
+        client, other_completed, todoist_tasks, existing_headlines=initiative_headlines
+    )
     logger.info(
         f"Generated {len(other_headlines.get('parsed_headlines', []))} other headlines"
     )
