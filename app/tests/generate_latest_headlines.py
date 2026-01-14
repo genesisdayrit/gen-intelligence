@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Test script for generating Latest Headlines from Linear cycle data.
+"""Script for generating Latest Headlines from Linear cycle data.
 
 Uses GPT-4o-mini for incremental headline generation per initiative,
 and GPT-4o for final synthesis into a markdown section.
 
 Usage:
-    python -m tests.test_generate_latest_headlines              # Current cycle
-    python -m tests.test_generate_latest_headlines --previous   # Previous cycle
-    python -m tests.test_generate_latest_headlines --debug      # With debug logging
+    python -m tests.generate_latest_headlines              # Current cycle
+    python -m tests.generate_latest_headlines --previous   # Previous cycle
+    python -m tests.generate_latest_headlines --debug      # With debug logging
 """
 
 import argparse
