@@ -45,7 +45,7 @@ from scripts.generate_next_cycle_headlines import (
 )
 from scripts.linear.sync_utils import fetch_initiatives
 from services.email.gmail_client import send_html_email
-from tests.generate_latest_headlines import (
+from scripts.generate_latest_headlines import (
     get_openai_client,
     generate_initiative_headlines,
     generate_other_headlines,
@@ -143,9 +143,11 @@ def collect_last_cycle_headlines(
     logger.info("Fetching Todoist completions...")
     todoist_tasks = fetch_todoist_completions(cycle_start, cycle_end)
 
-    # Generate "other" headlines
+    # Generate "other" headlines (passing existing initiative headlines to avoid duplicates)
     logger.info("Generating other headlines...")
-    other_headlines = generate_other_headlines(client, other_completed, todoist_tasks)
+    other_headlines = generate_other_headlines(
+        client, other_completed, todoist_tasks, existing_headlines=initiative_headlines
+    )
 
     return {
         "initiative_headlines": initiative_headlines,

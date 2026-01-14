@@ -135,12 +135,22 @@ def get_cycle_bounds(cycle_type: str, tz) -> tuple[datetime, datetime]:
 
 
 def is_within_cycle(date_str: str | None, start: datetime, end: datetime) -> bool:
-    """Check if an ISO datetime string falls within the cycle range."""
+    """Check if an ISO datetime string falls within the cycle range.
+
+    Uses a 3-hour buffer: items between midnight and 3am on end+1 day
+    count as part of the cycle (for late-night work).
+    """
     if not date_str:
         return False
     try:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        return start.date() <= dt.date() <= end.date()
+        # Items on start date through end date are in cycle
+        if start.date() <= dt.date() <= end.date():
+            return True
+        # Items on end+1 day before 3am also count (3-hour buffer)
+        if dt.date() == (end + timedelta(days=1)).date() and dt.hour < 3:
+            return True
+        return False
     except ValueError:
         return False
 
@@ -154,6 +164,9 @@ def fetch_project_issues_in_range(
     project_id: str, start: datetime, end: datetime, issue_type: str
 ) -> list[dict]:
     """Fetch project issues with date filter.
+
+    Uses a 3-hour buffer: issues completed/created/modified between midnight
+    and 3am on end+1 day count as part of the cycle.
 
     Args:
         project_id: Linear project ID
@@ -171,10 +184,12 @@ def fetch_project_issues_in_range(
     }
     field = field_map[issue_type]
 
+    # 3-hour buffer: end at 03:00:00 on the next day
+    end_plus_one = end + timedelta(days=1)
     filter_var = {
         field: {
             "gte": start.strftime("%Y-%m-%dT00:00:00Z"),
-            "lte": end.strftime("%Y-%m-%dT23:59:59Z"),
+            "lte": end_plus_one.strftime("%Y-%m-%dT03:00:00Z"),
         }
     }
 
@@ -190,11 +205,17 @@ def fetch_project_issues_in_range(
 def fetch_all_completed_issues_in_range(
     start: datetime, end: datetime
 ) -> list[dict]:
-    """Fetch ALL completed issues in cycle (for 'other' calculation)."""
+    """Fetch ALL completed issues in cycle (for 'other' calculation).
+
+    Uses a 3-hour buffer: issues completed between midnight and 3am on
+    end+1 day count as part of the cycle.
+    """
+    # 3-hour buffer: end at 03:00:00 on the next day
+    end_plus_one = end + timedelta(days=1)
     filter_var = {
         "completedAt": {
             "gte": start.strftime("%Y-%m-%dT00:00:00Z"),
-            "lte": end.strftime("%Y-%m-%dT23:59:59Z"),
+            "lte": end_plus_one.strftime("%Y-%m-%dT03:00:00Z"),
         }
     }
 
