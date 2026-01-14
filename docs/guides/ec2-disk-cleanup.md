@@ -154,3 +154,5 @@ df -h /
 | `sudo journalctl --vacuum-time=3d` | Clear old logs |
 | `sudo apt-get clean` | Clear apt cache |
 
+
+p
