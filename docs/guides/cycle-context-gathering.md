@@ -61,20 +61,20 @@ def get_cycle_bounds(tz, previous: bool = False):
 
 ### 1. Linear Cycle Summary
 
-**Script**: `app/scripts/generate_cycle_summary_data.py`
+**Script**: `app/tests/test_generate_cycle_summary_data.py`
 
 **Usage**:
 ```bash
 cd app
 
 # Current cycle (default)
-uv run python -m scripts.generate_cycle_summary_data
+uv run python tests/test_generate_cycle_summary_data.py
 
 # Previous cycle
-uv run python -m scripts.generate_cycle_summary_data --previous-cycle
+uv run python tests/test_generate_cycle_summary_data.py --previous-cycle
 
 # With debug logging
-uv run python -m scripts.generate_cycle_summary_data --debug
+uv run python tests/test_generate_cycle_summary_data.py --debug
 ```
 
 **Output location**: `app/tests/data/{timestamp}_cycle_summary_{start}-{end}.json`
@@ -365,7 +365,7 @@ SYSTEM_TIMEZONE=US/Pacific
 
 | File | Purpose |
 |------|---------|
-| `app/scripts/generate_cycle_summary_data.py` | Linear cycle data collection |
+| `app/tests/test_generate_cycle_summary_data.py` | Linear cycle data collection |
 | `app/tests/test_todoist_cycle_completions.py` | Todoist completed tasks |
 | `app/scripts/linear/sync_utils.py` | Linear API utilities |
 | `app/services/obsidian/utils/date_helpers.py` | Date/cycle utilities |
