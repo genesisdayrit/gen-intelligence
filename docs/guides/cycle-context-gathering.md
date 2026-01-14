@@ -1,4 +1,4 @@
-# Cycle Data Gathering Guide
+# Cycle Context Gathering Guide
 
 Reference guide for AI agents to understand and use the weekly cycle data collection infrastructure. This document explains what data is available, how to generate it, and how to interpret it for cycle context gathering.
 
