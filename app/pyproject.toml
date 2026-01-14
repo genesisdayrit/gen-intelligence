@@ -8,6 +8,7 @@ dependencies = [
     "dropbox>=12.0.2",
     "fastapi>=0.128.0",
     "httpx>=0.28.1",
+    "openai>=1.0.0",
     "python-dotenv>=1.2.1",
     "pytz>=2025.2",
     "redis>=7.1.0",
