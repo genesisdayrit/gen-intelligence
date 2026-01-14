@@ -2,9 +2,9 @@
 """Weekly Cycle Summarizer - Fetch Linear data for cycle reporting.
 
 Usage:
-    python test_generate_cycle_summary_data.py                    # Current cycle
-    python test_generate_cycle_summary_data.py --current-cycle    # Current cycle (explicit)
-    python test_generate_cycle_summary_data.py --previous-cycle   # Previous cycle
+    python -m scripts.generate_cycle_summary_data                    # Current cycle
+    python -m scripts.generate_cycle_summary_data --current-cycle    # Current cycle (explicit)
+    python -m scripts.generate_cycle_summary_data --previous-cycle   # Previous cycle
 """
 
 import argparse
@@ -400,7 +400,8 @@ def save_summary(
     summary: dict, cycle_start: datetime, cycle_end: datetime
 ) -> Path:
     """Save summary to timestamped JSON file."""
-    data_dir = Path(__file__).parent / "data"
+    # Save to tests/data/ directory for consistency with other test scripts
+    data_dir = Path(__file__).parent.parent / "tests" / "data"
     # Handle symlinks and regular directories
     if not data_dir.exists() and not data_dir.is_symlink():
         data_dir.mkdir(exist_ok=True)
