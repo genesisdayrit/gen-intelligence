@@ -134,6 +134,11 @@ curl -X POST http://localhost:8000/share/youtube \
 # Expected: 202
 ```
 
+## Related Guides
+
+- [iOS Shortcut: Save YouTube to Obsidian](./ios-shortcut-save-youtube.md) - Step-by-step iOS Shortcut setup
+- [Share Link Endpoint](./share-link-endpoint.md) - General link sharing endpoint
+
 ## Related Code
 
 - **Link sharing endpoint**: `/share/link` - Same authentication pattern, similar file format
