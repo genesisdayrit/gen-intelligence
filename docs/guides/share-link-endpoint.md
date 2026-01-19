@@ -123,6 +123,11 @@ curl -X POST http://localhost:8000/share/link \
 # Expected: 202
 ```
 
+## Related Guides
+
+- [iOS Shortcut: Save Link to Obsidian](./ios-shortcut-save-link.md) - Step-by-step iOS Shortcut setup
+- [Share YouTube Endpoint](./share-youtube-endpoint.md) - YouTube-specific endpoint with auto title fetching
+
 ## Related Code
 
 - **Notion sync pattern**: See the attached Notion-to-Obsidian sync script for the original YAML frontmatter format
