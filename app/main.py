@@ -9,7 +9,7 @@ from datetime import datetime
 
 import pytz
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -18,6 +18,7 @@ from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
+from services.obsidian.add_shared_link import add_shared_link
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -35,6 +36,7 @@ TODOIST_CLIENT_SECRET = os.getenv("TODOIST_CLIENT_SECRET")
 LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
+LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -56,6 +58,12 @@ class TelegramUpdate(BaseModel):
     update_id: int
     channel_post: Message | None = None
     edited_channel_post: Message | None = None
+
+
+# Link sharing model
+class LinkShareRequest(BaseModel):
+    url: str
+    title: str | None = None
 
 
 # FastAPI app
@@ -561,6 +569,42 @@ async def github_webhook(
 
     logger.info("GitHub event: %s (ignored)", x_github_event)
     return JSONResponse(content={"status": "ignored"})
+
+
+# Link sharing endpoint
+@app.post("/share/link", status_code=202)
+async def share_link(
+    link_request: LinkShareRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str | None = Header(None),
+):
+    """Save a shared link to Obsidian Knowledge Hub."""
+    if x_api_key != LINK_SHARE_API_KEY:
+        logger.warning("Invalid API key for link share")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    logger.info(
+        "🔗 Link share | url=%s | title=%s",
+        link_request.url[:100],
+        link_request.title[:50] if link_request.title else "(none)",
+    )
+
+    background_tasks.add_task(
+        _process_shared_link,
+        link_request.url,
+        link_request.title,
+    )
+
+    return {"status": "accepted", "message": "Link queued for processing"}
+
+
+def _process_shared_link(url: str, title: str | None) -> None:
+    """Background task to save shared link to Obsidian."""
+    result = add_shared_link(url, title)
+    if result["success"]:
+        logger.info("Saved shared link: %s (action=%s)", url[:100], result.get("action"))
+    else:
+        logger.error("Failed to save link: %s - %s", url[:100], result["error"])
 
 
 if __name__ == "__main__":
