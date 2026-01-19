@@ -91,3 +91,94 @@ def test_share_link_requires_url():
         headers={"X-API-Key": "test-link-api-key"},
     )
     assert response.status_code == 422
+
+
+# YouTube sharing endpoint tests
+def test_share_youtube_requires_api_key():
+    """Share YouTube endpoint rejects requests without API key."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+    )
+    assert response.status_code == 401
+
+
+def test_share_youtube_rejects_invalid_key():
+    """Share YouTube endpoint rejects requests with invalid API key."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        headers={"X-API-Key": "wrong-key"},
+    )
+    assert response.status_code == 401
+
+
+def test_share_youtube_accepts_valid_request():
+    """Share YouTube endpoint accepts request with valid API key and returns 202."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 202
+    assert response.json()["status"] == "accepted"
+
+
+def test_share_youtube_rejects_non_youtube_url():
+    """Share YouTube endpoint rejects non-YouTube URLs with 422."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://example.com/video"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 422
+
+
+def test_share_youtube_accepts_short_url():
+    """Share YouTube endpoint accepts youtu.be short URLs."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://youtu.be/dQw4w9WgXcQ"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 202
+
+
+def test_share_youtube_accepts_shorts_url():
+    """Share YouTube endpoint accepts YouTube Shorts URLs."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://www.youtube.com/shorts/dQw4w9WgXcQ"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 202
+
+
+def test_share_youtube_accepts_mobile_url():
+    """Share YouTube endpoint accepts mobile YouTube URLs."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://m.youtube.com/watch?v=dQw4w9WgXcQ"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 202
+
+
+def test_share_youtube_accepts_embed_url():
+    """Share YouTube endpoint accepts embed URLs."""
+    response = client.post(
+        "/share/youtube",
+        json={"url": "https://www.youtube.com/embed/dQw4w9WgXcQ"},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 202
+
+
+def test_share_youtube_requires_url():
+    """Share YouTube endpoint requires url field."""
+    response = client.post(
+        "/share/youtube",
+        json={},
+        headers={"X-API-Key": "test-link-api-key"},
+    )
+    assert response.status_code == 422
