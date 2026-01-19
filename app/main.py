@@ -19,6 +19,7 @@ from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import add_shared_link
+from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -64,6 +65,11 @@ class TelegramUpdate(BaseModel):
 class LinkShareRequest(BaseModel):
     url: str
     title: str | None = None
+
+
+# YouTube sharing model
+class YouTubeShareRequest(BaseModel):
+    url: str
 
 
 # FastAPI app
@@ -605,6 +611,47 @@ def _process_shared_link(url: str, title: str | None) -> None:
         logger.info("Saved shared link: %s (action=%s)", url[:100], result.get("action"))
     else:
         logger.error("Failed to save link: %s - %s", url[:100], result["error"])
+
+
+# YouTube sharing endpoint
+@app.post("/share/youtube", status_code=202)
+async def share_youtube(
+    youtube_request: YouTubeShareRequest,
+    background_tasks: BackgroundTasks,
+    x_api_key: str | None = Header(None),
+):
+    """Save a YouTube video link to Obsidian Knowledge Hub."""
+    if x_api_key != LINK_SHARE_API_KEY:
+        logger.warning("Invalid API key for YouTube share")
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    # Validate YouTube URL before accepting
+    if not is_valid_youtube_url(youtube_request.url):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid YouTube URL. Supported formats: youtube.com/watch, youtu.be, youtube.com/shorts, youtube.com/embed"
+        )
+
+    logger.info(
+        "📺 YouTube share | url=%s",
+        youtube_request.url[:100],
+    )
+
+    background_tasks.add_task(
+        _process_youtube_link,
+        youtube_request.url,
+    )
+
+    return {"status": "accepted", "message": "YouTube link queued for processing"}
+
+
+def _process_youtube_link(url: str) -> None:
+    """Background task to save YouTube link to Obsidian."""
+    result = add_youtube_link(url)
+    if result["success"]:
+        logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
+    else:
+        logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
 
 
 if __name__ == "__main__":
