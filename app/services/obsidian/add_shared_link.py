@@ -107,6 +107,31 @@ def _generate_title_from_url(url: str) -> str:
     return title
 
 
+def get_predicted_link_path(url: str, title: str | None = None) -> dict:
+    """Get the predicted file path for a shared link without creating the file.
+
+    Args:
+        url: The URL to save
+        title: Optional title for the link. Uses URL if not provided.
+
+    Returns:
+        dict with keys:
+            - vault_name: str | None
+            - file_path: str | None (relative path within vault)
+    """
+    vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
+    if not vault_path:
+        return {"vault_name": None, "file_path": None}
+
+    vault_name = vault_path.rstrip('/').split('/')[-1]
+    knowledge_hub_folder = os.getenv('OBSIDIAN_KNOWLEDGE_HUB_FOLDER', '_Knowledge-Hub')
+    link_title = title if title else _generate_title_from_url(url)
+    filename = _sanitize_filename(link_title) + '.md'
+    file_path = f"{knowledge_hub_folder}/{filename}"
+
+    return {"vault_name": vault_name, "file_path": file_path}
+
+
 def add_shared_link(url: str, title: str | None = None) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 

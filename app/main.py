@@ -18,7 +18,7 @@ from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
-from services.obsidian.add_shared_link import add_shared_link
+from services.obsidian.add_shared_link import add_shared_link, get_predicted_link_path
 from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
 from services.todoist.client import create_completed_todoist_task
 
@@ -620,13 +620,21 @@ async def share_link(
         link_request.title[:50] if link_request.title else "(none)",
     )
 
+    # Get predicted file path for immediate response
+    path_info = get_predicted_link_path(link_request.url, link_request.title)
+
     background_tasks.add_task(
         _process_shared_link,
         link_request.url,
         link_request.title,
     )
 
-    return {"status": "accepted", "message": "Link queued for processing"}
+    return {
+        "status": "accepted",
+        "message": "Link queued for processing",
+        "vault_name": path_info["vault_name"],
+        "file_path": path_info["file_path"],
+    }
 
 
 # YouTube sharing endpoint
