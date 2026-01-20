@@ -119,6 +119,7 @@ async function saveLink() {
     }
 
     const data = await response.json();
+    console.log('API Response:', data);
     savedFilePath = data.file_path;
     savedVaultName = data.vault_name;
 
@@ -137,8 +138,12 @@ function openInObsidian() {
     // Remove .md extension for Obsidian URL
     const filePathWithoutExt = savedFilePath.replace(/\.md$/, '');
     const obsidianUrl = `obsidian://open?vault=${encodeURIComponent(savedVaultName)}&file=${encodeURIComponent(filePathWithoutExt)}`;
-    chrome.tabs.create({ url: obsidianUrl });
+    console.log('Opening Obsidian URL:', obsidianUrl);
+    // Use window.open for custom URL schemes (chrome.tabs.create doesn't work well with obsidian://)
+    window.open(obsidianUrl);
     window.close();
+  } else {
+    console.error('Cannot open Obsidian: vault or file path missing', { savedVaultName, savedFilePath });
   }
 }
 
