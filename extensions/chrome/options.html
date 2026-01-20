@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gen-intelligence - Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <h1>gen-intelligence</h1>
+    <p class="subtitle">Configure your API connection settings</p>
+
+    <form id="settings-form">
+      <div class="form-group">
+        <label for="api-base-url">API Base URL</label>
+        <input
+          type="url"
+          id="api-base-url"
+          placeholder="https://your-server.ngrok-free.app"
+          required
+        >
+        <span class="help-text">The base URL of your API server (without trailing slash)</span>
+      </div>
+
+      <div class="form-group">
+        <label for="api-key">API Key</label>
+        <input
+          type="password"
+          id="api-key"
+          placeholder="Enter your API key"
+          required
+        >
+        <span class="help-text">Your LINK_SHARE_API_KEY from the server</span>
+      </div>
+
+      <div class="button-row">
+        <button type="submit" class="primary-btn">Save Settings</button>
+      </div>
+
+      <div id="status-message" class="status-message hidden"></div>
+    </form>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

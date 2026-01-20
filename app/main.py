@@ -61,10 +61,17 @@ class TelegramUpdate(BaseModel):
     edited_channel_post: Message | None = None
 
 
-# Link sharing model
+# Link sharing models
 class LinkShareRequest(BaseModel):
     url: str
     title: str | None = None
+
+
+class LinkShareResponse(BaseModel):
+    status: str
+    message: str
+    file_path: str | None = None
+    vault_name: str | None = None
 
 
 # YouTube sharing model
@@ -578,10 +585,9 @@ async def github_webhook(
 
 
 # Link sharing endpoint
-@app.post("/share/link", status_code=202)
+@app.post("/share/link", response_model=LinkShareResponse)
 async def share_link(
     link_request: LinkShareRequest,
-    background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(None),
 ):
     """Save a shared link to Obsidian Knowledge Hub."""
@@ -595,22 +601,19 @@ async def share_link(
         link_request.title[:50] if link_request.title else "(none)",
     )
 
-    background_tasks.add_task(
-        _process_shared_link,
-        link_request.url,
-        link_request.title,
-    )
+    result = add_shared_link(link_request.url, link_request.title)
 
-    return {"status": "accepted", "message": "Link queued for processing"}
-
-
-def _process_shared_link(url: str, title: str | None) -> None:
-    """Background task to save shared link to Obsidian."""
-    result = add_shared_link(url, title)
     if result["success"]:
-        logger.info("Saved shared link: %s (action=%s)", url[:100], result.get("action"))
+        logger.info("Saved shared link: %s (action=%s)", link_request.url[:100], result.get("action"))
+        return LinkShareResponse(
+            status="success",
+            message=f"Link {result['action']} successfully",
+            file_path=result.get("file_path"),
+            vault_name=result.get("vault_name"),
+        )
     else:
-        logger.error("Failed to save link: %s - %s", url[:100], result["error"])
+        logger.error("Failed to save link: %s - %s", link_request.url[:100], result["error"])
+        raise HTTPException(status_code=500, detail=result["error"])
 
 
 # YouTube sharing endpoint
