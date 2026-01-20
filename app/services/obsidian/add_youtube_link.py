@@ -39,15 +39,16 @@ def is_valid_youtube_url(url: str) -> bool:
 
 
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video metadata from YouTube oEmbed API.
+    """Fetch video metadata from YouTube oEmbed API and page.
 
     Returns:
-        dict with keys: title, author_name (may be None if fetch fails)
+        dict with keys: title, author_name, description (may be None if fetch fails)
     """
-    result = {"title": None, "author_name": None}
+    result = {"title": None, "author_name": None, "description": None}
 
     try:
         with httpx.Client(timeout=10.0) as client:
+            # Fetch from oEmbed API for title and author
             response = client.get(
                 YOUTUBE_OEMBED_URL,
                 params={"url": url, "format": "json"},
@@ -63,12 +64,64 @@ def fetch_youtube_metadata(url: str) -> dict:
                     response.status_code,
                     url[:100],
                 )
+
+            # Fetch description from the YouTube page
+            result["description"] = _fetch_youtube_description(client, url)
+
     except httpx.RequestError as e:
         logger.warning("Failed to fetch YouTube metadata: %s", e)
     except Exception as e:
         logger.warning("Unexpected error fetching YouTube metadata: %s", e)
 
     return result
+
+
+def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
+    """Fetch video description from the YouTube page.
+
+    Extracts description from the page's embedded JSON data.
+    """
+    try:
+        response = client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            },
+        )
+
+        if response.status_code != 200:
+            logger.warning("YouTube page returned %s for %s", response.status_code, url[:100])
+            return None
+
+        html = response.text
+
+        # Try to extract description from ytInitialPlayerResponse JSON
+        pattern = r'var ytInitialPlayerResponse\s*=\s*(\{.+?\});'
+        match = re.search(pattern, html)
+
+        if match:
+            import json
+            try:
+                player_response = json.loads(match.group(1))
+                description = (
+                    player_response.get("videoDetails", {})
+                    .get("shortDescription")
+                )
+                return description
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: try meta description tag
+        meta_pattern = r'<meta\s+name="description"\s+content="([^"]*)"'
+        meta_match = re.search(meta_pattern, html)
+        if meta_match:
+            return meta_match.group(1)
+
+        return None
+
+    except Exception as e:
+        logger.warning("Failed to fetch YouTube description: %s", e)
+        return None
 
 
 def add_youtube_link(url: str) -> dict:
@@ -96,7 +149,7 @@ def add_youtube_link(url: str) -> dict:
         # Fetch metadata from YouTube oEmbed
         metadata = fetch_youtube_metadata(url)
         video_title = metadata["title"] or url  # Fallback to URL if title unavailable
-        author_name = metadata["author_name"]
+        description = metadata["description"]
 
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
@@ -123,8 +176,10 @@ def add_youtube_link(url: str) -> dict:
         # Format date for Journal link (e.g., "Jan 19, 2026")
         formatted_local_date = now_local.strftime('%b %-d, %Y')
 
-        # Build People field (channel name if available)
-        people_value = f'"{author_name}"' if author_name else ""
+        # Build description section
+        description_section = ""
+        if description:
+            description_section = f"\n{description}\n"
 
         # Generate markdown content with YAML frontmatter
         markdown_content = f"""---
@@ -133,7 +188,6 @@ Journal:
 created time: {now_utc.isoformat()}
 modified time: {now_utc.isoformat()}
 key words:
-People: {people_value}
 URL: {url}
 Notes+Ideas:
 Experiences:
@@ -142,7 +196,7 @@ Tags:
 ---
 
 ## {video_title}
-
+{description_section}
 """
 
         # Upload to Dropbox

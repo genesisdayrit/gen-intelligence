@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, channel) from YouTube's oEmbed API.
+The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description) from YouTube's oEmbed API and the video page.
 
 ## Endpoint Details
 
@@ -52,7 +52,7 @@ POST /share/youtube
 1. **Authentication**: Validates `X-API-Key` header against `LINK_SHARE_API_KEY` env var
 2. **URL Validation**: Checks URL matches known YouTube patterns (returns 422 if invalid)
 3. **Background Processing**: Returns 202 immediately, processes via `BackgroundTasks`
-4. **Metadata Fetching**: Calls YouTube oEmbed API to get video title and channel name
+4. **Metadata Fetching**: Calls YouTube oEmbed API to get video title, and fetches description from the video page
 5. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
 6. **Filename Sanitization**: Replaces `[\/:*?"<>|]` with `_`
 7. **Duplicate Check**: Skips if file already exists
@@ -69,7 +69,6 @@ Journal:
 created time: 2026-01-19T15:30:00+00:00
 modified time: 2026-01-19T15:30:00+00:00
 key words:
-People: "Channel Name"
 URL: https://www.youtube.com/watch?v=VIDEO_ID
 Notes+Ideas:
 Experiences:
@@ -79,9 +78,11 @@ Tags:
 
 ## Video Title
 
+Video description text goes here...
+
 ```
 
-Note: The `People` field contains the YouTube channel name, and a `youtube` tag is automatically added.
+Note: A `youtube` tag is automatically added, and the video description is included in the body of the markdown file.
 
 ## Environment Variables
 
@@ -103,8 +104,8 @@ def is_valid_youtube_url(url: str) -> bool:
     """Check if URL is a valid YouTube URL."""
 
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video metadata from YouTube oEmbed API.
-    Returns: dict with keys: title, author_name"""
+    """Fetch video metadata from YouTube oEmbed API and page.
+    Returns: dict with keys: title, author_name, description"""
 
 def add_youtube_link(url: str) -> dict:
     """Main entry point. Returns {"success": bool, "action": str | None, "error": str | None}"""
