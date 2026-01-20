@@ -10,6 +10,7 @@ const urlDisplay = document.getElementById('url-display');
 const errorMessage = document.getElementById('error-message');
 const openObsidianBtn = document.getElementById('open-obsidian-btn');
 const openSettingsBtn = document.getElementById('open-settings-btn');
+const settingsBtn = document.getElementById('settings-btn');
 
 // State
 let currentUrl = '';
@@ -157,6 +158,7 @@ function openSettings() {
 saveBtn.addEventListener('click', saveLink);
 openObsidianBtn.addEventListener('click', openInObsidian);
 openSettingsBtn.addEventListener('click', openSettings);
+settingsBtn.addEventListener('click', openSettings);
 
 // Enter key handlers
 document.addEventListener('keydown', (e) => {
