@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gen-intelligence</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <!-- Initial State: Save Form -->
+  <div id="save-form" class="container">
+    <input
+      type="text"
+      id="title-input"
+      placeholder="Enter title..."
+      autocomplete="off"
+    >
+    <div class="button-row">
+      <button id="save-btn" class="primary-btn">
+        <span id="save-btn-text">Save page</span>
+        <span id="save-spinner" class="spinner hidden"></span>
+      </button>
+      <span class="shortcut-hint">Enter</span>
+    </div>
+    <div id="url-display" class="url-text"></div>
+    <div id="error-message" class="error-text hidden"></div>
+  </div>
+
+  <!-- Success State -->
+  <div id="success-state" class="container success-container hidden">
+    <button id="open-obsidian-btn" class="primary-btn">
+      Open in Obsidian
+    </button>
+    <div class="shortcut-hint-centered">Enter</div>
+  </div>
+
+  <!-- Config Required State -->
+  <div id="config-required" class="container hidden">
+    <div class="config-message">
+      Please configure the extension settings first.
+    </div>
+    <button id="open-settings-btn" class="secondary-btn">
+      Open Settings
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

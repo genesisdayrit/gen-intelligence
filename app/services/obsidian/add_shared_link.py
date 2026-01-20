@@ -119,13 +119,19 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
             - success: bool
             - action: str | None ("created" or "skipped")
             - error: str | None
+            - file_path: str | None (relative path within vault)
+            - vault_name: str | None (name of the Obsidian vault)
     """
-    result = {"success": False, "action": None, "error": None}
+    result = {"success": False, "action": None, "error": None, "file_path": None, "vault_name": None}
 
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
         result["error"] = "DROPBOX_OBSIDIAN_VAULT_PATH not set"
         return result
+
+    # Extract vault name from path (e.g., "/obsidian/personal" -> "personal")
+    vault_name = vault_path.rstrip('/').split('/')[-1]
+    result["vault_name"] = vault_name
 
     try:
         dbx = _get_dropbox_client()
@@ -137,6 +143,10 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         # Sanitize filename
         filename = _sanitize_filename(link_title) + '.md'
         file_path = f"{knowledge_hub_path}/{filename}"
+
+        # Calculate relative path within vault for Obsidian URL
+        relative_file_path = file_path.replace(vault_path.lower(), '').lstrip('/')
+        result["file_path"] = relative_file_path
 
         # Check if file already exists
         if _file_exists(dbx, file_path):
