@@ -31,6 +31,8 @@ body {
   border-radius: 3px;
   outline: none;
   background: #fff;
+  resize: none;
+  font-family: inherit;
 }
 
 #title-input:focus {

@@ -163,6 +163,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     // If in save form state
     if (!saveForm.classList.contains('hidden') && !saveBtn.disabled) {
+      e.preventDefault();
       saveLink();
     }
     // If in success state
