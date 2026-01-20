@@ -584,10 +584,29 @@ async def github_webhook(
     return JSONResponse(content={"status": "ignored"})
 
 
+def _process_shared_link(url: str, title: str | None) -> None:
+    """Background task to save shared link to Obsidian."""
+    result = add_shared_link(url, title)
+    if result["success"]:
+        logger.info("Saved shared link: %s (action=%s)", url[:100], result.get("action"))
+    else:
+        logger.error("Failed to save link: %s - %s", url[:100], result["error"])
+
+
+def _process_youtube_link(url: str) -> None:
+    """Background task to save YouTube link to Obsidian."""
+    result = add_youtube_link(url)
+    if result["success"]:
+        logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
+    else:
+        logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
+
+
 # Link sharing endpoint
-@app.post("/share/link", response_model=LinkShareResponse)
+@app.post("/share/link", status_code=202)
 async def share_link(
     link_request: LinkShareRequest,
+    background_tasks: BackgroundTasks,
     x_api_key: str | None = Header(None),
 ):
     """Save a shared link to Obsidian Knowledge Hub."""
@@ -601,19 +620,13 @@ async def share_link(
         link_request.title[:50] if link_request.title else "(none)",
     )
 
-    result = add_shared_link(link_request.url, link_request.title)
+    background_tasks.add_task(
+        _process_shared_link,
+        link_request.url,
+        link_request.title,
+    )
 
-    if result["success"]:
-        logger.info("Saved shared link: %s (action=%s)", link_request.url[:100], result.get("action"))
-        return LinkShareResponse(
-            status="success",
-            message=f"Link {result['action']} successfully",
-            file_path=result.get("file_path"),
-            vault_name=result.get("vault_name"),
-        )
-    else:
-        logger.error("Failed to save link: %s - %s", link_request.url[:100], result["error"])
-        raise HTTPException(status_code=500, detail=result["error"])
+    return {"status": "accepted", "message": "Link queued for processing"}
 
 
 # YouTube sharing endpoint
@@ -646,15 +659,6 @@ async def share_youtube(
     )
 
     return {"status": "accepted", "message": "YouTube link queued for processing"}
-
-
-def _process_youtube_link(url: str) -> None:
-    """Background task to save YouTube link to Obsidian."""
-    result = add_youtube_link(url)
-    if result["success"]:
-        logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
-    else:
-        logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
 
 
 if __name__ == "__main__":
