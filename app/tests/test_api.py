@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +16,17 @@ from fastapi.testclient import TestClient
 from main import app
 
 client = TestClient(app)
+
+
+# Mock responses for share services to prevent creating actual files
+def mock_add_shared_link(url, title=None):
+    """Mock that returns success without creating files."""
+    return {"success": True, "action": "created", "error": None, "file_path": "test.md", "vault_name": "test"}
+
+
+def mock_add_youtube_link(url):
+    """Mock that returns success without creating files."""
+    return {"success": True, "action": "created", "error": None}
 
 
 def test_health_endpoint():
@@ -61,6 +73,7 @@ def test_share_link_rejects_invalid_key():
     assert response.status_code == 401
 
 
+@patch("main.add_shared_link", mock_add_shared_link)
 def test_share_link_accepts_valid_request():
     """Share link endpoint accepts request with valid API key and returns 202."""
     response = client.post(
@@ -72,6 +85,7 @@ def test_share_link_accepts_valid_request():
     assert response.json()["status"] == "accepted"
 
 
+@patch("main.add_shared_link", mock_add_shared_link)
 def test_share_link_accepts_without_title():
     """Share link endpoint accepts request without title."""
     response = client.post(
@@ -113,6 +127,7 @@ def test_share_youtube_rejects_invalid_key():
     assert response.status_code == 401
 
 
+@patch("main.add_youtube_link", mock_add_youtube_link)
 def test_share_youtube_accepts_valid_request():
     """Share YouTube endpoint accepts request with valid API key and returns 202."""
     response = client.post(
@@ -134,6 +149,7 @@ def test_share_youtube_rejects_non_youtube_url():
     assert response.status_code == 422
 
 
+@patch("main.add_youtube_link", mock_add_youtube_link)
 def test_share_youtube_accepts_short_url():
     """Share YouTube endpoint accepts youtu.be short URLs."""
     response = client.post(
@@ -144,6 +160,7 @@ def test_share_youtube_accepts_short_url():
     assert response.status_code == 202
 
 
+@patch("main.add_youtube_link", mock_add_youtube_link)
 def test_share_youtube_accepts_shorts_url():
     """Share YouTube endpoint accepts YouTube Shorts URLs."""
     response = client.post(
@@ -154,6 +171,7 @@ def test_share_youtube_accepts_shorts_url():
     assert response.status_code == 202
 
 
+@patch("main.add_youtube_link", mock_add_youtube_link)
 def test_share_youtube_accepts_mobile_url():
     """Share YouTube endpoint accepts mobile YouTube URLs."""
     response = client.post(
@@ -164,6 +182,7 @@ def test_share_youtube_accepts_mobile_url():
     assert response.status_code == 202
 
 
+@patch("main.add_youtube_link", mock_add_youtube_link)
 def test_share_youtube_accepts_embed_url():
     """Share YouTube endpoint accepts embed URLs."""
     response = client.post(
