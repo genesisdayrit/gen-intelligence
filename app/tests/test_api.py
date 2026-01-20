@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +16,15 @@ from fastapi.testclient import TestClient
 from main import app
 
 client = TestClient(app)
+
+# Mock response for add_shared_link
+MOCK_LINK_RESULT = {
+    "success": True,
+    "action": "created",
+    "error": None,
+    "file_path": "01_Knowledge-Hub/Test Link.md",
+    "vault_name": "personal",
+}
 
 
 def test_health_endpoint():
@@ -61,26 +71,30 @@ def test_share_link_rejects_invalid_key():
     assert response.status_code == 401
 
 
-def test_share_link_accepts_valid_request():
-    """Share link endpoint accepts request with valid API key and returns 202."""
+@patch("main.add_shared_link", return_value=MOCK_LINK_RESULT)
+def test_share_link_accepts_valid_request(mock_add_link):
+    """Share link endpoint accepts request with valid API key and returns 200."""
     response = client.post(
         "/share/link",
         json={"url": "https://example.com", "title": "Example"},
         headers={"X-API-Key": "test-link-api-key"},
     )
-    assert response.status_code == 202
-    assert response.json()["status"] == "accepted"
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
+    assert response.json()["file_path"] == "01_Knowledge-Hub/Test Link.md"
+    assert response.json()["vault_name"] == "personal"
 
 
-def test_share_link_accepts_without_title():
+@patch("main.add_shared_link", return_value=MOCK_LINK_RESULT)
+def test_share_link_accepts_without_title(mock_add_link):
     """Share link endpoint accepts request without title."""
     response = client.post(
         "/share/link",
         json={"url": "https://example.com/page"},
         headers={"X-API-Key": "test-link-api-key"},
     )
-    assert response.status_code == 202
-    assert response.json()["status"] == "accepted"
+    assert response.status_code == 200
+    assert response.json()["status"] == "success"
 
 
 def test_share_link_requires_url():
