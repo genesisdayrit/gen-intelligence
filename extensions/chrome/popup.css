@@ -95,6 +95,28 @@ body {
   background-color: #e0e0e0;
 }
 
+/* Icon Button */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-left: auto;
+  color: #9b9a97;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: color 0.1s ease, background-color 0.1s ease;
+}
+
+.icon-btn:hover {
+  color: #37352f;
+  background-color: #f0f0f0;
+}
+
 /* Shortcut Hint - matches Notion style */
 .shortcut-hint {
   font-size: 14px;
