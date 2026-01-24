@@ -278,11 +278,11 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
             del lines[existing_line_index:entry_end]
             # Insert new entry at the same position
             lines.insert(existing_line_index, log_entry)
-            # Add blank line after if next line is another entry and no blank exists
+            # Add blank line after if next line is another entry or section header
             next_line_index = existing_line_index + 1
             if next_line_index < len(lines):
                 next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line):
+                if LOG_ENTRY_PATTERN.match(next_line) or next_line.strip().startswith('#'):
                     lines.insert(next_line_index, '')
             action = "updated"
         else:
@@ -316,6 +316,10 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                     lines.insert(insert_index, '')
                     insert_index += 1
                 lines.insert(insert_index, log_entry)
+                # Add blank line after if next line is a section header
+                next_line_index = insert_index + 1
+                if next_line_index < len(lines) and lines[next_line_index].strip().startswith('#'):
+                    lines.insert(next_line_index, '')
             else:
                 # Header doesn't exist - need to create it in the right position
                 # Find where to insert based on section order
