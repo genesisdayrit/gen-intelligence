@@ -11,6 +11,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from .web_content_extractor import fetch_web_content
+
 load_dotenv()
 
 # Logging
@@ -137,7 +139,7 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
 
     Args:
         url: The URL to save
-        title: Optional title for the link. Uses URL if not provided.
+        title: Optional title for the link. Uses extracted or URL-derived title if not provided.
 
     Returns:
         dict with keys:
@@ -159,11 +161,22 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
     result["vault_name"] = vault_name
 
     try:
+        # Fetch web content (title, author, body text)
+        web_content = fetch_web_content(url)
+        extracted_title = web_content.get("title")
+        author = web_content.get("author")
+        body_text = web_content.get("body_text")
+
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
 
-        # Generate title if not provided
-        link_title = title if title else _generate_title_from_url(url)
+        # Title fallback chain: user-provided -> extracted -> URL-derived
+        if title:
+            link_title = title
+        elif extracted_title:
+            link_title = extracted_title
+        else:
+            link_title = _generate_title_from_url(url)
 
         # Sanitize filename
         filename = _sanitize_filename(link_title) + '.md'
@@ -188,6 +201,14 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         # Format date for Journal link (e.g., "Jan 19, 2026")
         formatted_local_date = now_local.strftime('%b %-d, %Y')
 
+        # Build body section
+        body_section = ""
+        if body_text:
+            body_section = f"\n{body_text}\n"
+
+        # Build author field (empty string if not available)
+        author_value = author if author else ""
+
         # Generate markdown content with YAML frontmatter
         markdown_content = f"""---
 Journal:
@@ -197,13 +218,14 @@ modified time: {now_utc.isoformat()}
 key words:
 People:
 URL: {url}
+author: {author_value}
 Notes+Ideas:
 Experiences:
 Tags:
 ---
 
 ## {link_title}
-
+{body_section}
 """
 
         # Upload to Dropbox
