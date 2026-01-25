@@ -87,6 +87,7 @@ def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             },
+            follow_redirects=True,
         )
 
         if response.status_code != 200:
