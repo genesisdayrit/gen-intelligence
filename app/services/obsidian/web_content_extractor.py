@@ -49,7 +49,7 @@ def fetch_web_content(url: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
 
             html = response.text
 
-        # Extract main content using trafilatura
+        # Extract main content using trafilatura (markdown format for better rendering)
         extracted = trafilatura.extract(
             html,
             url=url,
@@ -57,7 +57,7 @@ def fetch_web_content(url: str, timeout: float = DEFAULT_TIMEOUT) -> dict:
             include_tables=True,
             no_fallback=False,
             favor_recall=True,
-            output_format="txt",
+            output_format="markdown",
         )
 
         if extracted:
