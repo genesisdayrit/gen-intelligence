@@ -98,6 +98,10 @@ curl http://localhost:8000/health
 
 Send a message to your Telegram channel - it should appear in your Obsidian journal.
 
+## Server Restart After Reboot
+
+If your EC2 instance goes down and you need to bring services back up manually (without CI), see [Server Restart Guide](server-restart.md). That guide also covers optional systemd auto-start on boot.
+
 ## Management Commands
 
 ```bash
