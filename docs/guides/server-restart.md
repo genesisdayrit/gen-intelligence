@@ -78,6 +78,15 @@ See the individual setup guides for more detail:
 - [iOS Shortcut: Save Link](ios-shortcut-save-link.md)
 - [iOS Shortcut: Save YouTube](ios-shortcut-save-youtube.md)
 
+### 6. Update Chrome Extension
+
+The Chrome extension stores the API base URL in its settings. After a URL change:
+
+1. Click the gen-intelligence extension icon in Chrome
+2. Open **Settings** (gear icon)
+3. Update **API Base URL** to `https://<ngrok-url>`
+4. Save
+
 ## Verify Everything
 
 ```bash
@@ -161,7 +170,7 @@ sudo systemctl disable gen-intelligence
 journalctl -u gen-intelligence -f
 ```
 
-> **Note:** Even with systemd auto-start, if you're on the free ngrok tier you'll still need to re-register all webhooks and update iOS shortcuts after each reboot since ngrok assigns a new URL each time. See the [Re-register Webhooks](#re-register-webhooks-ngrok-free-tier) section above.
+> **Note:** Even with systemd auto-start, if you're on the free ngrok tier you'll still need to re-register all webhooks, update iOS shortcuts, and update the Chrome extension after each reboot since ngrok assigns a new URL each time. See the [Re-register Webhooks](#re-register-webhooks-ngrok-free-tier) section above.
 
 ### Ensure Docker starts on boot
 
