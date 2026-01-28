@@ -13,6 +13,7 @@ Usage:
     python -m scripts.send_cycle_summary_email --dry-run          # Generate without sending
     python -m scripts.send_cycle_summary_email --output email.html # Save HTML to file
     python -m scripts.send_cycle_summary_email --debug            # Enable debug logging
+    python -m scripts.send_cycle_summary_email --all-initiatives  # Include all initiatives (not just active)
 
 Requires environment variables:
     - GMAIL_ACCOUNT, GMAIL_PASSWORD (for sending)
@@ -71,6 +72,7 @@ def collect_last_cycle_headlines(
     client,
     cycle_start: datetime,
     cycle_end: datetime,
+    include_all_initiatives: bool = False,
 ) -> dict:
     """Generate headlines from completed work in the previous cycle.
 
@@ -79,10 +81,14 @@ def collect_last_cycle_headlines(
     """
     logger.info("Collecting last cycle headlines...")
 
-    # Fetch active initiatives
+    # Fetch initiatives
     all_initiatives = fetch_initiatives(include_archived=False)
-    active_initiatives = [i for i in all_initiatives if i.get("status") == "Active"]
-    logger.info(f"Found {len(active_initiatives)} active initiatives")
+    if include_all_initiatives:
+        initiatives = all_initiatives
+        logger.info(f"Found {len(initiatives)} total initiatives (all included)")
+    else:
+        initiatives = [i for i in all_initiatives if i.get("status") == "Active"]
+        logger.info(f"Found {len(initiatives)} active initiatives")
 
     # Track project IDs for "other" calculation
     active_project_ids = set()
@@ -90,10 +96,10 @@ def collect_last_cycle_headlines(
     # Process each initiative
     initiative_headlines = []
 
-    for i, init in enumerate(active_initiatives):
+    for i, init in enumerate(initiatives):
         init_name = init.get("name", "Unknown")
         logger.info(
-            f"Processing initiative {i + 1}/{len(active_initiatives)}: {init_name}"
+            f"Processing initiative {i + 1}/{len(initiatives)}: {init_name}"
         )
 
         # Enrich with cycle data
@@ -156,15 +162,22 @@ def collect_last_cycle_headlines(
     }
 
 
-def collect_projected_headlines(client, model: str = GPT4O_MINI_MODEL) -> list[dict]:
+def collect_projected_headlines(
+    client, model: str = GPT4O_MINI_MODEL, include_all_initiatives: bool = False
+) -> list[dict]:
     """Generate projected headlines for the upcoming cycle.
+
+    Args:
+        client: OpenAI client
+        model: Model to use for generation
+        include_all_initiatives: If True, include all initiatives; if False, only active ones
 
     Returns:
         List of dicts with initiative_name and projected_headline
     """
     logger.info("Collecting projected headlines...")
 
-    initiatives_data = fetch_active_initiatives_with_updates()
+    initiatives_data = fetch_active_initiatives_with_updates(include_all=include_all_initiatives)
 
     if not initiatives_data:
         logger.warning("No active initiatives with updates found")
@@ -204,6 +217,7 @@ def collect_initiative_completions(
     cycle_end: datetime,
     last_cycle_headlines: dict,
     projected_headlines: list[dict],
+    include_all_initiatives: bool = False,
 ) -> list[dict]:
     """Collect initiative completions with completed issues per project.
 
@@ -222,13 +236,16 @@ def collect_initiative_completions(
         for h in projected_headlines
     }
 
-    # Fetch active initiatives
+    # Fetch initiatives
     all_initiatives = fetch_initiatives(include_archived=False)
-    active_initiatives = [i for i in all_initiatives if i.get("status") == "Active"]
+    if include_all_initiatives:
+        initiatives = all_initiatives
+    else:
+        initiatives = [i for i in all_initiatives if i.get("status") == "Active"]
 
     completions = []
 
-    for init in active_initiatives:
+    for init in initiatives:
         init_name = init.get("name", "Unknown")
 
         # Enrich with cycle data
@@ -441,6 +458,11 @@ def main():
         action="store_true",
         help="Use current cycle instead of previous cycle",
     )
+    parser.add_argument(
+        "--all-initiatives",
+        action="store_true",
+        help="Include all initiatives (not just active ones)",
+    )
 
     args = parser.parse_args()
 
@@ -464,19 +486,21 @@ def main():
     # 1. Collect Headlines from Last Cycle
     # ==========================================================================
     last_cycle_headlines = collect_last_cycle_headlines(
-        client, cycle_start, cycle_end
+        client, cycle_start, cycle_end, args.all_initiatives
     )
 
     # ==========================================================================
     # 2. Collect Projected Headlines
     # ==========================================================================
-    projected_headlines = collect_projected_headlines(client)
+    projected_headlines = collect_projected_headlines(
+        client, include_all_initiatives=args.all_initiatives
+    )
 
     # ==========================================================================
     # 3. Collect Initiative Completions
     # ==========================================================================
     initiative_completions = collect_initiative_completions(
-        cycle_start, cycle_end, last_cycle_headlines, projected_headlines
+        cycle_start, cycle_end, last_cycle_headlines, projected_headlines, args.all_initiatives
     )
 
     # ==========================================================================
