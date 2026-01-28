@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dedup_helpers import extract_task_contents_from_section, is_task_duplicate
 
 load_dotenv()
 
@@ -82,12 +83,19 @@ def _find_cycles_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
     raise FileNotFoundError("Could not find '_Cycles' folder in Dropbox")
 
 
-def _get_current_week_bounds(tz) -> tuple[datetime, datetime]:
-    """Calculate the Wednesday-Tuesday bounds for the current week's cycle.
+def _get_current_week_bounds(tz, target_dt: datetime | None = None) -> tuple[datetime, datetime]:
+    """Calculate the Wednesday-Tuesday bounds for a weekly cycle.
 
     Uses a 3-hour buffer: tasks between midnight and 3am count as the previous day.
+
+    Args:
+        tz: Timezone for date calculations
+        target_dt: Optional timezone-aware datetime to use instead of now
     """
-    now = datetime.now(tz)
+    if target_dt is not None:
+        now = target_dt.astimezone(tz)
+    else:
+        now = datetime.now(tz)
     effective_now = get_effective_date(now)
 
     # Wednesday is weekday 2 (Monday=0, Tuesday=1, Wednesday=2, ...)
@@ -138,21 +146,33 @@ def _get_weekly_cycle_content(dbx: dropbox.Dropbox, file_path: str) -> str:
         raise
 
 
-def _get_current_day_name(tz) -> str:
+def _get_current_day_name(tz, target_dt: datetime | None = None) -> str:
     """Get the effective day of week name.
 
     Uses a 3-hour buffer: midnight-3am counts as the previous day.
+
+    Args:
+        tz: Timezone for date calculations
+        target_dt: Optional timezone-aware datetime to use instead of now
     """
-    now = datetime.now(tz)
+    if target_dt is not None:
+        now = target_dt.astimezone(tz)
+    else:
+        now = datetime.now(tz)
     effective_now = get_effective_date(now)
     return effective_now.strftime('%A')  # Returns "Wednesday", "Thursday", etc.
 
 
-def append_weekly_cycle_completed(task_content: str) -> None:
-    """Add a completed task to today's day section in the Weekly Cycle note.
+def append_weekly_cycle_completed(task_content: str, target_dt: datetime | None = None) -> None:
+    """Add a completed task to the correct day section in the Weekly Cycle note.
 
-    Finds the current week's cycle file, locates the correct day section
+    Finds the appropriate week's cycle file, locates the correct day section
     (e.g., ### Wednesday -), and inserts the timestamped task entry.
+
+    Args:
+        task_content: The task text to add
+        target_dt: Optional timezone-aware datetime for cycle/day routing and timestamp.
+                   When None, uses datetime.now() (real-time webhook behavior).
     """
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
@@ -172,21 +192,24 @@ def append_weekly_cycle_completed(task_content: str) -> None:
             raise FileNotFoundError("'_Weekly-Cycles' subfolder not found")
         raise
 
-    # Calculate current week's bounds and find file
+    # Calculate week's bounds and find file
     system_tz = pytz.timezone(timezone_str)
-    cycle_start, cycle_end = _get_current_week_bounds(system_tz)
+    cycle_start, cycle_end = _get_current_week_bounds(system_tz, target_dt)
     date_range = _format_date_range(cycle_start, cycle_end)
 
     file_path, _ = _find_weekly_cycle_file(dbx, weekly_cycles_folder, date_range)
     content = _get_weekly_cycle_content(dbx, file_path)
 
     # Format the log entry with timestamp
-    now = datetime.now(system_tz)
+    if target_dt is not None:
+        now = target_dt.astimezone(system_tz)
+    else:
+        now = datetime.now(system_tz)
     timestamp = now.strftime("%H:%M %p")
     log_entry = f"[{timestamp}] {task_content}"
 
-    # Get current day name and find the section
-    day_name = _get_current_day_name(system_tz)
+    # Get day name and find the section
+    day_name = _get_current_day_name(system_tz, target_dt)
     day_section_header = f"### {day_name} -"
 
     lines = content.split('\n')
@@ -214,6 +237,12 @@ def append_weekly_cycle_completed(task_content: str) -> None:
     # If we didn't find the end, it's the last section
     if day_section_end is None:
         day_section_end = len(lines)
+
+    # Dedup check scoped to this day's section
+    day_section_content = '\n'.join(lines[day_section_start:day_section_end])
+    existing_tasks = extract_task_contents_from_section(day_section_content, COMPLETED_TASKS_HEADER)
+    if is_task_duplicate(task_content, existing_tasks):
+        return
 
     if completed_header_index is not None:
         # Completed Tasks header exists - find insert position after existing entries

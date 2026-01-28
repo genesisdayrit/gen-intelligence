@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dedup_helpers import extract_task_contents_from_section, is_task_duplicate
 
 load_dotenv()
 
@@ -103,14 +104,21 @@ def _find_daily_action_folder(dbx: dropbox.Dropbox, daily_folder_path: str) -> s
     raise FileNotFoundError("Could not find '_Daily-Action' folder in Dropbox")
 
 
-def _get_today_daily_action_path(daily_action_folder_path: str) -> str:
-    """Get file path for today's Daily Action.
+def _get_today_daily_action_path(daily_action_folder_path: str, target_dt: datetime | None = None) -> str:
+    """Get file path for the target date's Daily Action.
 
     Uses a 3-hour buffer: tasks completed between midnight and 3am
     are logged to the previous day's file.
+
+    Args:
+        daily_action_folder_path: Dropbox path to the Daily Action folder
+        target_dt: Optional timezone-aware datetime to use instead of now
     """
     system_tz = pytz.timezone(timezone_str)
-    now = datetime.now(system_tz)
+    if target_dt is not None:
+        now = target_dt.astimezone(system_tz)
+    else:
+        now = datetime.now(system_tz)
     effective_date = get_effective_date(now)
     formatted_date = effective_date.strftime('%Y-%m-%d')
     return f"{daily_action_folder_path}/DA {formatted_date}.md"
@@ -248,12 +256,17 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
         return daily_review_end_line
 
 
-def append_todoist_completed(task_content: str) -> None:
-    """Add a completed task to today's Todoist section in Daily Action.
+def append_todoist_completed(task_content: str, target_dt: datetime | None = None) -> None:
+    """Add a completed task to the Todoist section in Daily Action.
 
     Creates the section if it doesn't exist.
     Positions section after Initiative/Project Updates if present,
     before Vision Objectives, otherwise after Daily Review.
+
+    Args:
+        task_content: The task text to add
+        target_dt: Optional timezone-aware datetime for file routing and timestamp.
+                   When None, uses datetime.now() (real-time webhook behavior).
     """
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
@@ -262,12 +275,20 @@ def append_todoist_completed(task_content: str) -> None:
     dbx = _get_dropbox_client()
     daily_folder = _find_daily_folder(dbx, vault_path)
     daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
-    file_path = _get_today_daily_action_path(daily_action_folder)
+    file_path = _get_today_daily_action_path(daily_action_folder, target_dt)
     content = _get_daily_action_content(dbx, file_path)
+
+    # Dedup check
+    existing_tasks = extract_task_contents_from_section(content, TODOIST_COMPLETED_HEADER)
+    if is_task_duplicate(task_content, existing_tasks):
+        return
 
     # Format the log entry with timestamp
     system_tz = pytz.timezone(timezone_str)
-    now = datetime.now(system_tz)
+    if target_dt is not None:
+        now = target_dt.astimezone(system_tz)
+    else:
+        now = datetime.now(system_tz)
     timestamp = now.strftime("%H:%M %p")
     log_entry = f"[{timestamp}] {task_content}"
 
