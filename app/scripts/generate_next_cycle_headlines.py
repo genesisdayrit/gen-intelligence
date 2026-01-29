@@ -107,26 +107,32 @@ def extract_this_week_section(body: str) -> str | None:
 # =============================================================================
 
 
-def fetch_active_initiatives_with_updates() -> list[dict]:
-    """Fetch all active initiatives and their latest updates from Linear.
+def fetch_active_initiatives_with_updates(include_all: bool = False) -> list[dict]:
+    """Fetch initiatives and their latest updates from Linear.
+
+    Args:
+        include_all: If True, include all initiatives; if False, only active ones
 
     Returns:
         List of dicts with initiative info and latest update
     """
-    logger.info("Fetching active initiatives from Linear...")
+    logger.info("Fetching initiatives from Linear...")
 
     # Get all initiatives
     all_initiatives = fetch_initiatives(include_archived=False)
 
-    # Filter to active only
-    active_initiatives = [
-        i for i in all_initiatives if i.get("status") == "Active"
-    ]
-
-    logger.info(f"Found {len(active_initiatives)} active initiatives")
+    # Filter to active only unless include_all is set
+    if include_all:
+        initiatives = all_initiatives
+        logger.info(f"Found {len(initiatives)} total initiatives (all included)")
+    else:
+        initiatives = [
+            i for i in all_initiatives if i.get("status") == "Active"
+        ]
+        logger.info(f"Found {len(initiatives)} active initiatives")
 
     results = []
-    for init in active_initiatives:
+    for init in initiatives:
         initiative_id = init["id"]
         initiative_name = init.get("name", "Unknown")
 

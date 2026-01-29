@@ -200,6 +200,37 @@ python app/scripts/generate_next_cycle_headlines.py --model gpt-4o
 python app/scripts/generate_next_cycle_headlines.py --debug
 ```
 
+### 5. Cycle Summary Email
+
+**Script**: `app/scripts/send_cycle_summary_email.py`
+
+Generates and sends a comprehensive weekly cycle summary email combining headlines from the past cycle, projected headlines for the upcoming cycle, and initiative completions with completed issues.
+
+**Usage**:
+```bash
+cd app
+
+# Send email for previous cycle (default)
+python -m scripts.send_cycle_summary_email
+
+# Send for current cycle
+python -m scripts.send_cycle_summary_email --current
+
+# Generate without sending (dry run)
+python -m scripts.send_cycle_summary_email --dry-run
+
+# Save HTML output to file
+python -m scripts.send_cycle_summary_email --output email.html
+
+# Include all initiatives (not just active ones)
+python -m scripts.send_cycle_summary_email --all-initiatives
+
+# With debug logging
+python -m scripts.send_cycle_summary_email --debug
+```
+
+**Note**: The `--all-initiatives` flag removes the "Active" status filter, including all non-archived initiatives in the report. Initiatives with no cycle activity will still be excluded from the output.
+
 **Output location**: `app/tests/data/{timestamp}_next_cycle_headlines.json`
 
 **Output structure**:
@@ -581,6 +612,7 @@ SYSTEM_TIMEZONE=US/Pacific
 | `app/tests/test_todoist_cycle_completions.py` | Todoist completed tasks |
 | `app/tests/generate_latest_headlines.py` | Generate headlines from past cycle data |
 | `app/scripts/generate_next_cycle_headlines.py` | Generate projected headlines for next cycle |
+| `app/scripts/send_cycle_summary_email.py` | Generate and send weekly cycle summary email |
 | `app/scripts/linear/sync_utils.py` | Linear API utilities |
 | `app/services/obsidian/utils/date_helpers.py` | Date/cycle utilities |
 | `docs/linear-api.md` | Linear API reference |
