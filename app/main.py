@@ -614,13 +614,35 @@ async def share_link(
         logger.warning("Invalid API key for link share")
         raise HTTPException(status_code=401, detail="Invalid API key")
 
+    # Detect YouTube URLs and route to YouTube processing
+    if is_valid_youtube_url(link_request.url):
+        logger.info(
+            "📺 Link share (YouTube) | url=%s | title=%s",
+            link_request.url[:100],
+            link_request.title[:50] if link_request.title else "(none)",
+        )
+
+        path_info = get_predicted_link_path(link_request.url, link_request.title)
+
+        background_tasks.add_task(
+            _process_youtube_link,
+            link_request.url,
+        )
+
+        return {
+            "status": "accepted",
+            "message": "YouTube link queued for processing",
+            "vault_name": path_info["vault_name"],
+            "file_path": path_info["file_path"],
+        }
+
+    # Non-YouTube: use generic web content extraction
     logger.info(
         "🔗 Link share | url=%s | title=%s",
         link_request.url[:100],
         link_request.title[:50] if link_request.title else "(none)",
     )
 
-    # Get predicted file path for immediate response
     path_info = get_predicted_link_path(link_request.url, link_request.title)
 
     background_tasks.add_task(

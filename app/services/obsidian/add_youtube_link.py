@@ -18,13 +18,30 @@ from .add_shared_link import (
 
 logger = logging.getLogger(__name__)
 
-# YouTube URL patterns - each captures the 11-character video ID
+# YouTube URL patterns - each captures the video/playlist/channel ID
 YOUTUBE_PATTERNS = [
+    # Videos
     r'^https?://(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
     r'^https?://youtu\.be/([a-zA-Z0-9_-]{11})',
     r'^https?://(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
     r'^https?://m\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
     r'^https?://(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+    r'^https?://(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',  # Live streams
+    # Playlists
+    r'^https?://(?:www\.)?youtube\.com/playlist\?list=([a-zA-Z0-9_-]+)',
+    # Channels (oEmbed doesn't work - need page scraping)
+    r'^https?://(?:www\.)?youtube\.com/@([a-zA-Z0-9_.-]+)',  # @username
+    r'^https?://(?:www\.)?youtube\.com/channel/([a-zA-Z0-9_-]+)',  # channel/ID
+    r'^https?://(?:www\.)?youtube\.com/c/([a-zA-Z0-9_.-]+)',  # c/customname (legacy)
+    r'^https?://(?:www\.)?youtube\.com/user/([a-zA-Z0-9_.-]+)',  # user/username (legacy)
+]
+
+# Channel URL patterns (oEmbed doesn't work for these)
+YOUTUBE_CHANNEL_PATTERNS = [
+    r'^https?://(?:www\.)?youtube\.com/@([a-zA-Z0-9_.-]+)',
+    r'^https?://(?:www\.)?youtube\.com/channel/([a-zA-Z0-9_-]+)',
+    r'^https?://(?:www\.)?youtube\.com/c/([a-zA-Z0-9_.-]+)',
+    r'^https?://(?:www\.)?youtube\.com/user/([a-zA-Z0-9_.-]+)',
 ]
 
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
@@ -38,8 +55,16 @@ def is_valid_youtube_url(url: str) -> bool:
     return False
 
 
+def _is_channel_url(url: str) -> bool:
+    """Check if URL is a YouTube channel URL (requires different handling)."""
+    for pattern in YOUTUBE_CHANNEL_PATTERNS:
+        if re.match(pattern, url):
+            return True
+    return False
+
+
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video metadata from YouTube oEmbed API and page.
+    """Fetch video/channel metadata from YouTube oEmbed API and page.
 
     Returns:
         dict with keys: title, author_name, description (may be None if fetch fails)
@@ -48,7 +73,14 @@ def fetch_youtube_metadata(url: str) -> dict:
 
     try:
         with httpx.Client(timeout=10.0) as client:
-            # Fetch from oEmbed API for title and author
+            # Channels don't work with oEmbed - scrape page directly
+            if _is_channel_url(url):
+                channel_meta = _fetch_channel_metadata(client, url)
+                result["title"] = channel_meta.get("title")
+                result["description"] = channel_meta.get("description")
+                return result
+
+            # For videos/playlists/live: use oEmbed API for title and author
             response = client.get(
                 YOUTUBE_OEMBED_URL,
                 params={"url": url, "format": "json"},
@@ -72,6 +104,45 @@ def fetch_youtube_metadata(url: str) -> dict:
         logger.warning("Failed to fetch YouTube metadata: %s", e)
     except Exception as e:
         logger.warning("Unexpected error fetching YouTube metadata: %s", e)
+
+    return result
+
+
+def _fetch_channel_metadata(client: httpx.Client, url: str) -> dict:
+    """Fetch channel metadata by scraping the page (oEmbed doesn't work for channels)."""
+    result = {"title": None, "description": None}
+
+    try:
+        response = client.get(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            },
+            follow_redirects=True,
+        )
+
+        if response.status_code != 200:
+            logger.warning("YouTube channel page returned %s for %s", response.status_code, url[:100])
+            return result
+
+        html = response.text
+
+        # Extract title from <title> tag (format: "Channel Name - YouTube")
+        title_match = re.search(r'<title>([^<]+)</title>', html)
+        if title_match:
+            title = title_match.group(1)
+            # Remove " - YouTube" suffix
+            if title.endswith(" - YouTube"):
+                title = title[:-10]
+            result["title"] = title
+
+        # Extract description from meta tag
+        desc_match = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', html)
+        if desc_match:
+            result["description"] = desc_match.group(1)
+
+    except Exception as e:
+        logger.warning("Failed to fetch YouTube channel metadata: %s", e)
 
     return result
 
