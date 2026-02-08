@@ -49,6 +49,7 @@ dependencies = [
     { name = "redis" },
     { name = "requests" },
     { name = "trafilatura" },
+    { name = "tzdata" },
     { name = "uvicorn" },
 ]
 
@@ -70,6 +71,7 @@ requires-dist = [
     { name = "redis", specifier = ">=7.1.0" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "trafilatura", specifier = ">=1.12.0" },
+    { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", specifier = ">=0.40.0" },
 ]
 
