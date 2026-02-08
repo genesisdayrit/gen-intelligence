@@ -231,6 +231,15 @@ python -m scripts.send_cycle_summary_email --debug
 
 **Note**: The `--all-initiatives` flag removes the "Active" status filter, including all non-archived initiatives in the report. Initiatives with no cycle activity will still be excluded from the output.
 
+**Automated schedule**: The email is sent automatically via an in-app cron job configured in `app/scheduler.py`. It runs every **Wednesday at 3:30 AM** (in the `SYSTEM_TIMEZONE`, defaulting to `America/Los_Angeles`). This is intentionally after the 3:00 AM day-rollover buffer, so the previous cycle (Wednesday–Tuesday) is fully closed before the summary is generated. The job sends the **previous** cycle summary (`current=False`, `all_initiatives=False`).
+
+The scheduler uses APScheduler's `BackgroundScheduler` running inside the FastAPI process. It includes a 1-hour misfire grace time — if the server is down at 3:30 AM, the job will still fire once the server comes back up within that window. You can also trigger it manually via the API:
+
+```bash
+# Trigger the job immediately
+curl -X POST http://localhost:8000/scheduler/jobs/send_cycle_summary_email/run
+```
+
 **Output location**: `app/tests/data/{timestamp}_next_cycle_headlines.json`
 
 **Output structure**:
