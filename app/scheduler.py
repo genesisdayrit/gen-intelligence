@@ -43,7 +43,7 @@ SCHEDULED_JOBS = [
             day_of_week="wed",
             hour=3,
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "US/Pacific"),
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
 ]
