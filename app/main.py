@@ -5,9 +5,13 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 from datetime import datetime
 
 import pytz
+import requests
+from cryptography.hazmat.primitives import hashes as crypto_hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +42,7 @@ LINEAR_WEBHOOK_SECRET = os.getenv("LINEAR_WEBHOOK_SECRET")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
+MANUS_API_KEY = os.getenv("MANUS_API_KEY")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -582,6 +587,121 @@ async def github_webhook(
 
     logger.info("GitHub event: %s (ignored)", x_github_event)
     return JSONResponse(content={"status": "ignored"})
+
+
+# Manus webhook
+_manus_public_key_cache: dict = {"key": None, "fetched_at": 0}
+
+
+def fetch_manus_public_key() -> str:
+    """Fetch Manus webhook public key from API. Caches for 1 hour."""
+    cache = _manus_public_key_cache
+    now = time.time()
+    if cache["key"] and (now - cache["fetched_at"]) < 3600:
+        return cache["key"]
+
+    response = requests.get(
+        "https://api.manus.ai/v1/webhook/public_key",
+        headers={"Authorization": f"Bearer {MANUS_API_KEY}"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    public_key_pem = response.json().get("public_key", "")
+    cache["key"] = public_key_pem
+    cache["fetched_at"] = now
+    return public_key_pem
+
+
+def verify_manus_signature(
+    payload: bytes,
+    signature_b64: str,
+    timestamp: str,
+    request_url: str,
+    public_key_pem: str,
+) -> bool:
+    """Verify Manus webhook RSA-SHA256 signature."""
+    try:
+        body_sha256 = hashlib.sha256(payload).hexdigest()
+        signed_content = f"{timestamp}.{request_url}.{body_sha256}"
+
+        public_key = serialization.load_pem_public_key(public_key_pem.encode())
+        signature_bytes = base64.b64decode(signature_b64)
+
+        public_key.verify(
+            signature_bytes,
+            signed_content.encode(),
+            crypto_padding.PKCS1v15(),
+            crypto_hashes.SHA256(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _is_manus_timestamp_valid(timestamp: str, max_age_seconds: int = 300) -> bool:
+    """Check if the Manus webhook timestamp is within acceptable range (default 5 min)."""
+    try:
+        ts = int(timestamp)
+        return abs(time.time() - ts) <= max_age_seconds
+    except (ValueError, TypeError):
+        return False
+
+
+@app.post("/manus/webhook")
+async def manus_webhook(
+    request: Request,
+    x_webhook_signature: str | None = Header(None, alias="X-Webhook-Signature"),
+    x_webhook_timestamp: str | None = Header(None, alias="X-Webhook-Timestamp"),
+):
+    """Receive Manus AI webhook events."""
+    if not x_webhook_signature or not x_webhook_timestamp:
+        logger.warning("Missing Manus webhook signature headers")
+        raise HTTPException(status_code=401, detail="Missing signature headers")
+
+    if not _is_manus_timestamp_valid(x_webhook_timestamp):
+        logger.warning("Manus webhook timestamp expired or invalid: %s", x_webhook_timestamp)
+        raise HTTPException(status_code=401, detail="Timestamp expired")
+
+    payload = await request.body()
+
+    try:
+        public_key_pem = fetch_manus_public_key()
+    except Exception as e:
+        logger.error("Failed to fetch Manus public key: %s", e)
+        raise HTTPException(status_code=500, detail="Unable to verify signature")
+
+    request_url = str(request.url)
+    if not verify_manus_signature(payload, x_webhook_signature, x_webhook_timestamp, request_url, public_key_pem):
+        logger.warning("Invalid Manus webhook signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_type = data.get("event_type", "unknown")
+    task_id = data.get("task_id", "unknown")
+    task_status = data.get("status", "")
+
+    logger.info(
+        "Manus webhook | event=%s | task_id=%s | status=%s",
+        event_type,
+        task_id,
+        task_status,
+    )
+
+    if event_type == "task_created":
+        logger.info("Manus task created: %s", task_id)
+    elif event_type == "task_progress":
+        progress = data.get("progress", {})
+        logger.info("Manus task progress: %s | %s", task_id, progress)
+    elif event_type == "task_stopped":
+        logger.info("Manus task stopped: %s | status=%s", task_id, task_status)
+    else:
+        logger.info("Manus event: %s (unhandled)", event_type)
+
+    return JSONResponse(content={"status": "received"})
 
 
 def _process_shared_link(url: str, title: str | None) -> None:

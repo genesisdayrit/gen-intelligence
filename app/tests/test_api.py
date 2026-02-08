@@ -1,7 +1,10 @@
 """API endpoint tests."""
 
+import base64
+import hashlib
 import os
 import sys
+import time
 from unittest.mock import patch
 
 # Add parent directory to path for imports
@@ -10,12 +13,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Set required env vars before importing app
 os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
+os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
 
+from cryptography.hazmat.primitives import hashes as crypto_hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding
+from cryptography.hazmat.primitives.asymmetric import rsa as rsa_gen
 from fastapi.testclient import TestClient
 
 from main import app
 
 client = TestClient(app)
+
+# Generate a test RSA key pair for Manus webhook tests
+_test_private_key = rsa_gen.generate_private_key(public_exponent=65537, key_size=2048)
+_test_public_key_pem = _test_private_key.public_key().public_bytes(
+    serialization.Encoding.PEM,
+    serialization.PublicFormat.SubjectPublicKeyInfo,
+).decode()
+
+
+def _sign_manus_payload(payload: bytes, url: str, timestamp: str) -> str:
+    """Create a valid Manus RSA-SHA256 signature for testing."""
+    body_sha256 = hashlib.sha256(payload).hexdigest()
+    signed_content = f"{timestamp}.{url}.{body_sha256}"
+    signature = _test_private_key.sign(
+        signed_content.encode(),
+        crypto_padding.PKCS1v15(),
+        crypto_hashes.SHA256(),
+    )
+    return base64.b64encode(signature).decode()
 
 
 # Mock responses for share services to prevent creating actual files
@@ -201,3 +227,148 @@ def test_share_youtube_requires_url():
         headers={"X-API-Key": "test-link-api-key"},
     )
     assert response.status_code == 422
+
+
+# Manus webhook tests
+def test_manus_webhook_missing_headers():
+    """Manus webhook rejects requests without signature headers."""
+    response = client.post("/manus/webhook", json={"event_type": "task_created"})
+    assert response.status_code == 401
+
+
+@patch("main.fetch_manus_public_key", return_value=_test_public_key_pem)
+def test_manus_webhook_expired_timestamp(mock_fetch):
+    """Manus webhook rejects requests with expired timestamp."""
+    payload = b'{"event_type": "task_created", "task_id": "123"}'
+    old_timestamp = str(int(time.time()) - 600)  # 10 minutes ago
+    url = "http://testserver/manus/webhook"
+    sig = _sign_manus_payload(payload, url, old_timestamp)
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Timestamp": old_timestamp,
+        },
+    )
+    assert response.status_code == 401
+    assert "Timestamp expired" in response.json()["detail"]
+
+
+@patch("main.fetch_manus_public_key", return_value=_test_public_key_pem)
+def test_manus_webhook_invalid_signature(mock_fetch):
+    """Manus webhook rejects requests with invalid signature."""
+    payload = b'{"event_type": "task_created", "task_id": "123"}'
+    timestamp = str(int(time.time()))
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": "aW52YWxpZHNpZ25hdHVyZQ==",
+            "X-Webhook-Timestamp": timestamp,
+        },
+    )
+    assert response.status_code == 401
+    assert "Invalid signature" in response.json()["detail"]
+
+
+@patch("main.fetch_manus_public_key", return_value=_test_public_key_pem)
+def test_manus_webhook_valid_task_created(mock_fetch):
+    """Manus webhook accepts valid task_created event."""
+    payload = b'{"event_type": "task_created", "task_id": "abc-123"}'
+    timestamp = str(int(time.time()))
+    url = "http://testserver/manus/webhook"
+    sig = _sign_manus_payload(payload, url, timestamp)
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Timestamp": timestamp,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+
+
+@patch("main.fetch_manus_public_key", return_value=_test_public_key_pem)
+def test_manus_webhook_valid_task_progress(mock_fetch):
+    """Manus webhook accepts valid task_progress event."""
+    payload = b'{"event_type": "task_progress", "task_id": "abc-123", "progress": {"step": 3, "total": 10}}'
+    timestamp = str(int(time.time()))
+    url = "http://testserver/manus/webhook"
+    sig = _sign_manus_payload(payload, url, timestamp)
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Timestamp": timestamp,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+
+
+@patch("main.fetch_manus_public_key", return_value=_test_public_key_pem)
+def test_manus_webhook_valid_task_stopped(mock_fetch):
+    """Manus webhook accepts valid task_stopped event."""
+    payload = b'{"event_type": "task_stopped", "task_id": "abc-123", "status": "completed"}'
+    timestamp = str(int(time.time()))
+    url = "http://testserver/manus/webhook"
+    sig = _sign_manus_payload(payload, url, timestamp)
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": sig,
+            "X-Webhook-Timestamp": timestamp,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+
+
+@patch("main.fetch_manus_public_key", side_effect=Exception("Network error"))
+def test_manus_webhook_key_fetch_failure(mock_fetch):
+    """Manus webhook returns 500 when public key fetch fails."""
+    payload = b'{"event_type": "task_created", "task_id": "123"}'
+    timestamp = str(int(time.time()))
+
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": "dW51c2Vk",
+            "X-Webhook-Timestamp": timestamp,
+        },
+    )
+    assert response.status_code == 500
+
+
+@patch("main.verify_manus_signature", return_value=True)
+@patch("main.fetch_manus_public_key", return_value="unused")
+@patch("main._is_manus_timestamp_valid", return_value=True)
+def test_manus_webhook_invalid_json(mock_ts, mock_fetch, mock_verify):
+    """Manus webhook returns 400 for invalid JSON body."""
+    response = client.post(
+        "/manus/webhook",
+        content=b"not json",
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": "dW51c2Vk",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        },
+    )
+    assert response.status_code == 400
