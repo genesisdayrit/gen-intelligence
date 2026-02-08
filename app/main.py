@@ -6,6 +6,7 @@ import hmac
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 import pytz
@@ -85,7 +86,16 @@ class YouTubeShareRequest(BaseModel):
 
 
 # FastAPI app
-app = FastAPI(title="Gen Intelligence API")
+@asynccontextmanager
+async def lifespan(app):
+    from scheduler import start_scheduler, shutdown_scheduler
+
+    start_scheduler()
+    yield
+    shutdown_scheduler()
+
+
+app = FastAPI(title="Gen Intelligence API", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -809,6 +819,25 @@ async def share_youtube(
     )
 
     return {"status": "accepted", "message": "YouTube link queued for processing"}
+
+
+# Scheduler endpoints
+@app.get("/scheduler/jobs")
+async def list_scheduled_jobs():
+    """List all scheduled jobs and their next run times."""
+    from scheduler import get_jobs_status
+
+    return {"jobs": get_jobs_status()}
+
+
+@app.post("/scheduler/jobs/{job_id}/run")
+async def trigger_job(job_id: str):
+    """Trigger a scheduled job to run immediately."""
+    from scheduler import run_job_now
+
+    if run_job_now(job_id):
+        return {"status": "triggered", "job_id": job_id}
+    raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
 
 if __name__ == "__main__":

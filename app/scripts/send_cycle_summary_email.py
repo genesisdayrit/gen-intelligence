@@ -432,6 +432,61 @@ def build_html_email(
 # =============================================================================
 
 
+def run_cycle_summary_email(current=False, dry_run=False, output=None, all_initiatives=False):
+    """Core logic for generating and sending the cycle summary email.
+
+    Callable from both the CLI (main()) and the scheduler.
+
+    Returns True if email was sent (or dry-run completed) successfully.
+    """
+    load_dotenv()
+
+    tz = pytz.timezone(os.getenv("SYSTEM_TIMEZONE", "US/Pacific"))
+    cycle_type = "current" if current else "previous"
+    cycle_start, cycle_end = get_cycle_bounds(cycle_type, tz)
+
+    logger.info(f"Generating summary for cycle: {cycle_start.date()} to {cycle_end.date()}")
+
+    client = get_openai_client()
+
+    last_cycle_headlines = collect_last_cycle_headlines(
+        client, cycle_start, cycle_end, all_initiatives
+    )
+    projected_headlines = collect_projected_headlines(
+        client, include_all_initiatives=all_initiatives
+    )
+    initiative_completions = collect_initiative_completions(
+        cycle_start, cycle_end, last_cycle_headlines, projected_headlines, all_initiatives
+    )
+    html_content = build_html_email(
+        cycle_start,
+        cycle_end,
+        last_cycle_headlines,
+        projected_headlines,
+        initiative_completions,
+        last_cycle_headlines.get("todoist_tasks", []),
+    )
+
+    if output:
+        output_path = Path(output)
+        output_path.write_text(html_content, encoding="utf-8")
+        logger.info(f"Saved HTML to: {output_path}")
+
+    if dry_run:
+        logger.info("Dry run completed — email not sent")
+        return True
+
+    subject = f"Weekly Cycle Summary ({format_date_range(cycle_start, cycle_end)})"
+    success = send_html_email(subject, html_content)
+
+    if success:
+        logger.info(f"Email sent: {subject}")
+    else:
+        logger.error("Failed to send email")
+
+    return success
+
+
 def main():
     load_dotenv()
 
@@ -466,85 +521,19 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup logging
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    # Determine cycle
-    tz = pytz.timezone(os.getenv("SYSTEM_TIMEZONE", "US/Pacific"))
-    cycle_type = "current" if args.current else "previous"
-    cycle_start, cycle_end = get_cycle_bounds(cycle_type, tz)
-
-    logger.info(f"Generating summary for cycle: {cycle_start.date()} to {cycle_end.date()}")
-
-    # Initialize OpenAI client
-    client = get_openai_client()
-
-    # ==========================================================================
-    # 1. Collect Headlines from Last Cycle
-    # ==========================================================================
-    last_cycle_headlines = collect_last_cycle_headlines(
-        client, cycle_start, cycle_end, args.all_initiatives
+    success = run_cycle_summary_email(
+        current=args.current,
+        dry_run=args.dry_run,
+        output=args.output,
+        all_initiatives=args.all_initiatives,
     )
 
-    # ==========================================================================
-    # 2. Collect Projected Headlines
-    # ==========================================================================
-    projected_headlines = collect_projected_headlines(
-        client, include_all_initiatives=args.all_initiatives
-    )
-
-    # ==========================================================================
-    # 3. Collect Initiative Completions
-    # ==========================================================================
-    initiative_completions = collect_initiative_completions(
-        cycle_start, cycle_end, last_cycle_headlines, projected_headlines, args.all_initiatives
-    )
-
-    # ==========================================================================
-    # 4. Build HTML Email
-    # ==========================================================================
-    html_content = build_html_email(
-        cycle_start,
-        cycle_end,
-        last_cycle_headlines,
-        projected_headlines,
-        initiative_completions,
-        last_cycle_headlines.get("todoist_tasks", []),
-    )
-
-    # ==========================================================================
-    # 5. Save/Send
-    # ==========================================================================
-    if args.output:
-        output_path = Path(args.output)
-        output_path.write_text(html_content, encoding="utf-8")
-        logger.info(f"Saved HTML to: {output_path}")
-
-    if args.dry_run:
-        print("\n" + "=" * 60)
-        print("DRY RUN - Email would be sent with the following content:")
-        print("=" * 60)
-        print(f"Subject: Weekly Cycle Summary ({format_date_range(cycle_start, cycle_end)})")
-        print("=" * 60)
-        if not args.output:
-            print(html_content)
-        else:
-            print(f"(HTML saved to {args.output})")
-        print("=" * 60)
-        return
-
-    # Send the email
-    subject = f"Weekly Cycle Summary ({format_date_range(cycle_start, cycle_end)})"
-    success = send_html_email(subject, html_content)
-
-    if success:
-        print(f"Email sent successfully!")
-        print(f"Subject: {subject}")
-    else:
-        print("Failed to send email. Check logs for details.")
+    if not success and not args.dry_run:
         sys.exit(1)
 
 
