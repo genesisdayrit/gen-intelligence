@@ -45,6 +45,7 @@ YOUTUBE_CHANNEL_PATTERNS = [
 ]
 
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
+SUPADATA_API_URL = "https://api.supadata.ai/v1/youtube/video"
 
 
 def is_valid_youtube_url(url: str) -> bool:
@@ -63,8 +64,74 @@ def _is_channel_url(url: str) -> bool:
     return False
 
 
+def _is_playlist_url(url: str) -> bool:
+    """Check if URL is a YouTube playlist URL."""
+    return bool(re.match(
+        r'^https?://(?:www\.)?youtube\.com/playlist\?list=', url
+    ))
+
+
+def _extract_video_id(url: str) -> str | None:
+    """Extract video ID from a YouTube video URL.
+
+    Returns the 11-character video ID, or None if the URL is not a video URL.
+    """
+    video_patterns = [
+        r'(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'youtu\.be/([a-zA-Z0-9_-]{11})',
+        r'(?:www\.)?youtube\.com/shorts/([a-zA-Z0-9_-]{11})',
+        r'm\.youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
+        r'(?:www\.)?youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+        r'(?:www\.)?youtube\.com/live/([a-zA-Z0-9_-]{11})',
+    ]
+    for pattern in video_patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _fetch_video_metadata_supadata(client: httpx.Client, video_id: str) -> dict | None:
+    """Fetch video metadata from Supadata API.
+
+    Returns dict with title, author_name, description on success, or None on failure.
+    """
+    api_key = os.getenv("SUPADATA_API_KEY")
+    if not api_key:
+        logger.warning("SUPADATA_API_KEY not set, cannot fetch video metadata")
+        return None
+
+    try:
+        response = client.get(
+            SUPADATA_API_URL,
+            params={"id": video_id},
+            headers={"x-api-key": api_key},
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "title": data.get("title"),
+                "author_name": data.get("channel", {}).get("name"),
+                "description": data.get("description"),
+            }
+        else:
+            logger.warning(
+                "Supadata API returned %s for video %s",
+                response.status_code,
+                video_id,
+            )
+            return None
+
+    except httpx.RequestError as e:
+        logger.warning("Supadata API request failed for video %s: %s", video_id, e)
+        return None
+
+
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video/channel metadata from YouTube oEmbed API and page.
+    """Fetch video/channel metadata from Supadata API (videos) or page scraping (channels).
+
+    Falls back to YouTube oEmbed + page scraping if Supadata is unavailable.
 
     Returns:
         dict with keys: title, author_name, description (may be None if fetch fails)
@@ -73,31 +140,43 @@ def fetch_youtube_metadata(url: str) -> dict:
 
     try:
         with httpx.Client(timeout=10.0) as client:
-            # Channels don't work with oEmbed - scrape page directly
+            # Channels: scrape page directly (Supadata doesn't support channels)
             if _is_channel_url(url):
                 channel_meta = _fetch_channel_metadata(client, url)
                 result["title"] = channel_meta.get("title")
                 result["description"] = channel_meta.get("description")
                 return result
 
-            # For videos/playlists/live: use oEmbed API for title and author
+            # Playlists: use oEmbed only (Supadata doesn't support playlists)
+            if _is_playlist_url(url):
+                response = client.get(
+                    YOUTUBE_OEMBED_URL,
+                    params={"url": url, "format": "json"},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    result["title"] = data.get("title")
+                    result["author_name"] = data.get("author_name")
+                return result
+
+            # Videos: use Supadata API as primary source
+            video_id = _extract_video_id(url)
+            if video_id:
+                supadata_result = _fetch_video_metadata_supadata(client, video_id)
+                if supadata_result is not None:
+                    return supadata_result
+                logger.info("Supadata failed for %s, falling back to oEmbed", url[:100])
+
+            # Fallback: oEmbed + page scraping (original approach)
             response = client.get(
                 YOUTUBE_OEMBED_URL,
                 params={"url": url, "format": "json"},
             )
-
             if response.status_code == 200:
                 data = response.json()
                 result["title"] = data.get("title")
                 result["author_name"] = data.get("author_name")
-            else:
-                logger.warning(
-                    "YouTube oEmbed returned %s for %s",
-                    response.status_code,
-                    url[:100],
-                )
 
-            # Fetch description from the YouTube page
             result["description"] = _fetch_youtube_description(client, url)
 
     except httpx.RequestError as e:
