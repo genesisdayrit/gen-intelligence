@@ -53,10 +53,12 @@ POST /share/youtube
 2. **URL Validation**: Checks URL matches known YouTube patterns (returns 422 if invalid)
 3. **Background Processing**: Returns 202 immediately, processes via `BackgroundTasks`
 4. **Metadata Fetching**: Calls Supadata API for video metadata (title, description, channel name). Falls back to YouTube oEmbed + page scraping if Supadata is unavailable
-5. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
-6. **Filename Sanitization**: Replaces `[\/:*?"<>|]` with `_`
-7. **Duplicate Check**: Skips if file already exists
-8. **File Creation**: Creates markdown file with YAML frontmatter
+5. **Transcript Fetching**: Calls Supadata transcript API for video transcript (skipped for channels/playlists or if unavailable)
+6. **AI Summarization**: Sends transcript to OpenAI gpt-5.2 for structured summarization with key insights, references, and notable quotes (skipped if transcript unavailable or OPENAI_API_KEY not set)
+7. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
+8. **Filename Sanitization**: Replaces `[\/:*?"<>|]` with `_`
+9. **Duplicate Check**: Skips if file already exists
+10. **File Creation**: Creates markdown file with YAML frontmatter and AI summary (if available)
 
 ## File Format
 
@@ -96,6 +98,7 @@ Note: A `youtube` tag is automatically added, and the video description is inclu
 | `REDIS_HOST` | No | Redis host (default: localhost) |
 | `REDIS_PORT` | No | Redis port (default: 6379) |
 | `SUPADATA_API_KEY` | Yes | API key for Supadata YouTube metadata API |
+| `OPENAI_API_KEY` | No | API key for OpenAI transcript summarization (summary skipped if not set) |
 | `SYSTEM_TIMEZONE` | No | Timezone for dates (default: US/Eastern) |
 
 ## Key Functions in `add_youtube_link.py`
