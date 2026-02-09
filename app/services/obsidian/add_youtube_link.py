@@ -1,6 +1,7 @@
 """Dropbox helper for saving YouTube links to Obsidian Knowledge Hub."""
 
 import logging
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -48,7 +49,10 @@ YOUTUBE_CHANNEL_PATTERNS = [
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
 SUPADATA_API_URL = "https://api.supadata.ai/v1/youtube/video"
 SUPADATA_TRANSCRIPT_URL = "https://api.supadata.ai/v1/youtube/transcript"
-MAX_TRANSCRIPT_CHARS = 100_000
+# Skip summarization if transcript is too short to be meaningful (~100 tokens)
+MIN_TRANSCRIPT_CHARS = 400
+# Max chars per single summarization call (~250k tokens, leaving room for prompt + response)
+CHUNK_CHAR_LIMIT = 1_000_000
 
 TRANSCRIPT_SUMMARY_PROMPT = """You are a research assistant creating structured notes from a YouTube video transcript for a personal knowledge base.
 
@@ -75,6 +79,37 @@ Important:
 - Preserve the speaker's framing and terminology
 - If the transcript is auto-generated or unclear in places, work with what is available and note any gaps
 - Adapt your depth to the content -- a 5-minute tutorial needs less detail than a 2-hour podcast"""
+
+CHUNK_SUMMARY_PROMPT = """You are summarizing part {chunk_number} of {total_chunks} of a YouTube video transcript titled "{video_title}".
+
+Produce a concise summary of this portion covering:
+- Key ideas and arguments presented in this section
+- People, resources, or technologies mentioned
+- Any notable quotes or moments
+
+Be factual and concise. This will be merged with summaries of the other parts."""
+
+MERGE_SUMMARY_PROMPT = """You are a research assistant creating structured notes from a YouTube video for a personal knowledge base.
+
+Below are summaries of {total_chunks} consecutive sections of the transcript for the video titled "{video_title}". Merge them into a single cohesive summary in markdown format with exactly these four sections:
+
+### Overview
+Write a 2-4 sentence summary that captures what the video is about, who it's for, and the core thesis or argument.
+
+### Key Insights
+Extract the most valuable ideas, arguments, and frameworks. Aim for 4-8 bullet points. Prioritize novel ideas, concrete frameworks, specific claims, and practical advice.
+
+### Noteworthy References
+List specific people, companies, books, tools, or technologies mentioned with brief context. Write "None identified." if none.
+
+### Key Quotes / Moments
+Pull out 2-3 of the most impactful statements. Skip if none stand out.
+
+Important:
+- Deduplicate across sections -- do not repeat the same insight from different chunks
+- Be concise and factual
+- Preserve the speaker's framing and terminology
+- Always write the summary in English"""
 
 
 def is_valid_youtube_url(url: str) -> bool:
@@ -203,53 +238,113 @@ def _fetch_transcript(video_id: str) -> str | None:
 def _summarize_transcript(transcript: str, video_title: str) -> str | None:
     """Summarize a video transcript using OpenAI.
 
+    For transcripts that fit within CHUNK_CHAR_LIMIT, uses a single API call.
+    For longer transcripts, splits into chunks, summarizes each, then merges.
+
     Returns markdown-formatted summary string, or None on failure.
     """
+    if len(transcript) < MIN_TRANSCRIPT_CHARS:
+        logger.info("Transcript too short for summarization (%d chars), skipping", len(transcript))
+        return None
+
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         logger.warning("OPENAI_API_KEY not set, cannot summarize transcript")
         return None
 
-    truncated = transcript[:MAX_TRANSCRIPT_CHARS]
-    estimated_tokens = len(truncated) // 4  # rough estimate: ~4 chars per token
-    if len(transcript) > MAX_TRANSCRIPT_CHARS:
-        logger.info(
-            "Transcript truncated from %d to %d chars for summarization",
-            len(transcript),
-            MAX_TRANSCRIPT_CHARS,
-        )
+    estimated_tokens = len(transcript) // 4  # rough estimate: ~4 chars per token
     logger.info(
-        "Sending transcript to OpenAI: %d chars (~%d estimated tokens)",
-        len(truncated),
+        "Transcript length: %d chars (~%d estimated tokens)",
+        len(transcript),
         estimated_tokens,
     )
 
-    prompt = TRANSCRIPT_SUMMARY_PROMPT.format(video_title=video_title)
-
     try:
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-5.2",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": truncated},
-            ],
-            temperature=0.3,
-        )
 
-        summary = response.choices[0].message.content
-        if summary:
-            logger.info(
-                "Generated transcript summary (%d chars) using %d prompt tokens",
-                len(summary),
-                response.usage.prompt_tokens,
-            )
-            return summary.strip()
-        return None
+        if len(transcript) <= CHUNK_CHAR_LIMIT:
+            return _single_pass_summary(client, transcript, video_title)
+        else:
+            return _chunked_summary(client, transcript, video_title)
 
     except Exception as e:
         logger.warning("Transcript summarization failed: %s", e)
         return None
+
+
+def _single_pass_summary(client: OpenAI, transcript: str, video_title: str) -> str | None:
+    """Summarize a transcript in a single OpenAI call."""
+    prompt = TRANSCRIPT_SUMMARY_PROMPT.format(video_title=video_title)
+
+    response = client.chat.completions.create(
+        model="gpt-5.2",
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": transcript},
+        ],
+        temperature=0.3,
+    )
+
+    summary = response.choices[0].message.content
+    if summary:
+        logger.info(
+            "Generated transcript summary (%d chars) using %d prompt tokens",
+            len(summary),
+            response.usage.prompt_tokens,
+        )
+        return summary.strip()
+    return None
+
+
+def _chunked_summary(client: OpenAI, transcript: str, video_title: str) -> str | None:
+    """Split a long transcript into chunks, summarize each, then merge."""
+    num_chunks = math.ceil(len(transcript) / CHUNK_CHAR_LIMIT)
+    chunk_size = math.ceil(len(transcript) / num_chunks)
+    chunks = [transcript[i:i + chunk_size] for i in range(0, len(transcript), chunk_size)]
+
+    logger.info("Splitting transcript into %d chunks of ~%d chars each", num_chunks, chunk_size)
+
+    chunk_summaries = []
+    for i, chunk in enumerate(chunks, 1):
+        logger.info("Summarizing chunk %d/%d (%d chars)", i, num_chunks, len(chunk))
+        prompt = CHUNK_SUMMARY_PROMPT.format(
+            chunk_number=i, total_chunks=num_chunks, video_title=video_title
+        )
+        response = client.chat.completions.create(
+            model="gpt-5.2",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": chunk},
+            ],
+            temperature=0.3,
+        )
+        chunk_summary = response.choices[0].message.content
+        if chunk_summary:
+            chunk_summaries.append(chunk_summary.strip())
+
+    if not chunk_summaries:
+        return None
+
+    logger.info("Merging %d chunk summaries", len(chunk_summaries))
+    merged_input = "\n\n---\n\n".join(
+        f"## Section {i}\n{s}" for i, s in enumerate(chunk_summaries, 1)
+    )
+    merge_prompt = MERGE_SUMMARY_PROMPT.format(
+        total_chunks=len(chunk_summaries), video_title=video_title
+    )
+    response = client.chat.completions.create(
+        model="gpt-5.2",
+        messages=[
+            {"role": "system", "content": merge_prompt},
+            {"role": "user", "content": merged_input},
+        ],
+        temperature=0.3,
+    )
+    summary = response.choices[0].message.content
+    if summary:
+        logger.info("Generated merged transcript summary (%d chars)", len(summary))
+        return summary.strip()
+    return None
 
 
 def fetch_youtube_metadata(url: str) -> dict:
