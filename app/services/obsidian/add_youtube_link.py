@@ -96,6 +96,60 @@ Important:
 - Always write the summary in English"""
 
 
+PEOPLE_EXTRACTION_PROMPT = """Given the title and description of a YouTube video, identify the main people or groups featured in or discussed in this video. Return ONLY a JSON array of their names. Include hosts, guests, interviewees, podcast/show names, and people or groups who are a primary subject of discussion. Do NOT include people who are only briefly mentioned in passing.
+
+If there are no clearly identifiable main people or groups, return an empty array: []
+
+Examples:
+- A Tim Ferriss podcast with Naval Ravikant: ["Tim Ferriss", "Naval Ravikant"]
+- A Lex Fridman Podcast episode with a guest: ["Lex Fridman Podcast", "Lex Fridman", "Yann LeCun"]
+- A solo tutorial by no specific person: []
+- A documentary about Elon Musk: ["Elon Musk"]
+
+Return ONLY the JSON array, no other text."""
+
+
+def _sanitize_obsidian_link(name: str) -> str:
+    """Remove characters that are illegal in Obsidian [[]] links."""
+    # Obsidian link-illegal chars: [ ] | # ^ \
+    return re.sub(r'[\[\]|#^\\\\/]', '', name).strip()
+
+
+def _extract_people(video_title: str, description: str | None) -> list[str]:
+    """Extract main people from a video's title and description using gpt-4o.
+
+    Returns a list of names, or empty list if none identified.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return []
+
+    user_input = f"Title: {video_title}"
+    if description:
+        user_input += f"\n\nDescription:\n{description}"
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": PEOPLE_EXTRACTION_PROMPT},
+                {"role": "user", "content": user_input},
+            ],
+            temperature=0.0,
+        )
+        import json
+        content = response.choices[0].message.content
+        if content:
+            names = json.loads(content.strip())
+            if isinstance(names, list):
+                return [n for n in names if isinstance(n, str) and n.strip()]
+        return []
+    except Exception as e:
+        logger.warning("People extraction failed: %s", e)
+        return []
+
+
 def is_valid_youtube_url(url: str) -> bool:
     """Check if URL is a valid YouTube URL."""
     for pattern in YOUTUBE_PATTERNS:
@@ -505,6 +559,9 @@ def add_youtube_link(url: str) -> dict:
         video_title = metadata["title"] or url  # Fallback to URL if title unavailable
         description = metadata["description"]
 
+        # Extract main people from title/description
+        people = _extract_people(video_title, description)
+
         # Fetch and summarize transcript (non-blocking to core flow)
         summary_section = ""
         video_id = _extract_video_id(url)
@@ -545,6 +602,19 @@ def add_youtube_link(url: str) -> dict:
         if description:
             description_section = f"\n{description}\n"
 
+        # Build Channel YAML field
+        channel_name = metadata.get("author_name")
+        channel_yaml = ""
+        if channel_name:
+            safe_channel = _sanitize_obsidian_link(channel_name)
+            channel_yaml = f'\nChannel: "[[{safe_channel}]]"'
+
+        # Build People YAML field
+        people_yaml = ""
+        if people:
+            people_links = [f'  - "[[{_sanitize_obsidian_link(p)}]]"' for p in people]
+            people_yaml = "\nPeople:\n" + "\n".join(people_links)
+
         # Generate markdown content with YAML frontmatter
         markdown_content = f"""---
 Journal:
@@ -552,7 +622,7 @@ Journal:
 created time: {now_utc.isoformat()}
 modified time: {now_utc.isoformat()}
 key words:
-URL: {url}
+URL: {url}{channel_yaml}{people_yaml}
 Notes+Ideas:
 Experiences:
 Tags:
