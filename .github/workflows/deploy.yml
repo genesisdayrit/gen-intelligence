@@ -70,4 +70,8 @@ jobs:
 
             curl --fail --silent --max-time 30 http://localhost:8000/health || exit 1
 
+            # Clean up old Docker images/containers to prevent disk filling up
+            docker container prune -f
+            docker image prune -f
+
             echo "Deployment successful!"
