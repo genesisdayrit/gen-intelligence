@@ -12,7 +12,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy application code
-COPY main.py scheduler.py ./
+COPY main.py scheduler.py config.py ./
 COPY services ./services
 COPY scripts ./scripts
 
