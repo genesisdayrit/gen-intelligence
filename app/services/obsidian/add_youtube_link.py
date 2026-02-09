@@ -54,60 +54,44 @@ MIN_TRANSCRIPT_CHARS = 400
 # Max chars per single summarization call (~250k tokens, leaving room for prompt + response)
 CHUNK_CHAR_LIMIT = 1_000_000
 
-TRANSCRIPT_SUMMARY_PROMPT = """You are a research assistant creating structured notes from a YouTube video transcript for a personal knowledge base.
+TRANSCRIPT_SUMMARY_PROMPT = """You are a research assistant extracting key takeaways from a YouTube video transcript for a personal knowledge base.
 
-Given the transcript of the video titled "{video_title}", produce a summary in markdown format with exactly these four sections:
+Given the transcript of the video titled "{video_title}", produce a summary in markdown format with exactly these two sections:
 
-### Overview
-Write a 2-4 sentence summary that captures what the video is about, who it's for, and the core thesis or argument. A reader should be able to decide whether to watch the full video based on this alone.
+### Key Takeaways
+Extract the most valuable insights, ideas, and actionable advice as a bulleted list. Each bullet should be a single concise sentence that captures one specific takeaway -- include enough context that the bullet is useful on its own without having watched the video. Attribute claims to the speaker when relevant (e.g., "- Intermittent fasting resolved chronic blood sugar issues that decades of diets couldn't fix - Tim"). Aim for 5-10 bullets depending on video length. No bold text, no sub-bullets, no multi-sentence explanations.
 
-### Key Insights
-Extract the most valuable ideas, arguments, and frameworks discussed. For each insight, don't just name the topic -- explain the substance of what was said about it. Aim for 4-8 bullet points. Prioritize:
-- Novel or counterintuitive ideas
-- Concrete frameworks, mental models, or methodologies
-- Specific claims backed by evidence or experience
-- Practical advice or strategies
-
-### Noteworthy References
-List specific people, companies, books, papers, tools, technologies, or other resources explicitly mentioned. Include brief context for why each was mentioned (e.g., "Cal Newport -- referenced his concept of deep work as a counterpoint"). If none are clearly mentioned, write "None identified."
-
-### Key Quotes / Moments
-Pull out 2-3 of the most impactful or memorable statements from the transcript. Paraphrase if the exact wording is unclear, but aim to preserve the speaker's voice. Skip this section if no standout moments exist.
+### Mentioned in Video
+List specific people, companies, books, papers, tools, technologies, or other resources explicitly mentioned. Each item on its own bullet. Keep it to just the name and a brief phrase of context (e.g., "- Cal Newport -- deep work methodology"). If none are clearly mentioned, write "None identified."
 
 Important:
-- Be concise and factual -- summarize, do not editorialize or add your own opinions
+- Be concise -- one sentence per bullet, no paragraphs
+- Be factual -- summarize, do not editorialize
 - Preserve the speaker's framing and terminology
-- If the transcript is auto-generated or unclear in places, work with what is available and note any gaps
-- Adapt your depth to the content -- a 5-minute tutorial needs less detail than a 2-hour podcast"""
+- Always write the summary in English"""
 
 CHUNK_SUMMARY_PROMPT = """You are summarizing part {chunk_number} of {total_chunks} of a YouTube video transcript titled "{video_title}".
 
-Produce a concise summary of this portion covering:
-- Key ideas and arguments presented in this section
-- People, resources, or technologies mentioned
-- Any notable quotes or moments
+Extract as a bulleted list:
+- Key takeaways, insights, and actionable advice (one concise sentence each)
+- People, products, books, tools, or resources mentioned (name + brief context)
 
 Be factual and concise. This will be merged with summaries of the other parts."""
 
 MERGE_SUMMARY_PROMPT = """You are a research assistant creating structured notes from a YouTube video for a personal knowledge base.
 
-Below are summaries of {total_chunks} consecutive sections of the transcript for the video titled "{video_title}". Merge them into a single cohesive summary in markdown format with exactly these four sections:
+Below are summaries of {total_chunks} consecutive sections of the transcript for the video titled "{video_title}". Merge them into a single cohesive summary in markdown format with exactly these two sections:
 
-### Overview
-Write a 2-4 sentence summary that captures what the video is about, who it's for, and the core thesis or argument.
+### Key Takeaways
+Combine and deduplicate the key takeaways into a single bulleted list. Each bullet should be one concise sentence capturing a specific insight or piece of advice. Attribute claims to the speaker when relevant. Aim for 5-10 bullets total. No bold text, no sub-bullets, no multi-sentence explanations.
 
-### Key Insights
-Extract the most valuable ideas, arguments, and frameworks. Aim for 4-8 bullet points. Prioritize novel ideas, concrete frameworks, specific claims, and practical advice.
-
-### Noteworthy References
-List specific people, companies, books, tools, or technologies mentioned with brief context. Write "None identified." if none.
-
-### Key Quotes / Moments
-Pull out 2-3 of the most impactful statements. Skip if none stand out.
+### Mentioned in Video
+Combine and deduplicate all mentioned people, companies, books, tools, technologies, or resources. Each item on its own bullet with just the name and a brief phrase of context. If none, write "None identified."
 
 Important:
-- Deduplicate across sections -- do not repeat the same insight from different chunks
-- Be concise and factual
+- Deduplicate across sections
+- Be concise -- one sentence per bullet, no paragraphs
+- Be factual -- summarize, do not editorialize
 - Preserve the speaker's framing and terminology
 - Always write the summary in English"""
 
