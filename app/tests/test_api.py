@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
 os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
+os.environ.setdefault("WEBHOOK_BASE_URL", "")
 
 from cryptography.hazmat.primitives import hashes as crypto_hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding

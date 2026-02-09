@@ -44,6 +44,7 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
 MANUS_API_KEY = os.getenv("MANUS_API_KEY")
+WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 
@@ -685,9 +686,23 @@ async def manus_webhook(
         logger.error("Failed to fetch Manus public key: %s", e)
         raise HTTPException(status_code=500, detail="Unable to verify signature")
 
-    request_url = str(request.url)
+    # Use WEBHOOK_BASE_URL for the external URL that Manus signed against
+    # str(request.url) returns the internal Docker URL which won't match
+    if WEBHOOK_BASE_URL:
+        request_url = WEBHOOK_BASE_URL.rstrip("/") + "/manus/webhook"
+    else:
+        request_url = str(request.url)
+
+    logger.info(
+        "Manus webhook debug | sig=%s... | ts=%s | url=%s | body_len=%d",
+        x_webhook_signature[:20] if x_webhook_signature else "none",
+        x_webhook_timestamp,
+        request_url,
+        len(payload),
+    )
+
     if not verify_manus_signature(payload, x_webhook_signature, x_webhook_timestamp, request_url, public_key_pem):
-        logger.warning("Invalid Manus webhook signature")
+        logger.warning("Invalid Manus webhook signature | internal_url=%s", str(request.url))
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
