@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import dropbox
 import httpx
 import pytz
+from openai import OpenAI
 
 from .add_shared_link import (
     _get_dropbox_client,
@@ -46,6 +47,34 @@ YOUTUBE_CHANNEL_PATTERNS = [
 
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
 SUPADATA_API_URL = "https://api.supadata.ai/v1/youtube/video"
+SUPADATA_TRANSCRIPT_URL = "https://api.supadata.ai/v1/youtube/transcript"
+MAX_TRANSCRIPT_CHARS = 100_000
+
+TRANSCRIPT_SUMMARY_PROMPT = """You are a research assistant creating structured notes from a YouTube video transcript for a personal knowledge base.
+
+Given the transcript of the video titled "{video_title}", produce a summary in markdown format with exactly these four sections:
+
+### Overview
+Write a 2-4 sentence summary that captures what the video is about, who it's for, and the core thesis or argument. A reader should be able to decide whether to watch the full video based on this alone.
+
+### Key Insights
+Extract the most valuable ideas, arguments, and frameworks discussed. For each insight, don't just name the topic -- explain the substance of what was said about it. Aim for 4-8 bullet points. Prioritize:
+- Novel or counterintuitive ideas
+- Concrete frameworks, mental models, or methodologies
+- Specific claims backed by evidence or experience
+- Practical advice or strategies
+
+### Noteworthy References
+List specific people, companies, books, papers, tools, technologies, or other resources explicitly mentioned. Include brief context for why each was mentioned (e.g., "Cal Newport -- referenced his concept of deep work as a counterpoint"). If none are clearly mentioned, write "None identified."
+
+### Key Quotes / Moments
+Pull out 2-3 of the most impactful or memorable statements from the transcript. Paraphrase if the exact wording is unclear, but aim to preserve the speaker's voice. Skip this section if no standout moments exist.
+
+Important:
+- Be concise and factual -- summarize, do not editorialize or add your own opinions
+- Preserve the speaker's framing and terminology
+- If the transcript is auto-generated or unclear in places, work with what is available and note any gaps
+- Adapt your depth to the content -- a 5-minute tutorial needs less detail than a 2-hour podcast"""
 
 
 def is_valid_youtube_url(url: str) -> bool:
@@ -125,6 +154,101 @@ def _fetch_video_metadata_supadata(client: httpx.Client, video_id: str) -> dict 
 
     except httpx.RequestError as e:
         logger.warning("Supadata API request failed for video %s: %s", video_id, e)
+        return None
+
+
+def _fetch_transcript(video_id: str) -> str | None:
+    """Fetch video transcript from Supadata API.
+
+    Returns the full transcript as a single string, or None if unavailable.
+    """
+    api_key = os.getenv("SUPADATA_API_KEY")
+    if not api_key:
+        logger.warning("SUPADATA_API_KEY not set, cannot fetch transcript")
+        return None
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                SUPADATA_TRANSCRIPT_URL,
+                params={"videoId": video_id, "lang": "en"},
+                headers={"x-api-key": api_key},
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                segments = data.get("content", [])
+                if not segments:
+                    logger.info("Transcript returned empty content for video %s", video_id)
+                    return None
+                transcript = " ".join(seg.get("text", "") for seg in segments)
+                return transcript.strip() or None
+
+            elif response.status_code == 404:
+                logger.info("No transcript available for video %s", video_id)
+                return None
+            else:
+                logger.info(
+                    "Supadata transcript API returned %s for video %s",
+                    response.status_code,
+                    video_id,
+                )
+                return None
+
+    except httpx.RequestError as e:
+        logger.warning("Transcript fetch failed for video %s: %s", video_id, e)
+        return None
+
+
+def _summarize_transcript(transcript: str, video_title: str) -> str | None:
+    """Summarize a video transcript using OpenAI.
+
+    Returns markdown-formatted summary string, or None on failure.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not set, cannot summarize transcript")
+        return None
+
+    truncated = transcript[:MAX_TRANSCRIPT_CHARS]
+    estimated_tokens = len(truncated) // 4  # rough estimate: ~4 chars per token
+    if len(transcript) > MAX_TRANSCRIPT_CHARS:
+        logger.info(
+            "Transcript truncated from %d to %d chars for summarization",
+            len(transcript),
+            MAX_TRANSCRIPT_CHARS,
+        )
+    logger.info(
+        "Sending transcript to OpenAI: %d chars (~%d estimated tokens)",
+        len(truncated),
+        estimated_tokens,
+    )
+
+    prompt = TRANSCRIPT_SUMMARY_PROMPT.format(video_title=video_title)
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-5.2",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": truncated},
+            ],
+            temperature=0.3,
+        )
+
+        summary = response.choices[0].message.content
+        if summary:
+            logger.info(
+                "Generated transcript summary (%d chars) using %d prompt tokens",
+                len(summary),
+                response.usage.prompt_tokens,
+            )
+            return summary.strip()
+        return None
+
+    except Exception as e:
+        logger.warning("Transcript summarization failed: %s", e)
         return None
 
 
@@ -297,10 +421,20 @@ def add_youtube_link(url: str) -> dict:
     timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
     try:
-        # Fetch metadata from YouTube oEmbed
+        # Fetch metadata from Supadata API (with oEmbed fallback)
         metadata = fetch_youtube_metadata(url)
         video_title = metadata["title"] or url  # Fallback to URL if title unavailable
         description = metadata["description"]
+
+        # Fetch and summarize transcript (non-blocking to core flow)
+        summary_section = ""
+        video_id = _extract_video_id(url)
+        if video_id and not _is_channel_url(url) and not _is_playlist_url(url):
+            transcript = _fetch_transcript(video_id)
+            if transcript:
+                summary = _summarize_transcript(transcript, video_title)
+                if summary:
+                    summary_section = f"\n## AI Summary\n\n{summary}\n"
 
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
@@ -348,7 +482,7 @@ Tags:
 
 ## {video_title}
 {description_section}
-"""
+{summary_section}"""
 
         # Upload to Dropbox
         dbx.files_upload(
