@@ -664,6 +664,11 @@ async def manus_webhook(
     x_webhook_timestamp: str | None = Header(None, alias="X-Webhook-Timestamp"),
 ):
     """Receive Manus AI webhook events."""
+    # Allow verification pings (registration test requests without signature headers)
+    if not x_webhook_signature and not x_webhook_timestamp:
+        logger.info("Manus webhook verification ping received")
+        return JSONResponse(content={"status": "received"})
+
     if not x_webhook_signature or not x_webhook_timestamp:
         logger.warning("Missing Manus webhook signature headers")
         raise HTTPException(status_code=401, detail="Missing signature headers")
