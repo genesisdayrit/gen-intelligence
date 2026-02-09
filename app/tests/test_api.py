@@ -230,9 +230,20 @@ def test_share_youtube_requires_url():
 
 
 # Manus webhook tests
-def test_manus_webhook_missing_headers():
-    """Manus webhook rejects requests without signature headers."""
+def test_manus_webhook_verification_ping():
+    """Manus webhook accepts verification pings (no signature headers)."""
     response = client.post("/manus/webhook", json={"event_type": "task_created"})
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+
+
+def test_manus_webhook_partial_headers():
+    """Manus webhook rejects requests with only one signature header."""
+    response = client.post(
+        "/manus/webhook",
+        json={"event_type": "task_created"},
+        headers={"X-Webhook-Signature": "some-sig"},
+    )
     assert response.status_code == 401
 
 
