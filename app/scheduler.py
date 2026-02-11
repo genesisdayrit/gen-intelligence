@@ -36,6 +36,17 @@ def _send_cycle_summary():
 
 SCHEDULED_JOBS = [
     {
+        "id": "send_cycle_summary_email_tue",
+        "name": "Weekly Cycle Summary Email (Tuesday)",
+        "func": _send_cycle_summary,
+        "trigger": CronTrigger(
+            day_of_week="tue",
+            hour=10,
+            minute=0,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
         "id": "send_cycle_summary_email",
         "name": "Weekly Cycle Summary Email",
         "func": _send_cycle_summary,
