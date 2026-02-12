@@ -188,16 +188,18 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
     """Find the correct line index to insert the Todoist section.
 
     The Todoist section should be inserted:
-    1. After Initiative Updates section (if exists)
-    2. After Project Updates section (if exists)
-    3. Before Template Boundary (Vision Objective 1:)
-    4. After Daily Review if no other sections exist
+    1. After Project Updates section (if exists)
+    2. After Initiative Updates section (if exists)
+    3. Before Linear Issues Touched section (if exists)
+    4. Before Template Boundary (Vision Objective 1:)
+    5. After Daily Review if no other sections exist
 
     Returns the line index where Todoist section should be inserted.
     """
     # Find positions of relevant sections
     initiative_end = None
     project_end = None
+    issues_touched_line = None
     template_boundary_line = None
 
     in_initiative = False
@@ -220,6 +222,15 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
             # Mark end of initiative section
             if initiative_end is None and any(INITIATIVE_UPDATES_HEADER in lines[j] for j in range(daily_review_end_line, i)):
                 initiative_end = i
+            continue
+        elif stripped == ISSUES_TOUCHED_HEADER:
+            if in_initiative:
+                initiative_end = i
+                in_initiative = False
+            if in_project:
+                project_end = i
+                in_project = False
+            issues_touched_line = i
             continue
         elif stripped.startswith('#') or stripped == '---':
             # Another section header or separator - end current section
@@ -246,11 +257,13 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
         project_end = len(lines)
 
     # Determine insert position based on what exists
-    # Priority: after Project Updates > after Initiative Updates > before template > after daily review
+    # Priority: after Project Updates > after Initiative Updates > before Issues Touched > before template > after daily review
     if project_end is not None:
         return project_end
     elif initiative_end is not None:
         return initiative_end
+    elif issues_touched_line is not None:
+        return issues_touched_line
     elif template_boundary_line is not None:
         return template_boundary_line
     else:
