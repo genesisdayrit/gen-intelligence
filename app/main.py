@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
+from services.obsidian.upsert_issue_touched import upsert_issue_touched
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import add_shared_link, get_predicted_link_path
@@ -476,34 +477,66 @@ async def linear_webhook(
 
         return JSONResponse(content={"status": "ok"})
 
-    # Handle issue completion
-    # An issue is completed when completedAt is set
-    if event_type == "Issue" and event_data.get("completedAt"):
+    # Handle Issue events (issues touched tracking + completion)
+    if event_type == "Issue" and action in ("create", "update"):
         issue_title = event_data.get("title", "(no title)")
         issue_number = event_data.get("number")
         team = event_data.get("team", {})
         team_key = team.get("key", "")
+        issue_identifier = f"{team_key}-{issue_number}" if team_key and issue_number else ""
+        project_name = event_data.get("project", {}).get("name", "") if event_data.get("project") else ""
+        status_name = event_data.get("state", {}).get("name", "") if event_data.get("state") else ""
+        issue_url = event_data.get("url", "")
+        updated_from = data.get("updatedFrom", {})
+        status_changed = "stateId" in updated_from
 
-        # Format: ENG-123: Issue title
-        if team_key and issue_number:
-            task_content = f"{team_key}-{issue_number}: {issue_title}"
-        else:
-            task_content = issue_title
+        # Track issue in Linear Issues Touched section
+        if issue_identifier:
+            logger.info(
+                "📌 Linear issue touched | %s | %s | %s",
+                issue_identifier,
+                status_name,
+                action,
+            )
 
-        logger.info(
-            "✅ Linear issue completed | %s | %s",
-            task_content[:100],
-            action,
-        )
+            touched_result = upsert_issue_touched(
+                issue_identifier=issue_identifier,
+                project_name=project_name,
+                issue_title=issue_title,
+                status_name=status_name,
+                issue_url=issue_url,
+                status_changed=status_changed,
+            )
+            if touched_result["daily_action_success"]:
+                logger.info("Issues touched written to Daily Action: action=%s", touched_result["daily_action_action"])
+            else:
+                logger.error("Failed to write issues touched to Daily Action: %s", touched_result.get("daily_action_error"))
+            if touched_result["weekly_cycle_success"]:
+                logger.info("Issues touched written to Weekly Cycle: action=%s", touched_result["weekly_cycle_action"])
+            else:
+                logger.error("Failed to write issues touched to Weekly Cycle: %s", touched_result.get("weekly_cycle_error"))
 
-        # Create and complete task in Todoist
-        # This will trigger Todoist's webhook which writes to Obsidian
-        result = create_completed_todoist_task(task_content)
-        if result["success"]:
-            logger.info("Created and completed Todoist task: id=%s", result["task_id"])
-        else:
-            logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
-            # Still return 200 - don't want Linear to retry
+        # Handle issue completion (existing Todoist flow)
+        if event_data.get("completedAt"):
+            if team_key and issue_number:
+                task_content = f"{team_key}-{issue_number}: {issue_title}"
+            else:
+                task_content = issue_title
+
+            logger.info(
+                "✅ Linear issue completed | %s | %s",
+                task_content[:100],
+                action,
+            )
+
+            # Create and complete task in Todoist
+            # This will trigger Todoist's webhook which writes to Obsidian
+            result = create_completed_todoist_task(task_content)
+            if result["success"]:
+                logger.info("Created and completed Todoist task: id=%s", result["task_id"])
+            else:
+                logger.error("Failed to create/complete Todoist task: %s", result.get("error"))
+                # Still return 200 - don't want Linear to retry
 
     else:
         logger.info("Linear event: type=%s action=%s (ignored)", event_type, action)
