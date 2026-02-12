@@ -745,27 +745,26 @@ async def manus_webhook(
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     event_type = data.get("event_type", "unknown")
-    task_id = data.get("task_id", "unknown")
-    task_status = data.get("status", "")
+    task_detail = data.get("task_detail", {})
+    progress_detail = data.get("progress_detail", {})
+
+    # task_id is in task_detail for created/stopped, progress_detail for progress
+    task_id = task_detail.get("task_id") or progress_detail.get("task_id", "unknown")
+    task_title = task_detail.get("task_title", "")
+    task_url = task_detail.get("task_url", "")
 
     logger.info(
-        "Manus webhook | event=%s | task_id=%s | status=%s",
+        "Manus webhook | event=%s | task_id=%s | title=%s",
         event_type,
         task_id,
-        task_status,
+        task_title or "(no title)",
     )
 
-    if event_type in ("task_created", "task_progress"):
-        metadata = data.get("metadata", {})
-        task_title = metadata.get("task_title") or data.get("title", "Untitled Task")
-        task_url = metadata.get("task_url") or data.get("task_url") or f"https://manus.im/app/{task_id}"
+    if event_type == "task_created":
+        if not task_url:
+            task_url = f"https://manus.im/app/{task_id}"
 
-        logger.info(
-            "Manus %s: %s | title=%s | url=%s",
-            event_type, task_id, task_title, task_url,
-        )
-
-        result = upsert_manus_task_touched(task_id, task_title, task_url)
+        result = upsert_manus_task_touched(task_id, task_title or "Untitled Task", task_url)
         if result["daily_action_success"]:
             logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
         else:
@@ -774,8 +773,24 @@ async def manus_webhook(
             logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
         else:
             logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
+    elif event_type == "task_progress":
+        logger.info("Manus task progress: %s | %s", task_id, progress_detail.get("message", ""))
     elif event_type == "task_stopped":
-        logger.info("Manus task stopped: %s | status=%s", task_id, task_status)
+        stop_reason = task_detail.get("stop_reason", "")
+        logger.info("Manus task stopped: %s | reason=%s", task_id, stop_reason)
+        # Also write to Obsidian - task_stopped has full task_detail
+        if task_title and task_id != "unknown":
+            if not task_url:
+                task_url = f"https://manus.im/app/{task_id}"
+            result = upsert_manus_task_touched(task_id, task_title, task_url)
+            if result["daily_action_success"]:
+                logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
+            else:
+                logger.error("Failed to write Manus task to Daily Action: %s", result.get("daily_action_error"))
+            if result["weekly_cycle_success"]:
+                logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+            else:
+                logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
     else:
         logger.info("Manus event: %s (unhandled)", event_type)
 
