@@ -292,13 +292,17 @@ def upsert_weekly_cycle_issue_touched(
                 for i in range(issues_header_index + 1, day_section_end):
                     line = lines[i]
                     if line.strip() == '':
-                        continue
+                        break
                     elif line.strip().startswith('#') or line.strip() == '---':
                         break
                     else:
                         insert_index = i + 1
 
                 lines.insert(insert_index, entry_line)
+                # Ensure a blank line between entries and next section
+                next_idx = insert_index + 1
+                if next_idx < len(lines) and lines[next_idx].strip() != '':
+                    lines.insert(next_idx, '')
             else:
                 # Section doesn't exist - create it before the --- separator
                 # Find insert position: after Completed Tasks section, or before ---
