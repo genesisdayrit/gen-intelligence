@@ -187,10 +187,11 @@ def _get_daily_section_order() -> list[str]:
     return [DAILY_INITIATIVE_HEADER, DAILY_PROJECT_HEADER, DAILY_TODOIST_HEADER, DAILY_ISSUES_TOUCHED_HEADER, DAILY_ACTION_HEADER]
 
 
-def _upsert_daily_action_manus_touched(task_title: str, task_url: str) -> dict:
+def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's Daily Action note.
 
     Args:
+        task_id: The Manus task ID (used in display and deduplication)
         task_title: The task title
         task_url: The task URL (used for deduplication)
 
@@ -211,7 +212,7 @@ def _upsert_daily_action_manus_touched(task_title: str, task_url: str) -> dict:
         file_content = _get_file_content(dbx, file_path)
 
         # Format the entry
-        log_entry = f"- [{task_title}]({task_url})"
+        log_entry = f"- {task_title} ([{task_id}]({task_url}))"
 
         # Parse YAML frontmatter
         yaml_section, main_content = _parse_yaml_frontmatter(file_content)
@@ -242,7 +243,7 @@ def _upsert_daily_action_manus_touched(task_title: str, task_url: str) -> dict:
                     header_positions[header] = i
 
         if target_header in header_positions:
-            # Header exists - insert after all existing entries in this section
+            # Header exists - insert after existing task entries (skip trailing blank lines)
             header_index = header_positions[target_header]
             insert_index = header_index + 1
             for i in range(header_index + 1, len(lines)):
@@ -253,9 +254,16 @@ def _upsert_daily_action_manus_touched(task_title: str, task_url: str) -> dict:
                     break
                 elif line.strip() == DAILY_TEMPLATE_BOUNDARY:
                     break
+                elif line.strip() == '':
+                    # Don't advance past blank lines — insert before them
+                    break
                 else:
                     insert_index = i + 1
             lines.insert(insert_index, log_entry)
+            # Ensure a blank line between entries and next section
+            next_idx = insert_index + 1
+            if next_idx < len(lines) and lines[next_idx].strip() != '':
+                lines.insert(next_idx, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
@@ -370,10 +378,11 @@ def _get_weekly_section_order() -> list[str]:
     return [WEEKLY_INITIATIVE_HEADER, WEEKLY_PROJECT_HEADER, WEEKLY_COMPLETED_HEADER, WEEKLY_ISSUES_TOUCHED_HEADER, WEEKLY_CYCLE_HEADER]
 
 
-def _upsert_weekly_cycle_manus_touched(task_title: str, task_url: str) -> dict:
+def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's section in the Weekly Cycle note.
 
     Args:
+        task_id: The Manus task ID (used in display and deduplication)
         task_title: The task title
         task_url: The task URL (used for deduplication)
 
@@ -407,7 +416,7 @@ def _upsert_weekly_cycle_manus_touched(task_title: str, task_url: str) -> dict:
         file_content = _get_file_content(dbx, file_path)
 
         # Format the entry
-        log_entry = f"- [{task_title}]({task_url})"
+        log_entry = f"- {task_title} ([{task_id}]({task_url}))"
 
         # Get current day name and find the section
         day_name = _get_current_day_name(system_tz)
@@ -451,16 +460,22 @@ def _upsert_weekly_cycle_manus_touched(task_title: str, task_url: str) -> dict:
                     header_positions[header] = i
 
         if target_header in header_positions:
-            # Header exists - insert after all existing entries
+            # Header exists - insert after existing task entries (skip trailing blank lines)
             header_index = header_positions[target_header]
             insert_index = header_index + 1
             for i in range(header_index + 1, day_section_end):
                 line = lines[i]
                 if line.strip().startswith('#'):
                     break
+                elif line.strip() == '':
+                    break
                 else:
                     insert_index = i + 1
             lines.insert(insert_index, log_entry)
+            # Ensure a blank line between entries and next section
+            next_idx = insert_index + 1
+            if next_idx < len(lines) and lines[next_idx].strip() != '':
+                lines.insert(next_idx, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
@@ -510,13 +525,14 @@ def _upsert_weekly_cycle_manus_touched(task_title: str, task_url: str) -> dict:
 
 # --- Main entry point ---
 
-def upsert_manus_task_touched(task_title: str, task_url: str) -> dict:
+def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task to both Daily Action and Weekly Cycle notes.
 
     Writes to Daily Action first, then Weekly Cycle. Both operations are
     independent - if one fails, the other's success/failure is unaffected.
 
     Args:
+        task_id: The Manus task ID
         task_title: The task title
         task_url: The task URL (used for deduplication and linking)
 
@@ -540,7 +556,7 @@ def upsert_manus_task_touched(task_title: str, task_url: str) -> dict:
 
     # Write to Daily Action
     try:
-        da_result = _upsert_daily_action_manus_touched(task_title, task_url)
+        da_result = _upsert_daily_action_manus_touched(task_id, task_title, task_url)
         result["daily_action_success"] = da_result["success"]
         result["daily_action_action"] = da_result.get("action")
         if not da_result["success"]:
@@ -553,7 +569,7 @@ def upsert_manus_task_touched(task_title: str, task_url: str) -> dict:
 
     # Write to Weekly Cycle
     try:
-        wc_result = _upsert_weekly_cycle_manus_touched(task_title, task_url)
+        wc_result = _upsert_weekly_cycle_manus_touched(task_id, task_title, task_url)
         result["weekly_cycle_success"] = wc_result["success"]
         result["weekly_cycle_action"] = wc_result.get("action")
         if not wc_result["success"]:
