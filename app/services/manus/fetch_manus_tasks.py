@@ -34,10 +34,10 @@ def fetch_and_upsert_manus_tasks() -> dict:
     now = datetime.now(tz)
     effective_date = get_effective_date(now).date()
 
-    tasks_found = 0
-    tasks_upserted = 0
+    todays_tasks = []
     errors = []
 
+    # Phase 1: Fetch all of today's tasks from the API
     try:
         has_more = True
         last_id = None
@@ -72,33 +72,39 @@ def fetch_and_upsert_manus_tasks() -> dict:
                 task_effective_date = get_effective_date(task_date).date()
 
                 if task_effective_date < effective_date:
-                    # Tasks are ordered newest first; once we hit older tasks, stop
                     has_more = False
                     break
 
                 if task_effective_date == effective_date:
-                    tasks_found += 1
                     task_id = task.get("id", "unknown")
                     metadata = task.get("metadata", {})
                     task_title = metadata.get("task_title", "Untitled Task")
                     task_url = metadata.get("task_url", f"https://manus.im/app/{task_id}")
-
-                    result = upsert_manus_task_touched(task_id, task_title, task_url)
-
-                    if result["daily_action_success"] or result["weekly_cycle_success"]:
-                        tasks_upserted += 1
-                    if not result["daily_action_success"]:
-                        errors.append(f"DA fail for {task_id}: {result.get('daily_action_error')}")
-                    if not result["weekly_cycle_success"]:
-                        errors.append(f"WC fail for {task_id}: {result.get('weekly_cycle_error')}")
+                    todays_tasks.append({"title": task_title, "url": task_url})
 
     except Exception as e:
         errors.append(str(e))
         logger.error("Error fetching Manus tasks: %s", e)
 
+    logger.info("Manus API fetch: found %d tasks for today", len(todays_tasks))
+
+    # Phase 2: Batch upsert all fetched tasks into Obsidian
+    tasks_upserted = 0
+    for task in todays_tasks:
+        try:
+            result = upsert_manus_task_touched(task["title"], task["url"])
+            if result["daily_action_success"] or result["weekly_cycle_success"]:
+                tasks_upserted += 1
+            if not result["daily_action_success"]:
+                errors.append(f"DA fail: {result.get('daily_action_error')}")
+            if not result["weekly_cycle_success"]:
+                errors.append(f"WC fail: {result.get('weekly_cycle_error')}")
+        except Exception as e:
+            errors.append(str(e))
+
     logger.info(
         "Manus task fetch complete: found=%d, upserted=%d, errors=%d",
-        tasks_found, tasks_upserted, len(errors),
+        len(todays_tasks), tasks_upserted, len(errors),
     )
 
-    return {"tasks_found": tasks_found, "tasks_upserted": tasks_upserted, "errors": errors}
+    return {"tasks_found": len(todays_tasks), "tasks_upserted": tasks_upserted, "errors": errors}

@@ -187,11 +187,10 @@ def _get_daily_section_order() -> list[str]:
     return [DAILY_INITIATIVE_HEADER, DAILY_PROJECT_HEADER, DAILY_TODOIST_HEADER, DAILY_ISSUES_TOUCHED_HEADER, DAILY_ACTION_HEADER]
 
 
-def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def _upsert_daily_action_manus_touched(task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's Daily Action note.
 
     Args:
-        task_id: The Manus task ID
         task_title: The task title
         task_url: The task URL (used for deduplication)
 
@@ -212,7 +211,7 @@ def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: 
         file_content = _get_file_content(dbx, file_path)
 
         # Format the entry
-        log_entry = f"- {task_id}: {task_title} ([link]({task_url}))"
+        log_entry = f"- [{task_title}]({task_url})"
 
         # Parse YAML frontmatter
         yaml_section, main_content = _parse_yaml_frontmatter(file_content)
@@ -256,17 +255,7 @@ def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: 
                     break
                 else:
                     insert_index = i + 1
-            # Add blank line before new entry if there isn't one already
-            if insert_index > 0 and lines[insert_index - 1].strip() != '':
-                lines.insert(insert_index, '')
-                insert_index += 1
             lines.insert(insert_index, log_entry)
-            # Add blank line after if next line is a section header or template boundary
-            next_line_index = insert_index + 1
-            if next_line_index < len(lines):
-                next_line = lines[next_line_index].strip()
-                if next_line.startswith('#') or next_line == DAILY_TEMPLATE_BOUNDARY:
-                    lines.insert(next_line_index, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
@@ -381,11 +370,10 @@ def _get_weekly_section_order() -> list[str]:
     return [WEEKLY_INITIATIVE_HEADER, WEEKLY_PROJECT_HEADER, WEEKLY_COMPLETED_HEADER, WEEKLY_ISSUES_TOUCHED_HEADER, WEEKLY_CYCLE_HEADER]
 
 
-def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def _upsert_weekly_cycle_manus_touched(task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's section in the Weekly Cycle note.
 
     Args:
-        task_id: The Manus task ID
         task_title: The task title
         task_url: The task URL (used for deduplication)
 
@@ -419,7 +407,7 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
         file_content = _get_file_content(dbx, file_path)
 
         # Format the entry
-        log_entry = f"- {task_id}: {task_title} ([link]({task_url}))"
+        log_entry = f"- [{task_title}]({task_url})"
 
         # Get current day name and find the section
         day_name = _get_current_day_name(system_tz)
@@ -472,15 +460,7 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
                     break
                 else:
                     insert_index = i + 1
-            # Add blank line before new entry if there isn't one already
-            if insert_index > 0 and lines[insert_index - 1].strip() != '':
-                lines.insert(insert_index, '')
-                insert_index += 1
             lines.insert(insert_index, log_entry)
-            # Add blank line after if next line is a section header
-            next_line_index = insert_index + 1
-            if next_line_index < len(lines) and lines[next_line_index].strip().startswith('#'):
-                lines.insert(next_line_index, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
@@ -530,14 +510,13 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
 
 # --- Main entry point ---
 
-def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def upsert_manus_task_touched(task_title: str, task_url: str) -> dict:
     """Add a Manus task to both Daily Action and Weekly Cycle notes.
 
     Writes to Daily Action first, then Weekly Cycle. Both operations are
     independent - if one fails, the other's success/failure is unaffected.
 
     Args:
-        task_id: The Manus task ID
         task_title: The task title
         task_url: The task URL (used for deduplication and linking)
 
@@ -561,7 +540,7 @@ def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> d
 
     # Write to Daily Action
     try:
-        da_result = _upsert_daily_action_manus_touched(task_id, task_title, task_url)
+        da_result = _upsert_daily_action_manus_touched(task_title, task_url)
         result["daily_action_success"] = da_result["success"]
         result["daily_action_action"] = da_result.get("action")
         if not da_result["success"]:
@@ -574,7 +553,7 @@ def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> d
 
     # Write to Weekly Cycle
     try:
-        wc_result = _upsert_weekly_cycle_manus_touched(task_id, task_title, task_url)
+        wc_result = _upsert_weekly_cycle_manus_touched(task_title, task_url)
         result["weekly_cycle_success"] = wc_result["success"]
         result["weekly_cycle_action"] = wc_result.get("action")
         if not wc_result["success"]:
