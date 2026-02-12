@@ -764,7 +764,7 @@ async def manus_webhook(
         if not task_url:
             task_url = f"https://manus.im/app/{task_id}"
 
-        result = upsert_manus_task_touched(task_id, task_title or "Untitled Task", task_url)
+        result = upsert_manus_task_touched(task_title or "Untitled Task", task_url)
         if result["daily_action_success"]:
             logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
         else:
@@ -782,7 +782,7 @@ async def manus_webhook(
         if task_title and task_id != "unknown":
             if not task_url:
                 task_url = f"https://manus.im/app/{task_id}"
-            result = upsert_manus_task_touched(task_id, task_title, task_url)
+            result = upsert_manus_task_touched(task_title, task_url)
             if result["daily_action_success"]:
                 logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
             else:
