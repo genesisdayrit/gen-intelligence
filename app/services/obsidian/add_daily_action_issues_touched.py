@@ -369,7 +369,7 @@ def upsert_daily_action_issue_touched(
 
                     if section_found:
                         if line.strip() == '':
-                            continue
+                            break
                         elif line.strip().startswith('#') or line.strip() == '---' or line.strip() == TEMPLATE_BOUNDARY:
                             break
                         else:
@@ -378,6 +378,10 @@ def upsert_daily_action_issue_touched(
 
                 if insert_index is not None:
                     lines.insert(insert_index, entry_line)
+                    # Ensure a blank line between entries and next section
+                    next_idx = insert_index + 1
+                    if next_idx < len(lines) and lines[next_idx].strip() != '':
+                        lines.insert(next_idx, '')
             else:
                 # Section doesn't exist - create it
                 insert_pos = _find_issues_touched_insert_position(lines, daily_review_end_line)
