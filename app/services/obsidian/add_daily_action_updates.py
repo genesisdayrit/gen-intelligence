@@ -27,6 +27,7 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 INITIATIVE_UPDATES_HEADER = "### Initiative Updates:"
 PROJECT_UPDATES_HEADER = "### Project Updates:"
 TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
+ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
 
 # Template section boundary (marks end of tracked sections)
 TEMPLATE_BOUNDARY = "Vision Objective 1:"
@@ -188,7 +189,7 @@ def _get_section_header(section_type: str) -> str:
 
 def _get_section_order() -> list[str]:
     """Return the ordered list of section headers (top to bottom)."""
-    return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, TODOIST_COMPLETED_HEADER]
+    return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, TODOIST_COMPLETED_HEADER, ISSUES_TOUCHED_HEADER]
 
 
 def upsert_daily_action_update(section_type: str, url: str, parent_name: str, content: str) -> dict:

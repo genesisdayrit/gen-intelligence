@@ -30,6 +30,7 @@ LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}')
 # Related section headers that should come before Todoist
 INITIATIVE_UPDATES_HEADER = "### Initiative Updates:"
 PROJECT_UPDATES_HEADER = "### Project Updates:"
+ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
 
 # Template section boundary (marks end of tracked sections)
 TEMPLATE_BOUNDARY = "Vision Objective 1:"

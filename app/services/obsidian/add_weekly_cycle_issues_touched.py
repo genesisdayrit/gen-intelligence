@@ -1,4 +1,4 @@
-"""Dropbox helper for writing Linear Initiative/Project Updates to Weekly Cycle notes."""
+"""Dropbox helper for writing Linear Issues Touched to Weekly Cycle notes."""
 
 import os
 import re
@@ -31,7 +31,6 @@ ISSUES_TOUCHED_HEADER = "##### Linear Issues Touched:"
 
 # Patterns
 DAY_SECTION_PATTERN = re.compile(r'^### (Wednesday|Thursday|Friday|Saturday|Sunday|Monday|Tuesday) -', re.MULTILINE)
-LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}\]')
 
 
 def _refresh_access_token() -> str:
@@ -152,32 +151,52 @@ def _get_current_day_name(tz) -> str:
     return effective_now.strftime('%A')  # Returns "Wednesday", "Thursday", etc.
 
 
-def _get_section_header(section_type: str) -> str:
-    """Get the header string for a section type."""
-    if section_type == "initiative":
-        return INITIATIVE_UPDATES_HEADER
-    elif section_type == "project":
-        return PROJECT_UPDATES_HEADER
+def _to_native_app_url(url: str) -> str:
+    """Convert Linear browser URL to native app URL.
+
+    Transforms https://linear.app/... to linear://...
+    """
+    return url.replace("https://linear.app/", "linear://")
+
+
+def _format_issue_entry(
+    issue_identifier: str,
+    project_name: str,
+    issue_title: str,
+    status_name: str,
+    issue_url: str,
+) -> str:
+    """Format a single issue entry line.
+
+    Format: GD-328 Project Name - Issue Title (In Progress) ([link](linear://...))
+    """
+    native_url = _to_native_app_url(issue_url)
+    if project_name:
+        return f"{issue_identifier} {project_name} - {issue_title} ({status_name}) ([link]({native_url}))"
     else:
-        raise ValueError(f"Unknown section type: {section_type}")
+        return f"{issue_identifier} {issue_title} ({status_name}) ([link]({native_url}))"
 
 
-def _get_section_order() -> list[str]:
-    """Return the ordered list of section headers (top to bottom)."""
-    return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, COMPLETED_TASKS_HEADER, ISSUES_TOUCHED_HEADER]
-
-
-def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, content: str) -> dict:
-    """Upsert an initiative or project update to today's section in the Weekly Cycle note.
+def upsert_weekly_cycle_issue_touched(
+    issue_identifier: str,
+    project_name: str,
+    issue_title: str,
+    status_name: str,
+    issue_url: str,
+    status_changed: bool,
+) -> dict:
+    """Upsert a Linear issue entry to the Linear Issues Touched section in the Weekly Cycle.
 
     Args:
-        section_type: Either "initiative" or "project"
-        url: The Linear URL for the update (used as unique identifier)
-        parent_name: The name of the initiative or project
-        content: The update body text
+        issue_identifier: Human-readable issue ID (e.g., "GD-328")
+        project_name: Parent project name (may be empty)
+        issue_title: Issue title
+        status_name: Current workflow state name (e.g., "In Progress")
+        issue_url: Linear URL for the issue
+        status_changed: Whether the status was updated in this webhook event
 
     Returns:
-        dict with keys: success, action ("inserted" or "updated"), error (if any)
+        dict with keys: success, action ("inserted", "updated", or "skipped"), error (if any)
     """
     try:
         vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
@@ -206,25 +225,8 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
         file_path, _ = _find_weekly_cycle_file(dbx, weekly_cycles_folder, date_range)
         file_content = _get_weekly_cycle_content(dbx, file_path)
 
-        # Format the log entry with timestamp
-        now = datetime.now(system_tz)
-        timestamp = now.strftime("%H:%M")  # 24-hour format
-        # Convert bullet points to Obsidian format with proper indentation
-        # Second-level bullets (+ → 8 spaces + dash)
-        normalized_content = re.sub(r'^(\s*)\+(\s+)', r'\1        -\2', content, flags=re.MULTILINE)
-        # First-level bullets (* → 4 spaces + dash)
-        normalized_content = re.sub(r'^(\s*)\*(\s+)', r'\1    -\2', normalized_content, flags=re.MULTILINE)
-        # Preserve multiline content with bullet points, indent continuation lines
-        content_lines = normalized_content.strip().split('\n')
-        # First line gets the timestamp and Obsidian wiki-link with Linear hyperlink
-        header_line = f"[{timestamp}] - [[{parent_name}]] ([link]({url})):"
-        if len(content_lines) == 1 and not content_lines[0].strip().startswith(('*', '-', '+')):
-            # Single line, no bullets - keep on same line
-            log_entry = f"{header_line} {content_lines[0].strip()}"
-        else:
-            # Multiline or has bullets - content starts on new line at column 0
-            indented_content = '\n'.join(line for line in content_lines if line.strip())
-            log_entry = f"{header_line}\n{indented_content}"
+        # Format the entry
+        entry_line = _format_issue_entry(issue_identifier, project_name, issue_title, status_name, issue_url)
 
         # Get current day name and find the section
         day_name = _get_current_day_name(system_tz)
@@ -252,110 +254,77 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
         if day_section_end is None:
             day_section_end = len(lines)
 
-        # Check if this URL already exists in the day section (for update)
+        # Check if this issue identifier already exists in the day section
+        identifier_pattern = re.compile(rf'^{re.escape(issue_identifier)}\s')
         existing_line_index = None
+        in_issues_section = False
+
         for i in range(day_section_start, day_section_end):
-            if url in lines[i]:
-                existing_line_index = i
-                break
+            if lines[i].strip() == ISSUES_TOUCHED_HEADER:
+                in_issues_section = True
+                continue
+            if in_issues_section:
+                if lines[i].strip().startswith('#') or lines[i].strip() == '---':
+                    break
+                if identifier_pattern.match(lines[i]):
+                    existing_line_index = i
+                    break
 
         if existing_line_index is not None:
-            # Update existing entry - need to find and replace the entire block
-            # Entry ends at: next timestamp [HH:MM] or section header #
-            entry_end = existing_line_index + 1
-            for i in range(existing_line_index + 1, day_section_end):
-                line = lines[i]
-                if LOG_ENTRY_PATTERN.match(line):
-                    # Next entry starts here
-                    break
-                elif line.strip().startswith('#'):
-                    # Section header
-                    break
-                else:
-                    # Content line or blank line - part of this entry
-                    entry_end = i + 1
+            if not status_changed:
+                # No status change - skip (no-op)
+                return {"success": True, "action": "skipped"}
 
-            # Remove all lines of the old entry
-            del lines[existing_line_index:entry_end]
-            # Insert new entry at the same position
-            lines.insert(existing_line_index, log_entry)
-            # Add blank line after if next line is another entry or section header
-            next_line_index = existing_line_index + 1
-            if next_line_index < len(lines):
-                next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line) or next_line.strip().startswith('#'):
-                    lines.insert(next_line_index, '')
+            # Status changed - update the existing line
+            lines[existing_line_index] = entry_line
             action = "updated"
         else:
-            # Insert new entry - need to find or create the appropriate section
-            target_header = _get_section_header(section_type)
-            section_order = _get_section_order()
-
-            # Find existing headers in the day section
-            header_positions = {}
+            # Issue not found - insert new entry
+            issues_header_index = None
             for i in range(day_section_start, day_section_end):
-                for header in section_order:
-                    if lines[i].strip() == header:
-                        header_positions[header] = i
+                if lines[i].strip() == ISSUES_TOUCHED_HEADER:
+                    issues_header_index = i
+                    break
 
-            if target_header in header_positions:
-                # Header exists - insert after all existing entries
-                # Entry boundaries: only timestamp lines [HH:MM] or section headers #
-                # Everything else (content, blank lines, user notes) belongs to the section
-                header_index = header_positions[target_header]
-                insert_index = header_index + 1
-                for i in range(header_index + 1, day_section_end):
+            if issues_header_index is not None:
+                # Section exists - append after existing entries
+                insert_index = issues_header_index + 1
+                for i in range(issues_header_index + 1, day_section_end):
                     line = lines[i]
-                    if line.strip().startswith('#'):
-                        # Section header - stop here, insert before it
+                    if line.strip() == '':
+                        continue
+                    elif line.strip().startswith('#') or line.strip() == '---':
                         break
                     else:
-                        # Any other line (content, blank, notes) - keep going
                         insert_index = i + 1
-                # Add blank line before new entry if there isn't one already
-                if insert_index > 0 and lines[insert_index - 1].strip() != '':
-                    lines.insert(insert_index, '')
-                    insert_index += 1
-                lines.insert(insert_index, log_entry)
-                # Add blank line after if next line is a section header
-                next_line_index = insert_index + 1
-                if next_line_index < len(lines) and lines[next_line_index].strip().startswith('#'):
-                    lines.insert(next_line_index, '')
-            else:
-                # Header doesn't exist - need to create it in the right position
-                # Find where to insert based on section order
-                target_order_index = section_order.index(target_header)
 
-                # Find the first existing header that comes after our target
-                insert_before_index = None
-                for later_header in section_order[target_order_index + 1:]:
-                    if later_header in header_positions:
-                        insert_before_index = header_positions[later_header]
+                lines.insert(insert_index, entry_line)
+            else:
+                # Section doesn't exist - create it before the --- separator
+                # Find insert position: after Completed Tasks section, or before ---
+                section_order = [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, COMPLETED_TASKS_HEADER, ISSUES_TOUCHED_HEADER]
+
+                # Find existing section headers in the day section
+                header_positions = {}
+                for i in range(day_section_start, day_section_end):
+                    for header in section_order:
+                        if lines[i].strip() == header:
+                            header_positions[header] = i
+
+                # Find the last content line before the end separator
+                insert_pos = day_section_end
+                for i in range(day_section_end - 1, day_section_start, -1):
+                    if lines[i].strip() == '---':
+                        insert_pos = i
+                        break
+                    elif lines[i].strip() != '':
+                        insert_pos = i + 1
                         break
 
-                if insert_before_index is not None:
-                    # Insert before the next section
-                    # Add: header, entry, blank line
-                    lines.insert(insert_before_index, '')
-                    lines.insert(insert_before_index, log_entry)
-                    lines.insert(insert_before_index, target_header)
-                    lines.insert(insert_before_index, '')
-                else:
-                    # No later headers exist - insert before the --- separator or at end of section
-                    # Find the last content line before section end
-                    insert_pos = day_section_end
-                    for i in range(day_section_end - 1, day_section_start, -1):
-                        if lines[i].strip() == '---':
-                            insert_pos = i
-                            break
-                        elif lines[i].strip() != '':
-                            insert_pos = i + 1
-                            break
-
-                    # Insert: blank line, header, entry, blank line
-                    new_lines = ['', target_header, log_entry, '']
-                    for j, new_line in enumerate(new_lines):
-                        lines.insert(insert_pos + j, new_line)
+                # Insert: blank line, header, entry, blank line
+                new_lines = ['', ISSUES_TOUCHED_HEADER, entry_line, '']
+                for j, new_line in enumerate(new_lines):
+                    lines.insert(insert_pos + j, new_line)
 
             action = "inserted"
 
