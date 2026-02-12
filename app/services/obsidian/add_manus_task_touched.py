@@ -243,7 +243,7 @@ def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: 
                     header_positions[header] = i
 
         if target_header in header_positions:
-            # Header exists - insert after all existing entries in this section
+            # Header exists - insert after existing task entries (skip trailing blank lines)
             header_index = header_positions[target_header]
             insert_index = header_index + 1
             for i in range(header_index + 1, len(lines)):
@@ -254,9 +254,16 @@ def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: 
                     break
                 elif line.strip() == DAILY_TEMPLATE_BOUNDARY:
                     break
+                elif line.strip() == '':
+                    # Don't advance past blank lines — insert before them
+                    break
                 else:
                     insert_index = i + 1
             lines.insert(insert_index, log_entry)
+            # Ensure a blank line between entries and next section
+            next_idx = insert_index + 1
+            if next_idx < len(lines) and lines[next_idx].strip() != '':
+                lines.insert(next_idx, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
@@ -453,16 +460,22 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
                     header_positions[header] = i
 
         if target_header in header_positions:
-            # Header exists - insert after all existing entries
+            # Header exists - insert after existing task entries (skip trailing blank lines)
             header_index = header_positions[target_header]
             insert_index = header_index + 1
             for i in range(header_index + 1, day_section_end):
                 line = lines[i]
                 if line.strip().startswith('#'):
                     break
+                elif line.strip() == '':
+                    break
                 else:
                     insert_index = i + 1
             lines.insert(insert_index, log_entry)
+            # Ensure a blank line between entries and next section
+            next_idx = insert_index + 1
+            if next_idx < len(lines) and lines[next_idx].strip() != '':
+                lines.insert(next_idx, '')
         else:
             # Header doesn't exist - create it in the right position
             target_order_index = section_order.index(target_header)
