@@ -22,6 +22,7 @@ from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.upsert_issue_touched import upsert_issue_touched
+from services.obsidian.add_manus_task_touched import upsert_manus_task_touched
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import add_shared_link, get_predicted_link_path
@@ -754,11 +755,25 @@ async def manus_webhook(
         task_status,
     )
 
-    if event_type == "task_created":
-        logger.info("Manus task created: %s", task_id)
-    elif event_type == "task_progress":
-        progress = data.get("progress", {})
-        logger.info("Manus task progress: %s | %s", task_id, progress)
+    if event_type in ("task_created", "task_progress"):
+        metadata = data.get("metadata", {})
+        task_title = metadata.get("task_title") or data.get("title", "Untitled Task")
+        task_url = metadata.get("task_url") or data.get("task_url") or f"https://manus.im/app/{task_id}"
+
+        logger.info(
+            "Manus %s: %s | title=%s | url=%s",
+            event_type, task_id, task_title, task_url,
+        )
+
+        result = upsert_manus_task_touched(task_id, task_title, task_url)
+        if result["daily_action_success"]:
+            logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
+        else:
+            logger.error("Failed to write Manus task to Daily Action: %s", result.get("daily_action_error"))
+        if result["weekly_cycle_success"]:
+            logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+        else:
+            logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
     elif event_type == "task_stopped":
         logger.info("Manus task stopped: %s | status=%s", task_id, task_status)
     else:
