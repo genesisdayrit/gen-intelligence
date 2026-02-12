@@ -172,9 +172,9 @@ def _format_issue_entry(
     """
     native_url = _to_native_app_url(issue_url)
     if project_name:
-        return f"{issue_identifier} {project_name} - {issue_title} ({status_name}) ([link]({native_url}))"
+        return f"[{issue_identifier}] ({project_name}) - {issue_title} ({status_name}) ([link]({native_url}))"
     else:
-        return f"{issue_identifier} {issue_title} ({status_name}) ([link]({native_url}))"
+        return f"[{issue_identifier}] {issue_title} ({status_name}) ([link]({native_url}))"
 
 
 def upsert_weekly_cycle_issue_touched(
@@ -255,7 +255,7 @@ def upsert_weekly_cycle_issue_touched(
             day_section_end = len(lines)
 
         # Check if this issue identifier already exists in the day section
-        identifier_pattern = re.compile(rf'^{re.escape(issue_identifier)}\s')
+        identifier_pattern = re.compile(rf'^\[{re.escape(issue_identifier)}\]\s')
         existing_line_index = None
         in_issues_section = False
 

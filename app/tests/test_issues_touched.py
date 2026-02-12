@@ -67,7 +67,7 @@ def test_format_issue_entry_with_project():
         status_name="In Progress",
         issue_url="https://linear.app/chapters/issue/gd-328/add-linear-issues-touched",
     )
-    assert entry == "GD-328 Centralizing OS - Add Linear Issues Touched (In Progress) ([link](linear://chapters/issue/gd-328/add-linear-issues-touched))"
+    assert entry == "[GD-328] (Centralizing OS) - Add Linear Issues Touched (In Progress) ([link](linear://chapters/issue/gd-328/add-linear-issues-touched))"
 
 
 def test_format_issue_entry_without_project():
@@ -78,7 +78,7 @@ def test_format_issue_entry_without_project():
         status_name="Todo",
         issue_url="https://linear.app/chapters/issue/gd-100/standalone",
     )
-    assert entry == "GD-100 Standalone Issue (Todo) ([link](linear://chapters/issue/gd-100/standalone))"
+    assert entry == "[GD-100] Standalone Issue (Todo) ([link](linear://chapters/issue/gd-100/standalone))"
 
 
 def test_format_issue_entry_no_project_no_dash():
@@ -90,9 +90,9 @@ def test_format_issue_entry_no_project_no_dash():
         status_name="Backlog",
         issue_url="https://linear.app/chapters/issue/gd-500/orphan",
     )
-    assert entry == "GD-500 Orphan Issue (Backlog) ([link](linear://chapters/issue/gd-500/orphan))"
+    assert entry == "[GD-500] Orphan Issue (Backlog) ([link](linear://chapters/issue/gd-500/orphan))"
     # Should not have " - " between ID and title when no project
-    assert "GD-500 Orphan" in entry
+    assert "[GD-500] Orphan" in entry
 
 
 # --- Test section insert position ---
@@ -192,8 +192,8 @@ Had a good day
 [02:00 PM] Complete something
 
 {ISSUES_TOUCHED_HEADER}
-GD-100 Project A - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
-GD-200 Project B - Second Issue (In Progress) ([link](linear://chapters/issue/gd-200/second))
+[GD-100] (Project A) - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
+[GD-200] (Project B) - Second Issue (In Progress) ([link](linear://chapters/issue/gd-200/second))
 
 {TEMPLATE_BOUNDARY}
 Vision Objective 1 content here"""
@@ -248,7 +248,7 @@ def test_insert_new_issue_creates_section():
     assert result["action"] == "inserted"
     content = uploaded.get('content', '')
     assert ISSUES_TOUCHED_HEADER in content
-    assert "GD-328 Centralizing OS - Add Issues Touched (In Progress)" in content
+    assert "[GD-328] (Centralizing OS) - Add Issues Touched (In Progress)" in content
     assert "linear://chapters/issue/gd-328/add-issues-touched" in content
     # Section should be after Todoist and before template boundary
     issues_pos = content.index(ISSUES_TOUCHED_HEADER)
@@ -272,10 +272,10 @@ def test_insert_new_issue_to_existing_section():
     assert result["success"] is True
     assert result["action"] == "inserted"
     content = uploaded.get('content', '')
-    assert "GD-999 New Project - Brand New Issue (Todo)" in content
+    assert "[GD-999] (New Project) - Brand New Issue (Todo)" in content
     # Original entries should still be there
-    assert "GD-100 Project A - First Issue (Todo)" in content
-    assert "GD-200 Project B - Second Issue (In Progress)" in content
+    assert "[GD-100] (Project A) - First Issue (Todo)" in content
+    assert "[GD-200] (Project B) - Second Issue (In Progress)" in content
 
 
 def test_update_existing_issue_status_changed():
@@ -294,7 +294,7 @@ def test_update_existing_issue_status_changed():
     assert result["action"] == "updated"
     content = uploaded.get('content', '')
     # Should have new status
-    assert "GD-200 Project B - Second Issue (Done)" in content
+    assert "[GD-200] (Project B) - Second Issue (Done)" in content
     # Old entry line should be gone
     assert "Second Issue (In Progress)" not in content
 
@@ -332,7 +332,7 @@ def test_issue_found_by_id_not_title():
     assert result["success"] is True
     assert result["action"] == "updated"
     content = uploaded.get('content', '')
-    assert "GD-100 Project A - Renamed First Issue (In Progress)" in content
+    assert "[GD-100] (Project A) - Renamed First Issue (In Progress)" in content
     # Old title should be gone
     assert "First Issue (Todo)" not in content
 
@@ -352,9 +352,9 @@ def test_issue_no_project():
     assert result["success"] is True
     assert result["action"] == "inserted"
     content = uploaded.get('content', '')
-    assert "GD-500 No Project Issue (Backlog)" in content
+    assert "[GD-500] No Project Issue (Backlog)" in content
     # Should not have the " - " separator
-    assert "GD-500 No Project Issue" in content
+    assert "[GD-500] No Project Issue" in content
 
 
 # =============================================================================
@@ -384,8 +384,8 @@ SAMPLE_WEEKLY_CYCLE_WITH_ISSUES = f"""### Thursday -
 [02:00 PM] Complete something
 
 {WC_ISSUES_TOUCHED_HEADER}
-GD-100 Project A - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
-GD-200 Project B - Second Issue (In Progress) ([link](linear://chapters/issue/gd-200/second))
+[GD-100] (Project A) - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
+[GD-200] (Project B) - Second Issue (In Progress) ([link](linear://chapters/issue/gd-200/second))
 
 ---
 ### Friday -
@@ -444,7 +444,7 @@ def test_wc_insert_new_issue_creates_section():
     assert result["action"] == "inserted"
     content = uploaded.get('content', '')
     assert WC_ISSUES_TOUCHED_HEADER in content
-    assert "GD-328 Centralizing OS - Add Issues Touched (In Progress)" in content
+    assert "[GD-328] (Centralizing OS) - Add Issues Touched (In Progress)" in content
     assert "linear://chapters/issue/gd-328/add-issues-touched" in content
     # Section should be within the Thursday day section (before ---)
     thursday_pos = content.index("### Thursday -")
@@ -468,10 +468,10 @@ def test_wc_insert_new_issue_to_existing_section():
     assert result["success"] is True
     assert result["action"] == "inserted"
     content = uploaded.get('content', '')
-    assert "GD-999 New Project - Brand New Issue (Todo)" in content
+    assert "[GD-999] (New Project) - Brand New Issue (Todo)" in content
     # Original entries should still be there
-    assert "GD-100 Project A - First Issue (Todo)" in content
-    assert "GD-200 Project B - Second Issue (In Progress)" in content
+    assert "[GD-100] (Project A) - First Issue (Todo)" in content
+    assert "[GD-200] (Project B) - Second Issue (In Progress)" in content
 
 
 def test_wc_update_existing_issue_status_changed():
@@ -489,7 +489,7 @@ def test_wc_update_existing_issue_status_changed():
     assert result["success"] is True
     assert result["action"] == "updated"
     content = uploaded.get('content', '')
-    assert "GD-200 Project B - Second Issue (Done)" in content
+    assert "[GD-200] (Project B) - Second Issue (Done)" in content
     assert "Second Issue (In Progress)" not in content
 
 
@@ -525,7 +525,7 @@ def test_wc_issue_found_by_id_not_title():
     assert result["success"] is True
     assert result["action"] == "updated"
     content = uploaded.get('content', '')
-    assert "GD-100 Project A - Renamed First Issue (In Progress)" in content
+    assert "[GD-100] (Project A) - Renamed First Issue (In Progress)" in content
     assert "First Issue (Todo)" not in content
 
 
@@ -536,7 +536,7 @@ def test_wc_issue_scoped_to_day_section():
     content_with_friday = f"""### Thursday -
 
 {WC_ISSUES_TOUCHED_HEADER}
-GD-100 Project A - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
+[GD-100] (Project A) - First Issue (Todo) ([link](linear://chapters/issue/gd-100/first))
 
 ---
 ### Friday -
@@ -563,7 +563,7 @@ GD-100 Project A - First Issue (Todo) ([link](linear://chapters/issue/gd-100/fir
     friday_idx = next(i for i, l in enumerate(lines) if "### Friday -" in l)
     friday_section = '\n'.join(lines[friday_idx:])
     assert WC_ISSUES_TOUCHED_HEADER in friday_section
-    assert "GD-100 Project A - First Issue (In Progress)" in friday_section
+    assert "[GD-100] (Project A) - First Issue (In Progress)" in friday_section
 
 
 def test_wc_missing_day_section_returns_error():
