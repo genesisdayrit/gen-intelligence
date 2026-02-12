@@ -70,7 +70,7 @@ The job writes entries to the `### Manus Tasks:` section in Daily Action notes a
 Each entry follows this format:
 
 ```markdown
-- [Comprehensive Research on Topics](https://manus.im/app/RyagLvAZPLQwCdBT5m3nZj)
+- Comprehensive Research on Topics ([RyagLvAZPLQwCdBT5m3nZj](https://manus.im/app/RyagLvAZPLQwCdBT5m3nZj))
 ```
 
 ## How It Works

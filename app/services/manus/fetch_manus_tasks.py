@@ -80,7 +80,7 @@ def fetch_and_upsert_manus_tasks() -> dict:
                     metadata = task.get("metadata", {})
                     task_title = metadata.get("task_title", "Untitled Task")
                     task_url = metadata.get("task_url", f"https://manus.im/app/{task_id}")
-                    todays_tasks.append({"title": task_title, "url": task_url})
+                    todays_tasks.append({"id": task_id, "title": task_title, "url": task_url})
 
     except Exception as e:
         errors.append(str(e))
@@ -92,7 +92,7 @@ def fetch_and_upsert_manus_tasks() -> dict:
     tasks_upserted = 0
     for task in todays_tasks:
         try:
-            result = upsert_manus_task_touched(task["title"], task["url"])
+            result = upsert_manus_task_touched(task["id"], task["title"], task["url"])
             if result["daily_action_success"] or result["weekly_cycle_success"]:
                 tasks_upserted += 1
             if not result["daily_action_success"]:
