@@ -30,6 +30,12 @@ def _send_cycle_summary():
     return run_cycle_summary_email(current=False, all_initiatives=False)
 
 
+def _fetch_manus_tasks():
+    from services.manus.fetch_manus_tasks import fetch_and_upsert_manus_tasks
+
+    return fetch_and_upsert_manus_tasks()
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -54,6 +60,15 @@ SCHEDULED_JOBS = [
             day_of_week="wed",
             hour=3,
             minute=30,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "fetch_manus_tasks",
+        "name": "Fetch Manus Tasks",
+        "func": _fetch_manus_tasks,
+        "trigger": CronTrigger(
+            minute="*/30",
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },

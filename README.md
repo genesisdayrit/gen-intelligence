@@ -53,6 +53,7 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Linear Webhook Setup](docs/guides/linear-webhook-setup.md)
 - [GitHub Webhook Setup](docs/guides/github-webhook-setup.md)
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
+- [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)
 - [Weekly Cycle Sync](docs/guides/weekly-cycle-sync.md)
 - [Ngrok Setup](docs/guides/ngrok-setup.md)
 - [Server Restart](docs/guides/server-restart.md)
