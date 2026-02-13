@@ -210,11 +210,11 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
         # Format the log entry with timestamp
         now = datetime.now(system_tz)
         timestamp = now.strftime("%H:%M")  # 24-hour format
-        # Convert bullet points to Obsidian format
-        # Second-level bullets (+ → 2 spaces + dash)
-        normalized_content = re.sub(r'^(\s*)\+(\s+)', r'  -\2', content, flags=re.MULTILINE)
-        # First-level bullets (* → dash at column 0)
-        normalized_content = re.sub(r'^(\s*)\*(\s+)', r'-\2', normalized_content, flags=re.MULTILINE)
+        # Convert bullet points to Obsidian format (preserve existing indentation)
+        # Second-level bullets (+ → preserve indent + dash)
+        normalized_content = re.sub(r'^(\s*)\+(\s+)', r'\1-\2', content, flags=re.MULTILINE)
+        # First-level bullets (* → preserve indent + dash)
+        normalized_content = re.sub(r'^(\s*)\*(\s+)', r'\1-\2', normalized_content, flags=re.MULTILINE)
         # Preserve multiline content with bullet points, indent continuation lines
         content_lines = normalized_content.strip().split('\n')
         # First line gets the timestamp and Obsidian wiki-link with Linear hyperlink
