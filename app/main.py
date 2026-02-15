@@ -22,7 +22,7 @@ from services.obsidian.add_telegram_log import append_telegram_log
 from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.upsert_issue_touched import upsert_issue_touched
-from services.obsidian.add_manus_task_touched import upsert_manus_task_touched
+from services.obsidian.add_manus_task import upsert_manus_task
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import add_shared_link, get_predicted_link_path
@@ -764,7 +764,7 @@ async def manus_webhook(
         if not task_url:
             task_url = f"https://manus.im/app/{task_id}"
 
-        result = upsert_manus_task_touched(task_id, task_title or "Untitled Task", task_url)
+        result = upsert_manus_task(task_id, task_title or "Untitled Task", task_url)
         if result["daily_action_success"]:
             logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
         else:
@@ -782,7 +782,7 @@ async def manus_webhook(
         if task_title and task_id != "unknown":
             if not task_url:
                 task_url = f"https://manus.im/app/{task_id}"
-            result = upsert_manus_task_touched(task_id, task_title, task_url)
+            result = upsert_manus_task(task_id, task_title, task_url)
             if result["daily_action_success"]:
                 logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
             else:

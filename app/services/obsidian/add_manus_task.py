@@ -187,7 +187,7 @@ def _get_daily_section_order() -> list[str]:
     return [DAILY_INITIATIVE_HEADER, DAILY_PROJECT_HEADER, DAILY_TODOIST_HEADER, DAILY_ISSUES_TOUCHED_HEADER, DAILY_ACTION_HEADER]
 
 
-def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's Daily Action note.
 
     Args:
@@ -229,7 +229,7 @@ def _upsert_daily_action_manus_touched(task_id: str, task_title: str, task_url: 
             if task_url in line:
                 return {"success": True, "action": "skipped"}
 
-        # Insert new entry - find or create the Manus Tasks Touched section
+        # Insert new entry - find or create the Manus Tasks section
         target_header = DAILY_ACTION_HEADER
         section_order = _get_daily_section_order()
 
@@ -378,7 +378,7 @@ def _get_weekly_section_order() -> list[str]:
     return [WEEKLY_INITIATIVE_HEADER, WEEKLY_PROJECT_HEADER, WEEKLY_COMPLETED_HEADER, WEEKLY_ISSUES_TOUCHED_HEADER, WEEKLY_CYCLE_HEADER]
 
 
-def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def _upsert_weekly_cycle_manus(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task entry to today's section in the Weekly Cycle note.
 
     Args:
@@ -448,7 +448,7 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
             if task_url in lines[i]:
                 return {"success": True, "action": "skipped"}
 
-        # Insert new entry - find or create the Manus Tasks Touched section
+        # Insert new entry - find or create the Manus Tasks section
         target_header = WEEKLY_CYCLE_HEADER
         section_order = _get_weekly_section_order()
 
@@ -525,7 +525,7 @@ def _upsert_weekly_cycle_manus_touched(task_id: str, task_title: str, task_url: 
 
 # --- Main entry point ---
 
-def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> dict:
+def upsert_manus_task(task_id: str, task_title: str, task_url: str) -> dict:
     """Add a Manus task to both Daily Action and Weekly Cycle notes.
 
     Writes to Daily Action first, then Weekly Cycle. Both operations are
@@ -556,7 +556,7 @@ def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> d
 
     # Write to Daily Action
     try:
-        da_result = _upsert_daily_action_manus_touched(task_id, task_title, task_url)
+        da_result = _upsert_daily_action_manus(task_id, task_title, task_url)
         result["daily_action_success"] = da_result["success"]
         result["daily_action_action"] = da_result.get("action")
         if not da_result["success"]:
@@ -569,7 +569,7 @@ def upsert_manus_task_touched(task_id: str, task_title: str, task_url: str) -> d
 
     # Write to Weekly Cycle
     try:
-        wc_result = _upsert_weekly_cycle_manus_touched(task_id, task_title, task_url)
+        wc_result = _upsert_weekly_cycle_manus(task_id, task_title, task_url)
         result["weekly_cycle_success"] = wc_result["success"]
         result["weekly_cycle_action"] = wc_result.get("action")
         if not wc_result["success"]:
