@@ -168,6 +168,11 @@ def _get_section_order() -> list[str]:
     return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, COMPLETED_TASKS_HEADER, ISSUES_TOUCHED_HEADER, MANUS_TASKS_TOUCHED_HEADER]
 
 
+def _is_section_header(line: str) -> bool:
+    """Check if a line is a known section header or day section header."""
+    return line.strip() in _get_section_order() or bool(DAY_SECTION_PATTERN.match(line.strip()))
+
+
 def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, content: str) -> dict:
     """Upsert an initiative or project update to today's section in the Weekly Cycle note.
 
@@ -269,8 +274,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 if LOG_ENTRY_PATTERN.match(line):
                     # Next entry starts here
                     break
-                elif line.strip().startswith('#'):
-                    # Section header
+                elif _is_section_header(line):
                     break
                 else:
                     # Content line or blank line - part of this entry
@@ -284,7 +288,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
             next_line_index = existing_line_index + 1
             if next_line_index < len(lines):
                 next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line) or next_line.strip().startswith('#'):
+                if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line):
                     lines.insert(next_line_index, '')
             action = "updated"
         else:
@@ -307,8 +311,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 insert_index = header_index + 1
                 for i in range(header_index + 1, day_section_end):
                     line = lines[i]
-                    if line.strip().startswith('#'):
-                        # Section header - stop here, insert before it
+                    if _is_section_header(line):
                         break
                     else:
                         # Any other line (content, blank, notes) - keep going
@@ -320,7 +323,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 lines.insert(insert_index, log_entry)
                 # Add blank line after if next line is a section header
                 next_line_index = insert_index + 1
-                if next_line_index < len(lines) and lines[next_line_index].strip().startswith('#'):
+                if next_line_index < len(lines) and _is_section_header(lines[next_line_index]):
                     lines.insert(next_line_index, '')
             else:
                 # Header doesn't exist - need to create it in the right position
