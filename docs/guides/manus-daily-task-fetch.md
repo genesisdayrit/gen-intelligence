@@ -90,11 +90,11 @@ Tasks are returned newest-first. The job stops paginating once it hits tasks old
 
 ### Deduplication
 
-The downstream `upsert_manus_task_touched()` function checks for existing task URLs in the note. If a task was already written (by a previous fetch cycle or by the webhook handler), it is skipped.
+The downstream `upsert_manus_task()` function checks for existing task URLs in the note. If a task was already written (by a previous fetch cycle or by the webhook handler), it is skipped.
 
 ### Interaction with Webhook Handler
 
-Both the cron job and the Manus webhook handler (`POST /manus/webhook`) call the same `upsert_manus_task_touched()` function. The webhook provides real-time updates for API-created tasks, while the cron job catches browser-created tasks. URL-based deduplication ensures no duplicates.
+Both the cron job and the Manus webhook handler (`POST /manus/webhook`) call the same `upsert_manus_task()` function. The webhook provides real-time updates for API-created tasks, while the cron job catches browser-created tasks. URL-based deduplication ensures no duplicates.
 
 ## Troubleshooting
 
@@ -129,5 +129,5 @@ redis-cli DEL DROPBOX_ACCESS_TOKEN
 ## Code Location
 
 - Fetch service: `app/services/manus/fetch_manus_tasks.py`
-- Obsidian writer: `app/services/obsidian/add_manus_task_touched.py`
+- Obsidian writer: `app/services/obsidian/add_manus_task.py`
 - Scheduler entry: `app/scheduler.py`

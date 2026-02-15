@@ -28,7 +28,7 @@ INITIATIVE_UPDATES_HEADER = "##### Initiative Updates:"
 PROJECT_UPDATES_HEADER = "##### Project Updates:"
 COMPLETED_TASKS_HEADER = "##### Completed Tasks:"
 ISSUES_TOUCHED_HEADER = "##### Linear Issues Touched:"
-MANUS_TASKS_TOUCHED_HEADER = "##### Manus Tasks:"
+MANUS_TASKS_HEADER = "##### Manus Tasks:"
 
 # Patterns
 DAY_SECTION_PATTERN = re.compile(r'^### (Wednesday|Thursday|Friday|Saturday|Sunday|Monday|Tuesday) -', re.MULTILINE)
@@ -165,7 +165,7 @@ def _get_section_header(section_type: str) -> str:
 
 def _get_section_order() -> list[str]:
     """Return the ordered list of section headers (top to bottom)."""
-    return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, COMPLETED_TASKS_HEADER, ISSUES_TOUCHED_HEADER, MANUS_TASKS_TOUCHED_HEADER]
+    return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, COMPLETED_TASKS_HEADER, ISSUES_TOUCHED_HEADER, MANUS_TASKS_HEADER]
 
 
 def _is_section_header(line: str) -> bool:

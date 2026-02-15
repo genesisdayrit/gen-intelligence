@@ -8,7 +8,7 @@ import httpx
 import pytz
 from dotenv import load_dotenv
 
-from services.obsidian.add_manus_task_touched import upsert_manus_task_touched
+from services.obsidian.add_manus_task import upsert_manus_task
 from services.obsidian.utils.date_helpers import get_effective_date
 
 load_dotenv()
@@ -92,7 +92,7 @@ def fetch_and_upsert_manus_tasks() -> dict:
     tasks_upserted = 0
     for task in todays_tasks:
         try:
-            result = upsert_manus_task_touched(task["id"], task["title"], task["url"])
+            result = upsert_manus_task(task["id"], task["title"], task["url"])
             if result["daily_action_success"] or result["weekly_cycle_success"]:
                 tasks_upserted += 1
             if not result["daily_action_success"]:
