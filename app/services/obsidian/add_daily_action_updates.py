@@ -193,6 +193,11 @@ def _get_section_order() -> list[str]:
     return [INITIATIVE_UPDATES_HEADER, PROJECT_UPDATES_HEADER, TODOIST_COMPLETED_HEADER, ISSUES_TOUCHED_HEADER, MANUS_TASKS_TOUCHED_HEADER]
 
 
+def _is_section_header(line: str) -> bool:
+    """Check if a line is a known section header."""
+    return line.strip() in _get_section_order()
+
+
 def upsert_daily_action_update(section_type: str, url: str, parent_name: str, content: str) -> dict:
     """Upsert an initiative or project update to today's Daily Action note.
 
@@ -265,14 +270,11 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 if LOG_ENTRY_PATTERN.match(line):
                     # Next entry starts here
                     break
-                elif line.strip().startswith('#'):
-                    # Section header
+                elif _is_section_header(line):
                     break
                 elif line.strip() == '---':
-                    # Separator
                     break
                 elif line.strip() == TEMPLATE_BOUNDARY:
-                    # Template section starts here
                     break
                 else:
                     # Content line or blank line - part of this entry
@@ -286,7 +288,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
             next_line_index = existing_line_index + 1
             if next_line_index < len(lines):
                 next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line) or next_line.strip().startswith('#') or next_line.strip() == TEMPLATE_BOUNDARY:
+                if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or next_line.strip() == TEMPLATE_BOUNDARY:
                     lines.insert(next_line_index, '')
             action = "updated"
         else:
@@ -311,14 +313,11 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 insert_index = header_index + 1
                 for i in range(header_index + 1, len(lines)):
                     line = lines[i]
-                    if line.strip().startswith('#'):
-                        # Section header - stop here, insert before it
+                    if _is_section_header(line):
                         break
                     elif line.strip() == '---':
-                        # Separator - stop here, insert before it
                         break
                     elif line.strip() == TEMPLATE_BOUNDARY:
-                        # Template section - stop here, insert before it
                         break
                     else:
                         # Any other line (content, blank, notes) - keep going
@@ -332,7 +331,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 next_line_index = insert_index + 1
                 if next_line_index < len(lines):
                     next_line = lines[next_line_index].strip()
-                    if next_line.startswith('#') or next_line == TEMPLATE_BOUNDARY:
+                    if _is_section_header(lines[next_line_index]) or next_line == TEMPLATE_BOUNDARY:
                         lines.insert(next_line_index, '')
             else:
                 # Header doesn't exist - need to create it in the right position
