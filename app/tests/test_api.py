@@ -230,6 +230,111 @@ def test_share_youtube_requires_url():
     assert response.status_code == 422
 
 
+# Linear webhook tests
+@patch(
+    "main.upsert_issue_touched",
+    return_value={
+        "daily_action_success": True,
+        "daily_action_action": "created",
+        "weekly_cycle_success": True,
+        "weekly_cycle_action": "created",
+    },
+)
+def test_linear_webhook_filters_non_user_actor(mock_upsert_issue_touched):
+    """Linear webhook should ignore non-user actor events while returning 200."""
+    response = client.post(
+        "/linear/webhook",
+        json={
+            "action": "update",
+            "type": "Issue",
+            "actor": {"type": "integration", "name": "GitHub"},
+            "updatedFrom": {"stateId": "old-state"},
+            "data": {
+                "title": "Auto-close task",
+                "number": 333,
+                "team": {"key": "GD"},
+                "project": {"name": "Gen Intelligence"},
+                "state": {"name": "Done"},
+                "url": "https://linear.app/chapters/issue/gd-333/auto-close-task",
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    mock_upsert_issue_touched.assert_not_called()
+
+
+@patch(
+    "main.upsert_issue_touched",
+    return_value={
+        "daily_action_success": True,
+        "daily_action_action": "created",
+        "weekly_cycle_success": True,
+        "weekly_cycle_action": "created",
+    },
+)
+def test_linear_webhook_filters_missing_actor_type(mock_upsert_issue_touched):
+    """Linear webhook should ignore events when actor type is missing."""
+    response = client.post(
+        "/linear/webhook",
+        json={
+            "action": "update",
+            "type": "Issue",
+            "updatedFrom": {"stateId": "old-state"},
+            "data": {
+                "title": "System generated update",
+                "number": 334,
+                "team": {"key": "GD"},
+                "project": {"name": "Gen Intelligence"},
+                "state": {"name": "Done"},
+                "url": "https://linear.app/chapters/issue/gd-334/system-generated-update",
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    mock_upsert_issue_touched.assert_not_called()
+
+
+@patch(
+    "main.upsert_issue_touched",
+    return_value={
+        "daily_action_success": True,
+        "daily_action_action": "created",
+        "weekly_cycle_success": True,
+        "weekly_cycle_action": "created",
+    },
+)
+def test_linear_webhook_processes_user_actor(mock_upsert_issue_touched):
+    """Linear webhook should continue processing user-triggered updates."""
+    response = client.post(
+        "/linear/webhook",
+        json={
+            "action": "update",
+            "type": "Issue",
+            "actor": {"type": "user", "name": "Alice"},
+            "updatedFrom": {"stateId": "old-state"},
+            "data": {
+                "title": "Filter webhook actor types",
+                "number": 333,
+                "team": {"key": "GD"},
+                "project": {"name": "Gen Intelligence"},
+                "state": {"name": "In Progress"},
+                "url": "https://linear.app/chapters/issue/gd-333/filter-webhook-actor-types",
+            },
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    mock_upsert_issue_touched.assert_called_once()
+    call_kwargs = mock_upsert_issue_touched.call_args.kwargs
+    assert call_kwargs["issue_identifier"] == "GD-333"
+    assert call_kwargs["project_name"] == "Gen Intelligence"
+    assert call_kwargs["issue_title"] == "Filter webhook actor types"
+    assert call_kwargs["status_name"] == "In Progress"
+    assert call_kwargs["status_changed"] is True
+
+
 # Manus webhook tests
 def test_manus_webhook_verification_ping():
     """Manus webhook accepts verification pings (no signature headers)."""

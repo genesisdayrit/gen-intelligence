@@ -318,6 +318,26 @@ async def linear_webhook(
     action = data.get("action")
     event_type = data.get("type")
     event_data = data.get("data", {})
+    actor = data.get("actor") or {}
+    actor_type = actor.get("type")
+
+    # Only process human-triggered updates; acknowledge all others to avoid retries.
+    if actor_type != "user":
+        entity_name = (
+            event_data.get("title")
+            or event_data.get("name")
+            or event_data.get("project", {}).get("name")
+            or event_data.get("initiative", {}).get("name")
+            or event_type
+        )
+        logger.info(
+            "[FILTERED] Linear webhook | actor_type=%s | type=%s | action=%s | entity=%s",
+            actor_type or "unknown",
+            event_type,
+            action,
+            entity_name,
+        )
+        return JSONResponse(content={"status": "ok"})
 
     # Handle Project events (when projects are created/updated under initiatives)
     if event_type == "Project" and action in ("create", "update"):
