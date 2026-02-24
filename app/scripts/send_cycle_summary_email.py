@@ -139,7 +139,7 @@ def collect_last_cycle_headlines(
     other_completed = [
         i
         for i in all_completed
-        if i.get("project", {}).get("id") not in active_project_ids
+        if (i.get("project") or {}).get("id") not in active_project_ids
     ]
     logger.info(
         f"Found {len(all_completed)} total, {len(other_completed)} outside initiatives"
