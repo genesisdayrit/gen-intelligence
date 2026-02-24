@@ -220,6 +220,8 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
         normalized_content = re.sub(r'^(\s*)\+(\s+)', r'\1-\2', content, flags=re.MULTILINE)
         # First-level bullets (* → preserve indent + dash)
         normalized_content = re.sub(r'^(\s*)\*(\s+)', r'\1-\2', normalized_content, flags=re.MULTILINE)
+        # Sanitize --- separators from content to prevent boundary detection issues
+        normalized_content = re.sub(r'^---$', '***', normalized_content, flags=re.MULTILINE)
         # Preserve multiline content with bullet points, indent continuation lines
         content_lines = normalized_content.strip().split('\n')
         # First line gets the timestamp and Obsidian wiki-link with Linear hyperlink
@@ -247,7 +249,7 @@ def upsert_weekly_cycle_update(section_type: str, url: str, parent_name: str, co
                 continue
 
             if day_section_start is not None and day_section_end is None:
-                if line.strip() == '---':
+                if DAY_SECTION_PATTERN.match(line.strip()):
                     day_section_end = i
                     break
 
