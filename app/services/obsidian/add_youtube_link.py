@@ -98,6 +98,8 @@ Important:
 
 PEOPLE_EXTRACTION_PROMPT = """Given the title and description of a YouTube video, identify the main people or groups featured in or discussed in this video. Return ONLY a JSON array of their names. Include hosts, guests, interviewees, podcast/show names, and people or groups who are a primary subject of discussion. Do NOT include people who are only briefly mentioned in passing.
 
+IMPORTANT: Always use full names (first and last name) for people. Do NOT return just a first name. If you cannot determine someone's full name, omit them. The only exception is well-known single-word identifiers, brands, or aliases (e.g., "Drake", "Beyoncé", "Banksy").
+
 If there are no clearly identifiable main people or groups, return an empty array: []
 
 Examples:
@@ -105,6 +107,7 @@ Examples:
 - A Lex Fridman Podcast episode with a guest: ["Lex Fridman Podcast", "Lex Fridman", "Yann LeCun"]
 - A solo tutorial by no specific person: []
 - A documentary about Elon Musk: ["Elon Musk"]
+- A music video by Drake: ["Drake"]
 
 Return ONLY the JSON array, no other text."""
 
