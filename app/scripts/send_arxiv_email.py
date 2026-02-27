@@ -222,7 +222,7 @@ def build_html_email(categories_data: list[tuple[str, list]]) -> str:
         "<!DOCTYPE html><html><head>"
         '<meta charset="utf-8">'
         "</head><body>"
-        '<div style="max-width: 700px; margin: 0 auto; font-family: '
+        '<div style="max-width: 700px; margin: 0; font-family: '
         "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; "
         'padding: 20px;">'
         '<h1 style="color: #222;">Daily ArXiv Articles</h1>'
@@ -276,7 +276,7 @@ def run_arxiv_email(
         logger.info("Dry run — email not sent")
         return True
 
-    return send_html_email("random arxiv articles", html_content)
+    return send_html_email("Random Arxiv Articles", html_content)
 
 
 def main():
