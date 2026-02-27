@@ -30,6 +30,12 @@ def _send_cycle_summary():
     return run_cycle_summary_email(current=False, all_initiatives=False)
 
 
+def _send_arxiv_email():
+    from scripts.send_arxiv_email import run_arxiv_email
+
+    return run_arxiv_email()
+
+
 def _fetch_manus_tasks():
     from services.manus.fetch_manus_tasks import fetch_and_upsert_manus_tasks
 
@@ -60,6 +66,16 @@ SCHEDULED_JOBS = [
             day_of_week="wed",
             hour=3,
             minute=30,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_arxiv_email",
+        "name": "Daily ArXiv Articles Email",
+        "func": _send_arxiv_email,
+        "trigger": CronTrigger(
+            hour=4,
+            minute=0,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
