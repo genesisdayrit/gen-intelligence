@@ -222,7 +222,7 @@ def build_html_email(categories_data: list[tuple[str, list]]) -> str:
         "<!DOCTYPE html><html><head>"
         '<meta charset="utf-8">'
         "</head><body>"
-        '<div style="max-width: 700px; margin: 0 auto; font-family: '
+        '<div style="max-width: 700px; margin: 0; font-family: '
         "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; "
         'padding: 20px;">'
         '<h1 style="color: #222;">Daily ArXiv Articles</h1>'
