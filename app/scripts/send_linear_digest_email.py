@@ -28,19 +28,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import pytz
 import requests
 from dotenv import load_dotenv
 
 # Add app directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from config import SYSTEM_TZ
 from services.email.gmail_client import send_html_email
 
 logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
-PACIFIC_TZ = pytz.timezone("America/Los_Angeles")
 ISSUES_PAGE_SIZE = 50
 ISSUE_HISTORY_PAGE_SIZE = 50
 # Deliberately hardcoded so enable/disable changes are tracked in version control.
@@ -259,7 +258,7 @@ def build_digest_sections(
     """Build section issue lists for 24h and 7d (excluding today) windows."""
     window_24h_start = now_utc - timedelta(hours=24)
     window_7d_start = now_utc - timedelta(days=7)
-    today_pt = now_utc.astimezone(PACIFIC_TZ).date()
+    today_local = now_utc.astimezone(SYSTEM_TZ).date()
 
     section_24_by_id: dict[str, dict[str, Any]] = {}
     section_7_by_id: dict[str, dict[str, Any]] = {}
@@ -304,7 +303,7 @@ def build_digest_sections(
             "team_name": team.get("name") or team.get("key") or "No Team",
             "project_name": project.get("name") or "No Project",
             "created_at": created_at,
-            "is_new_today": created_at.astimezone(PACIFIC_TZ).date() == today_pt,
+            "is_new_today": created_at.astimezone(SYSTEM_TZ).date() == today_local,
         }
 
         if created_in_24h or latest_touch_24h:
@@ -473,7 +472,7 @@ def build_html_email(
     issues_24h: list[dict[str, Any]],
     issues_7d_excl_today: list[dict[str, Any]],
 ) -> str:
-    now_pt = now_utc.astimezone(PACIFIC_TZ)
+    now_local = now_utc.astimezone(SYSTEM_TZ)
 
     html_parts = [
         "<!DOCTYPE html>",
@@ -501,7 +500,7 @@ def build_html_email(
         "</head>",
         "<body>",
         "<h1>Daily Linear Issues Digest</h1>",
-        f"<p class='meta'>Generated: {html.escape(now_pt.strftime('%b %d, %Y %I:%M %p %Z'))}</p>",
+        f"<p class='meta'>Generated: {html.escape(now_local.strftime('%b %d, %Y %I:%M %p %Z'))}</p>",
     ]
 
     html_parts.append(_render_section("Touched in the Past 24 Hours", issues_24h))
@@ -570,8 +569,8 @@ def run_linear_digest_email(
             logger.info("Dry run completed; digest email not sent.")
             return True
 
-        now_pt = now.astimezone(PACIFIC_TZ)
-        subject = f"Linear Daily Issues Digest ({now_pt.strftime('%b %d, %Y')})"
+        now_local = now.astimezone(SYSTEM_TZ)
+        subject = f"Linear Daily Issues Digest ({now_local.strftime('%b %d, %Y')})"
         sent = send_html_email(subject, html_body)
         if sent:
             logger.info("Digest email sent successfully.")

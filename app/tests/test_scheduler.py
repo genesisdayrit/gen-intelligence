@@ -13,6 +13,7 @@ os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
 
 from fastapi.testclient import TestClient
 
+from config import SYSTEM_TIMEZONE_STR
 from main import app
 from scheduler import SCHEDULED_JOBS, scheduler
 
@@ -89,15 +90,15 @@ def test_cycle_summary_runs_on_wednesday(client):
     assert "wed" in trigger_str
 
 
-def test_linear_digest_runs_daily_at_7pm_pt(client):
-    """The Linear digest job is scheduled daily at 7pm PT."""
+def test_linear_digest_runs_daily_at_7pm_system_timezone(client):
+    """The Linear digest job is scheduled daily at 7pm in system timezone."""
     job = scheduler.get_job("send_linear_digest_email")
     assert job is not None
     trigger_str = str(job.trigger).lower()
     assert "hour='19'" in trigger_str
     assert "minute='0'" in trigger_str
     timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
-    assert timezone_key == "America/Los_Angeles"
+    assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
 # ---------------------------------------------------------------------------

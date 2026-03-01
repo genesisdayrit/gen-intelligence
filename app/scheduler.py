@@ -17,6 +17,8 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MI
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from config import SYSTEM_TIMEZONE_STR
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,7 +94,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=19,
             minute=0,
-            timezone="America/Los_Angeles",
+            timezone=SYSTEM_TIMEZONE_STR,
         ),
     },
     {
