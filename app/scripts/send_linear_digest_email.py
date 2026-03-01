@@ -59,7 +59,7 @@ RECENT_ISSUES_QUERY = """
 query RecentIssuesForDigest(
   $first: Int!
   $after: String
-  $updatedAtGte: DateTime!
+  $updatedAtGte: DateTimeOrDuration!
   $historyFirst: Int!
 ) {
   issues(
