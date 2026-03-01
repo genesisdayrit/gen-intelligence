@@ -36,6 +36,12 @@ def _send_arxiv_email():
     return run_arxiv_email()
 
 
+def _send_linear_digest_email():
+    from scripts.send_linear_digest_email import run_linear_digest_email
+
+    return run_linear_digest_email()
+
+
 def _fetch_manus_tasks():
     from services.manus.fetch_manus_tasks import fetch_and_upsert_manus_tasks
 
@@ -77,6 +83,16 @@ SCHEDULED_JOBS = [
             hour=4,
             minute=0,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_linear_digest_email",
+        "name": "Daily Linear Issues Digest Email",
+        "func": _send_linear_digest_email,
+        "trigger": CronTrigger(
+            hour=19,
+            minute=0,
+            timezone="America/Los_Angeles",
         ),
     },
     {
