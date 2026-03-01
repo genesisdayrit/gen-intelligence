@@ -41,9 +41,10 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 PACIFIC_TZ = pytz.timezone("America/Los_Angeles")
-TRUTHY_VALUES = {"1", "true", "yes", "on"}
 ISSUES_PAGE_SIZE = 50
 ISSUE_HISTORY_PAGE_SIZE = 50
+# Deliberately hardcoded so enable/disable changes are tracked in version control.
+LINEAR_DIGEST_ENABLED = True
 
 VIEWER_QUERY = """
 query Viewer {
@@ -120,11 +121,6 @@ query RecentIssuesForDigest(
   }
 }
 """
-
-
-def _truthy_env(name: str, default: str = "true") -> bool:
-    value = os.getenv(name, default)
-    return value.strip().lower() in TRUTHY_VALUES if value else False
 
 
 def _parse_linear_datetime(value: str | None) -> datetime | None:
@@ -528,8 +524,8 @@ def run_linear_digest_email(
     """Generate and send the daily Linear digest email."""
     load_dotenv()
 
-    if not _truthy_env("LINEAR_DIGEST_ENABLED", "true"):
-        logger.info("LINEAR_DIGEST_ENABLED is false; skipping daily digest.")
+    if not LINEAR_DIGEST_ENABLED:
+        logger.info("LINEAR_DIGEST_ENABLED is hardcoded to false; skipping daily digest.")
         return True
 
     if not os.getenv("LINEAR_API_KEY"):

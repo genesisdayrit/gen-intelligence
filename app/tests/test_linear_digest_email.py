@@ -168,9 +168,11 @@ def test_build_html_email_contains_sections_grouping_and_details():
 def test_run_linear_digest_email_skips_when_disabled():
     now = datetime(2026, 3, 2, 3, 0, tzinfo=timezone.utc)
 
-    with patch.dict(os.environ, {"LINEAR_DIGEST_ENABLED": "false"}, clear=False):
-        with patch("scripts.send_linear_digest_email._fetch_viewer") as mock_fetch_viewer:
-            success = run_linear_digest_email(dry_run=False, now_utc=now)
+    with patch(
+        "scripts.send_linear_digest_email.LINEAR_DIGEST_ENABLED",
+        False,
+    ), patch("scripts.send_linear_digest_email._fetch_viewer") as mock_fetch_viewer:
+        success = run_linear_digest_email(dry_run=False, now_utc=now)
 
     assert success is True
     mock_fetch_viewer.assert_not_called()
@@ -182,12 +184,14 @@ def test_run_linear_digest_email_no_issues_does_not_send():
     with patch.dict(
         os.environ,
         {
-            "LINEAR_DIGEST_ENABLED": "true",
             "LINEAR_API_KEY": "test-linear-key",
         },
         clear=False,
     ):
         with patch(
+            "scripts.send_linear_digest_email.LINEAR_DIGEST_ENABLED",
+            True,
+        ), patch(
             "scripts.send_linear_digest_email._fetch_viewer",
             return_value={"id": "viewer-1", "name": "Test User"},
         ), patch(
