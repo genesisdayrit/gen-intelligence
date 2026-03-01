@@ -13,6 +13,7 @@ os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
 
 from fastapi.testclient import TestClient
 
+from config import SYSTEM_TIMEZONE_STR
 from main import app
 from scheduler import SCHEDULED_JOBS, scheduler
 
@@ -37,6 +38,12 @@ def test_cycle_summary_job_in_registry():
     """The cycle summary email job is defined in SCHEDULED_JOBS."""
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     assert "send_cycle_summary_email" in job_ids
+
+
+def test_linear_digest_job_in_registry():
+    """The Linear digest email job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "send_linear_digest_email" in job_ids
 
 
 def test_job_definitions_have_required_fields():
@@ -83,6 +90,17 @@ def test_cycle_summary_runs_on_wednesday(client):
     assert "wed" in trigger_str
 
 
+def test_linear_digest_runs_daily_at_7pm_system_timezone(client):
+    """The Linear digest job is scheduled daily at 7pm in system timezone."""
+    job = scheduler.get_job("send_linear_digest_email")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "hour='19'" in trigger_str
+    assert "minute='0'" in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
 # ---------------------------------------------------------------------------
 # API endpoint tests (need lifespan via client fixture)
 # ---------------------------------------------------------------------------
@@ -111,6 +129,13 @@ def test_list_jobs_contains_cycle_summary(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "send_cycle_summary_email" in job_ids
+
+
+def test_list_jobs_contains_linear_digest(client):
+    """GET /scheduler/jobs includes the Linear digest email job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "send_linear_digest_email" in job_ids
 
 
 def test_trigger_nonexistent_job(client):
