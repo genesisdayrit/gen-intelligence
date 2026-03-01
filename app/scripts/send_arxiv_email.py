@@ -249,7 +249,7 @@ def run_arxiv_email(
         logger.info("Dry run — email not sent")
         return True
 
-    return send_html_email("Random Arxiv Articles", email_body)
+    return send_html_email("Random Arxiv Articles", email_body.replace("\n", "<br>"))
 
 
 def main():
