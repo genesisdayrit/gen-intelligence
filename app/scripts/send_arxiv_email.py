@@ -2,12 +2,12 @@
 """Send Daily ArXiv Articles Email.
 
 Fetches random articles from random arXiv categories and sends
-an HTML email summary.
+a plain text email with titles and URLs.
 
 Usage:
-    python -m scripts.send_arxiv_email                     # Send email
-    python -m scripts.send_arxiv_email --dry-run           # Generate without sending
-    python -m scripts.send_arxiv_email --output email.html # Save HTML to file
+    python -m scripts.send_arxiv_email                    # Send email
+    python -m scripts.send_arxiv_email --dry-run          # Generate without sending
+    python -m scripts.send_arxiv_email --output email.txt # Save to file
 
 Requires environment variables:
     - GMAIL_ACCOUNT, GMAIL_PASSWORD (for sending)
@@ -160,7 +160,7 @@ def get_arxiv_articles(category: str, max_results: int = 5, total_fetch: int = 1
         total_fetch: Number of recent articles to sample from
 
     Returns:
-        List of (title, url, summary) tuples
+        List of (title, url) tuples
     """
     base_url = "http://export.arxiv.org/api/query?"
     query = (
@@ -170,10 +170,7 @@ def get_arxiv_articles(category: str, max_results: int = 5, total_fetch: int = 1
     )
 
     feed = feedparser.parse(query)
-    entries = [
-        (entry.title.replace("\n", " "), entry.link, entry.summary.replace("\n", " "))
-        for entry in feed.entries
-    ]
+    entries = [(entry.title, entry.link) for entry in feed.entries]
 
     return random.sample(entries, min(max_results, len(entries)))
 
@@ -191,45 +188,21 @@ def category_name_from_code(code: str) -> str:
 # =============================================================================
 
 
-def build_html_email(categories_data: list[tuple[str, list]]) -> str:
-    """Build HTML email body from fetched article data.
+def build_plain_text_email(categories_data: list[tuple[str, list]]) -> str:
+    """Build plain text email body from fetched article data.
 
     Args:
         categories_data: List of (category_name, articles) where articles
-                         is a list of (title, url, summary) tuples
+                         is a list of (title, url) tuples
     """
-    sections = []
+    email_body = ""
     for category_name, articles in categories_data:
-        article_items = []
-        for title, url, summary in articles:
-            article_items.append(
-                f'<li style="margin-bottom: 12px;">'
-                f'<a href="{url}" style="color: #1a73e8; text-decoration: none; '
-                f'font-weight: 600;">{title}</a>'
-                f'<br><span style="color: #555; font-size: 13px;">{summary[:200]}...</span>'
-                f"</li>"
-            )
+        email_body += f"Articles from category: {category_name}\n\n"
+        for title, url in articles:
+            email_body += f"Title: {title}\nURL: {url}\n\n"
+        email_body += "-" * 50 + "\n"
 
-        sections.append(
-            f'<div style="margin-bottom: 24px;">'
-            f'<h2 style="color: #333; border-bottom: 2px solid #1a73e8; '
-            f'padding-bottom: 4px;">{category_name}</h2>'
-            f'<ul style="list-style: none; padding: 0;">{"".join(article_items)}</ul>'
-            f"</div>"
-        )
-
-    html = (
-        "<!DOCTYPE html><html><head>"
-        '<meta charset="utf-8">'
-        "</head><body>"
-        '<div style="max-width: 700px; margin: 0; font-family: '
-        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; "
-        'padding: 20px;">'
-        '<h1 style="color: #222;">Daily ArXiv Articles</h1>'
-        f'{"".join(sections)}'
-        "</div></body></html>"
-    )
-    return html
+    return email_body
 
 
 # =============================================================================
@@ -266,23 +239,23 @@ def run_arxiv_email(
         logger.error("No articles fetched from any category")
         return False
 
-    html_content = build_html_email(categories_data)
+    email_body = build_plain_text_email(categories_data)
 
     if output:
-        Path(output).write_text(html_content)
-        logger.info("HTML saved to %s", output)
+        Path(output).write_text(email_body)
+        logger.info("Email body saved to %s", output)
 
     if dry_run:
         logger.info("Dry run — email not sent")
         return True
 
-    return send_html_email("Random Arxiv Articles", html_content)
+    return send_html_email("Random Arxiv Articles", email_body)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Send daily arXiv articles email")
     parser.add_argument("--dry-run", action="store_true", help="Generate without sending")
-    parser.add_argument("--output", type=str, help="Save HTML to file")
+    parser.add_argument("--output", type=str, help="Save email body to file")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
