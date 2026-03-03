@@ -24,7 +24,13 @@ logger = logging.getLogger(__name__)
 # Job wrappers (lazy imports to avoid import-time side effects)
 # ---------------------------------------------------------------------------
 
-def _send_cycle_summary():
+def _send_cycle_summary_current():
+    from scripts.send_cycle_summary_email import run_cycle_summary_email
+
+    return run_cycle_summary_email(current=True, all_initiatives=False)
+
+
+def _send_cycle_summary_previous():
     from scripts.send_cycle_summary_email import run_cycle_summary_email
 
     return run_cycle_summary_email(current=False, all_initiatives=False)
@@ -56,18 +62,18 @@ SCHEDULED_JOBS = [
     {
         "id": "send_cycle_summary_email_tue",
         "name": "Weekly Cycle Summary Email (Tuesday)",
-        "func": _send_cycle_summary,
+        "func": _send_cycle_summary_current,
         "trigger": CronTrigger(
             day_of_week="tue",
-            hour=10,
-            minute=0,
+            hour=4,
+            minute=30,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
     {
         "id": "send_cycle_summary_email",
         "name": "Weekly Cycle Summary Email",
-        "func": _send_cycle_summary,
+        "func": _send_cycle_summary_previous,
         "trigger": CronTrigger(
             day_of_week="wed",
             hour=3,
