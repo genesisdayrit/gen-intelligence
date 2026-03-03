@@ -170,7 +170,10 @@ def get_arxiv_articles(category: str, max_results: int = 5, total_fetch: int = 1
     )
 
     feed = feedparser.parse(query)
-    entries = [(entry.title, entry.link) for entry in feed.entries]
+    entries = []
+    for entry in feed.entries:
+        pdf_link = entry.link.replace("/abs/", "/pdf/")
+        entries.append((entry.title, entry.link, pdf_link))
 
     return random.sample(entries, min(max_results, len(entries)))
 
@@ -198,8 +201,8 @@ def build_plain_text_email(categories_data: list[tuple[str, list]]) -> str:
     email_body = ""
     for category_name, articles in categories_data:
         email_body += f"Articles from category: {category_name}\n\n"
-        for title, url in articles:
-            email_body += f"Title: {title}\nURL: {url}\n\n"
+        for title, url, pdf_url in articles:
+            email_body += f"Title: {title}\nURL: {url}\nPDF: {pdf_url}\n\n"
         email_body += "-" * 50 + "\n"
 
     return email_body
