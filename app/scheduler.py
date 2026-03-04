@@ -48,6 +48,12 @@ def _send_linear_digest_email():
     return run_linear_digest_email()
 
 
+def _send_plato_email():
+    from scripts.send_plato_email import run_plato_email
+
+    return run_plato_email()
+
+
 def _fetch_manus_tasks():
     from services.manus.fetch_manus_tasks import fetch_and_upsert_manus_tasks
 
@@ -98,6 +104,16 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=19,
             minute=0,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_plato_email",
+        "name": "Daily Plato Random Entry Email",
+        "func": _send_plato_email,
+        "trigger": CronTrigger(
+            hour=17,
+            minute=30,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
