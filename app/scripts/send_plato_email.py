@@ -19,16 +19,19 @@ import logging
 import sys
 from pathlib import Path
 
+import os
+import shutil
+
+import markdown2
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-import markdown2
-import os
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -69,7 +72,15 @@ def get_random_entry_url() -> str | None:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
 
-    driver = webdriver.Chrome(options=options)
+    # Debian/Docker installs chromium as 'chromium' not 'google-chrome'
+    chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
+    if chromium_path:
+        options.binary_location = chromium_path
+
+    chromedriver_path = shutil.which("chromedriver")
+    service = Service(executable_path=chromedriver_path) if chromedriver_path else Service()
+
+    driver = webdriver.Chrome(options=options, service=service)
     try:
         driver.get(PLATO_URL)
         WebDriverWait(driver, 10).until(
