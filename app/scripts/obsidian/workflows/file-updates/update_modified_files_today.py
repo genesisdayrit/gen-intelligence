@@ -41,22 +41,6 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
 # Redis key for tracking last run
 REDIS_LAST_RUN_KEY = "last_run_folder_journal_relations_at"
 
-# Default paths to check (used if no paths file is found)
-DEFAULT_PATHS = [
-    "/obsidian/personal/03_writing/_drafts",
-    "/obsidian/personal/03_writing/_published",
-    "/obsidian/personal/03_writing/_thoughts+sketches",
-    "/obsidian/personal/03_writing/_tweets",
-    "/obsidian/personal/03_writing/music",
-    "/obsidian/personal/03_writing/_long-form",
-    "/obsidian/personal/05_knowledge-hub",
-    "/obsidian/personal/06_notes+ideas",
-    "/obsidian/personal/07_experiences+events+meetings+sessions",
-    "/obsidian/personal/13_places",
-    "/obsidian/personal/14_crm/_deals",
-    "/obsidian/personal/14_crm/_people",
-    "/obsidian/personal",
-]
 
 
 def _refresh_access_token() -> str:
@@ -117,30 +101,31 @@ def _set_last_run_time(dt_utc: datetime):
 # ===== Path Loading =====
 
 def _load_paths() -> list[str]:
-    """Load folder paths to scan.
+    """Load folder paths to scan from a config file.
 
     Checks for a paths file in this order:
     1. OBSIDIAN_PATHS_FILE env var
     2. paths_to_check.txt alongside this script
-    3. Falls back to DEFAULT_PATHS
+
+    Raises an error if no paths file is found.
     """
     paths_file = os.getenv('OBSIDIAN_PATHS_FILE')
     if not paths_file:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         paths_file = os.path.join(script_dir, "paths_to_check.txt")
 
-    if os.path.exists(paths_file):
-        try:
-            with open(paths_file, 'r') as f:
-                paths = [line.strip() for line in f.readlines() if line.strip()]
-            if paths:
-                logger.info(f"Loaded {len(paths)} paths from {paths_file}")
-                return paths
-        except Exception as e:
-            logger.warning(f"Error reading paths file: {e}")
+    if not os.path.exists(paths_file):
+        logger.error(f"Paths file not found: {paths_file}")
+        return []
 
-    logger.info(f"Using {len(DEFAULT_PATHS)} default paths")
-    return DEFAULT_PATHS
+    try:
+        with open(paths_file, 'r') as f:
+            paths = [line.strip() for line in f.readlines() if line.strip()]
+        logger.info(f"Loaded {len(paths)} paths from {paths_file}")
+        return paths
+    except Exception as e:
+        logger.error(f"Error reading paths file: {e}")
+        return []
 
 
 # ===== File Filtering =====
