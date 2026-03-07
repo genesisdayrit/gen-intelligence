@@ -1,0 +1,13 @@
+/obsidian/personal/03_writing/_drafts
+/obsidian/personal/03_writing/_published
+/obsidian/personal/03_writing/_thoughts+sketches
+/obsidian/personal/03_writing/_tweets
+/obsidian/personal/03_writing/music
+/obsidian/personal/03_writing/_long-form
+/obsidian/personal/05_knowledge-hub
+/obsidian/personal/06_notes+ideas
+/obsidian/personal/07_experiences+events+meetings+sessions
+/obsidian/personal/13_places
+/obsidian/personal/14_crm/_deals
+/obsidian/personal/14_crm/_people
+/obsidian/personal
