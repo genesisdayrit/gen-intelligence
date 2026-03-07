@@ -61,10 +61,8 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Free disk space before building (build cache is the biggest culprit)
-            docker builder prune -af
-            docker container prune -f
-            docker image prune -af
+            # Free disk space before building (redis_data volume is safe — redis is still running)
+            docker system prune -a --volumes -f
 
             # Only restart app container (keep ngrok running to preserve URL)
             docker compose stop app
