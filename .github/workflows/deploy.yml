@@ -64,6 +64,7 @@ jobs:
             # Stop app first, then prune so the old app image is no longer "in use"
             # (ngrok and redis keep running — ngrok URL is preserved)
             docker compose stop app
+            docker builder prune -af
             docker system prune -a --volumes -f
 
             docker compose build --no-cache app
