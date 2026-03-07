@@ -61,6 +61,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            # Free disk space before building (build cache is the biggest culprit)
+            docker builder prune -af
+            docker container prune -f
+            docker image prune -af
+
             # Only restart app container (keep ngrok running to preserve URL)
             docker compose stop app
             docker compose build --no-cache app
@@ -69,9 +74,5 @@ jobs:
             sleep 10
 
             curl --fail --silent --max-time 30 http://localhost:8000/health || exit 1
-
-            # Clean up old Docker images/containers to prevent disk filling up
-            docker container prune -f
-            docker image prune -f
 
             echo "Deployment successful!"
