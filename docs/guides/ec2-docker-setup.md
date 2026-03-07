@@ -98,6 +98,10 @@ curl http://localhost:8000/health
 
 Send a message to your Telegram channel - it should appear in your Obsidian journal.
 
+## Deploying Code Changes
+
+Pushing to `main` triggers automated deployment via GitHub Actions. Only the `app` container is rebuilt — ngrok and redis stay running. See [CI/CD Deployment](ci-cd-deploy.md) for details.
+
 ## Server Restart After Reboot
 
 If your EC2 instance goes down and you need to bring services back up manually (without CI), see [Server Restart Guide](server-restart.md). That guide also covers optional systemd auto-start on boot.
