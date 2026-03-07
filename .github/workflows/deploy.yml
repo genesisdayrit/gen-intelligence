@@ -61,11 +61,11 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # Free disk space before building (redis_data volume is safe — redis is still running)
+            # Stop app first, then prune so the old app image is no longer "in use"
+            # (ngrok and redis keep running — ngrok URL is preserved)
+            docker compose stop app
             docker system prune -a --volumes -f
 
-            # Only restart app container (keep ngrok running to preserve URL)
-            docker compose stop app
             docker compose build --no-cache app
             docker compose up -d app
 
