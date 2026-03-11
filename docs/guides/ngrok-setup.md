@@ -150,61 +150,80 @@ This project uses ngrok in Docker Compose for production deployments:
 
 ```yaml
 services:
-  app:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - WEBHOOK_URL=${WEBHOOK_URL}
-
   ngrok:
     image: ngrok/ngrok:latest
-    restart: unless-stopped
-    command:
-      - "start"
-      - "--all"
-      - "--config"
-      - "/etc/ngrok.yml"
+    entrypoint: ["/bin/sh", "/app/start-ngrok.sh"]
+    env_file:
+      - ./app/.env
     volumes:
-      - ./ngrok.yml:/etc/ngrok.yml:ro
+      - ./start-ngrok.sh:/app/start-ngrok.sh:ro
     ports:
       - "4040:4040"
     depends_on:
       - app
+    restart: unless-stopped
+```
+
+The wrapper script reads `NGROK_DOMAIN` from `app/.env` at container runtime, so Docker Compose does not need a root-level `.env` file or exported shell variable.
+
+`start-ngrok.sh`:
+
+```sh
+#!/bin/sh
+set -eu
+
+if [ -z "${NGROK_DOMAIN:-}" ]; then
+  echo "NGROK_DOMAIN is required" >&2
+  exit 1
+fi
+
+exec ngrok http --url="$NGROK_DOMAIN" app:8000
 ```
 
 ## 6. Free vs Paid Plans
 
-### Free Plan Limitations
+### Free Plan
 
-- **Random subdomain**: URL changes every restart (e.g., `abc123.ngrok-free.app`)
+- **Static domain available**: Free accounts can reserve one stable `*.ngrok-free.app` or `*.ngrok-free.dev` domain
 - **Interstitial page**: First-time visitors see an ngrok warning page
 - **1 online tunnel** at a time
 - **Rate limits**: Connections per minute are limited
 
 ### Paid Plans
 
-- **Static domains**: Keep the same URL across restarts
+- **More static domains**: Keep multiple URLs across restarts
 - **No interstitial page**: Direct access to your service
 - **Multiple tunnels**: Run several tunnels simultaneously
 - **Custom domains**: Use your own domain names
 
-## 7. Handling URL Changes (Free Plan)
+## 7. Stable Domain Setup
 
-Since the free plan generates a new URL on each restart, you need to:
+Set these values in `app/.env`:
 
-1. **Get the new URL** after restarting ngrok:
-   ```bash
-   curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'
-   ```
+```bash
+NGROK_DOMAIN=your-domain.ngrok-free.dev
+WEBHOOK_BASE_URL=https://your-domain.ngrok-free.dev
+```
 
-2. **Update webhook registrations** with external services:
-   - Telegram: Run `scripts/set_webhook.py set`
-   - GitHub: Update webhook URL in repository settings
-   - Linear: Update webhook URL in settings
-   - Todoist: Update webhook URL in app console
+Then recreate ngrok:
 
-3. **Consider upgrading** to a paid plan if frequent restarts are disruptive.
+```bash
+docker compose up -d --force-recreate ngrok
+```
+
+Verify the tunnel:
+
+```bash
+curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'
+```
+
+If you also change `WEBHOOK_BASE_URL`, recreate the app container too:
+
+```bash
+docker compose up -d --force-recreate app
+```
+
+You only need to re-register external webhooks if the public domain itself changes.
 
 ## 8. Web Interface and Inspection
 
@@ -316,14 +335,15 @@ Some services don't follow redirects through the ngrok interstitial page. Soluti
 
 1. **Add ngrok-skip-browser-warning header** in webhook requests (if the service supports custom headers)
 2. **Upgrade to paid plan** to remove the interstitial
-3. **Use a static domain** (paid feature)
+3. **Use a stable domain**
 
 ## 11. Environment Variable Reference
 
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `NGROK_AUTHTOKEN` | Your ngrok authentication token | `2abc123...` |
-| `WEBHOOK_URL` | Full public URL including path | `https://abc.ngrok-free.app/telegram/webhook` |
+| `NGROK_DOMAIN` | Reserved ngrok domain used by `start-ngrok.sh` | `your-domain.ngrok-free.dev` |
+| `WEBHOOK_BASE_URL` | Public base URL for webhook signing and callbacks | `https://your-domain.ngrok-free.dev` |
 
 ## 12. Quick Reference
 

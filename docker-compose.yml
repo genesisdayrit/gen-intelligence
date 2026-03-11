@@ -23,9 +23,11 @@ services:
   # ngrok provides HTTPS tunnel for Telegram webhook
   ngrok:
     image: ngrok/ngrok:latest
-    command: http app:8000
+    entrypoint: ["/bin/sh", "/app/start-ngrok.sh"]
     env_file:
       - ./app/.env
+    volumes:
+      - ./start-ngrok.sh:/app/start-ngrok.sh:ro
     ports:
       - "4040:4040"
     depends_on:
