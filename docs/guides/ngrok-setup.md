@@ -173,38 +173,33 @@ services:
       - app
 ```
 
-## 6. Free vs Paid Plans
+## 6. Static Domain (Free Tier)
 
-### Free Plan Limitations
+ngrok's free tier includes **one static domain** per account. This means your public URL stays the same across restarts — no more re-registering webhooks.
 
-- **Random subdomain**: URL changes every restart (e.g., `abc123.ngrok-free.app`)
-- **Interstitial page**: First-time visitors see an ngrok warning page
+### Claim Your Static Domain
+
+1. Go to [https://dashboard.ngrok.com/domains](https://dashboard.ngrok.com/domains)
+2. Click **Create Domain** (free accounts get one)
+3. You'll get a domain like `your-name.ngrok-free.app`
+
+### Configure in This Project
+
+Add to `app/.env`:
+
+```bash
+NGROK_DOMAIN=your-name.ngrok-free.app
+WEBHOOK_BASE_URL=https://your-name.ngrok-free.app
+```
+
+The `docker-compose.yml` uses `NGROK_DOMAIN` automatically via `--url=${NGROK_DOMAIN}`.
+
+### Free Plan Notes
+
+- **1 static domain** included
+- **Interstitial page**: First-time browser visitors see an ngrok warning (does not affect webhook API calls)
 - **1 online tunnel** at a time
 - **Rate limits**: Connections per minute are limited
-
-### Paid Plans
-
-- **Static domains**: Keep the same URL across restarts
-- **No interstitial page**: Direct access to your service
-- **Multiple tunnels**: Run several tunnels simultaneously
-- **Custom domains**: Use your own domain names
-
-## 7. Handling URL Changes (Free Plan)
-
-Since the free plan generates a new URL on each restart, you need to:
-
-1. **Get the new URL** after restarting ngrok:
-   ```bash
-   curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'
-   ```
-
-2. **Update webhook registrations** with external services:
-   - Telegram: Run `scripts/set_webhook.py set`
-   - GitHub: Update webhook URL in repository settings
-   - Linear: Update webhook URL in settings
-   - Todoist: Update webhook URL in app console
-
-3. **Consider upgrading** to a paid plan if frequent restarts are disruptive.
 
 ## 8. Web Interface and Inspection
 
@@ -323,7 +318,8 @@ Some services don't follow redirects through the ngrok interstitial page. Soluti
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `NGROK_AUTHTOKEN` | Your ngrok authentication token | `2abc123...` |
-| `WEBHOOK_URL` | Full public URL including path | `https://abc.ngrok-free.app/telegram/webhook` |
+| `NGROK_DOMAIN` | Your static ngrok domain | `your-name.ngrok-free.app` |
+| `WEBHOOK_BASE_URL` | Public base URL for webhooks | `https://your-name.ngrok-free.app` |
 
 ## 12. Quick Reference
 

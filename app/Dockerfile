@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install Chromium and dependencies for Selenium
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium chromium-driver \
+    chromium chromium-driver curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv

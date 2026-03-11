@@ -21,71 +21,29 @@ curl http://localhost:8000/health
 
 If health check returns `{"status":"healthy"}`, the app is running.
 
-## Re-register Webhooks (ngrok free tier)
+## Webhooks (ngrok static domain)
 
-The free ngrok tier assigns a new URL on every restart. After bringing services back up, you need to update the webhook URL for **all services and clients**.
+The project uses an ngrok static domain, so the public URL stays the same across restarts. No need to re-register webhooks, update iOS Shortcuts, or reconfigure the Chrome extension after a reboot.
 
-### 1. Get the new ngrok URL
+Verify the tunnel is working:
 
 ```bash
 curl -s http://localhost:4040/api/tunnels | grep -o 'https://[^"]*'
 ```
 
-### 2. Update `.env`
+The URL should match the `NGROK_DOMAIN` in your `app/.env`.
 
-Update `WEBHOOK_BASE_URL` in `app/.env` with the new ngrok URL, then recreate the app container:
-
-```bash
-docker compose up -d --force-recreate app
-```
-
-### 3. Re-register Telegram (scripted)
-
-```bash
-docker compose exec app uv run python scripts/set_webhook.py set
-
-# Verify
-docker compose exec app uv run python scripts/set_webhook.py info
-```
-
-### 4. Update external service dashboards (manual)
-
-These services require manually updating the webhook URL in their web UIs:
-
-| Service | Where to Update | Webhook URL to Set |
-|---------|----------------|--------------------|
-| **Todoist** | [App Console](https://developer.todoist.com/appconsole.html) → Your App → Webhooks | `https://<ngrok-url>/todoist/webhook` |
-| **Linear** | Workspace Settings → API → Webhooks → Edit | `https://<ngrok-url>/linear/webhook` |
-| **GitHub** | [GitHub App Settings](https://github.com/settings/apps/gen-intelligence) → Webhook | `https://<ngrok-url>/github/webhook` |
-
-See the individual setup guides for more detail:
-- [Todoist Webhook Setup](todoist-webhook-setup.md)
-- [Linear Webhook Setup](linear-webhook-setup.md)
-- [GitHub Webhook Setup](github-webhook-setup.md)
-
-### 5. Update iOS Shortcuts
-
-The iOS Shortcuts for saving links and YouTube videos have the server URL hardcoded. After a URL change, update both shortcuts on your iPhone:
-
-| Shortcut | Action to Edit | New URL |
-|----------|---------------|---------|
-| **Save Link** | "Get Contents of URL" step | `https://<ngrok-url>/share/link` |
-| **Save YouTube** | "Get Contents of URL" step | `https://<ngrok-url>/share/youtube` |
-
-Open each shortcut in the iOS Shortcuts app, find the "Get Contents of URL" action, and replace the old URL with the new ngrok URL.
-
-See the individual setup guides for more detail:
-- [iOS Shortcut: Save Link](ios-shortcut-save-link.md)
-- [iOS Shortcut: Save YouTube](ios-shortcut-save-youtube.md)
-
-### 6. Update Chrome Extension
-
-The Chrome extension stores the API base URL in its settings. After a URL change:
-
-1. Click the gen-intelligence extension icon in Chrome
-2. Open **Settings** (gear icon)
-3. Update **API Base URL** to `https://<ngrok-url>`
-4. Save
+> **If you ever need to change the domain**, update `NGROK_DOMAIN` and `WEBHOOK_BASE_URL` in `app/.env`, then re-register all webhooks:
+>
+> ```bash
+> # Re-register Telegram
+> docker compose exec app uv run python scripts/set_webhook.py set
+>
+> # Verify
+> docker compose exec app uv run python scripts/set_webhook.py info
+> ```
+>
+> Then manually update Todoist, Linear, GitHub, iOS Shortcuts, and the Chrome extension with the new URL. See the individual setup guides for details.
 
 ## Verify Everything
 
@@ -170,7 +128,7 @@ sudo systemctl disable gen-intelligence
 journalctl -u gen-intelligence -f
 ```
 
-> **Note:** Even with systemd auto-start, if you're on the free ngrok tier you'll still need to re-register all webhooks, update iOS shortcuts, and update the Chrome extension after each reboot since ngrok assigns a new URL each time. See the [Re-register Webhooks](#re-register-webhooks-ngrok-free-tier) section above.
+> **Note:** With a static ngrok domain configured, reboots preserve the same public URL. No webhook re-registration needed.
 
 ### Ensure Docker starts on boot
 
