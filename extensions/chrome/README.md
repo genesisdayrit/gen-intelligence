@@ -23,7 +23,7 @@ A Chrome extension to quickly save web page links to your Obsidian Knowledge Hub
 1. Click the extension icon in Chrome toolbar
 2. If prompted, click "Open Settings" (or right-click the extension icon and select "Options")
 3. Enter your settings:
-   - **API Base URL**: Your server URL (e.g., `https://your-server.ngrok-free.app`)
+   - **API Base URL**: Your server URL (e.g., `https://your-server.ngrok-free.dev`)
    - **API Key**: Your `LINK_SHARE_API_KEY` from the server environment
 4. Click "Save Settings"
 

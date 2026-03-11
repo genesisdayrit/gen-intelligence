@@ -9,6 +9,7 @@
   ],
   "host_permissions": [
     "https://*.ngrok-free.app/*",
+    "https://*.ngrok-free.dev/*",
     "http://localhost:8000/*"
   ],
   "action": {
