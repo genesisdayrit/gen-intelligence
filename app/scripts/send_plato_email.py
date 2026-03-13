@@ -20,18 +20,12 @@ import sys
 from pathlib import Path
 
 import os
-import shutil
 
 import markdown2
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from openai import OpenAI
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -66,33 +60,17 @@ def scrape_entry_content(url: str) -> tuple[str | None, str | None]:
 
 
 def get_random_entry_url() -> str | None:
-    """Use headless Chrome to click 'Random Entry' and return the URL."""
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
-    # Debian/Docker installs chromium as 'chromium' not 'google-chrome'
-    chromium_path = shutil.which("chromium") or shutil.which("chromium-browser")
-    if chromium_path:
-        options.binary_location = chromium_path
-
-    chromedriver_path = shutil.which("chromedriver")
-    service = Service(executable_path=chromedriver_path) if chromedriver_path else Service()
-
-    driver = webdriver.Chrome(options=options, service=service)
+    """Request the Stanford Encyclopedia 'Random Entry' endpoint and follow the redirect."""
+    random_url = "https://plato.stanford.edu/cgi-bin/encyclopedia/random"
     try:
-        driver.get(PLATO_URL)
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.LINK_TEXT, "Random Entry"))
-        ).click()
-        WebDriverWait(driver, 10).until(EC.url_changes(PLATO_URL))
-        return driver.current_url
+        response = requests.get(random_url, timeout=30, allow_redirects=True)
+        if response.status_code == 200 and response.url != PLATO_URL:
+            return response.url
+        logger.error("Random entry request failed or did not redirect (status=%s)", response.status_code)
+        return None
     except Exception as e:
         logger.error("Failed to get random entry URL: %s", e)
         return None
-    finally:
-        driver.quit()
 
 
 def summarize_with_openai(scraped_content: str) -> str:
