@@ -1,5 +1,6 @@
 """Dropbox helper for saving shared links to Obsidian Knowledge Hub."""
 
+import json
 import logging
 import os
 import re
@@ -10,6 +11,7 @@ import pytz
 import redis
 import requests
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from .web_content_extractor import fetch_web_content
 
@@ -26,6 +28,80 @@ redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_pass
 
 # Timezone
 timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
+
+ARTICLE_PEOPLE_EXTRACTION_PROMPT = """Given the title, author, and opening text of a web article, identify the author and any primary people or entities mentioned. Return ONLY a JSON array of names.
+
+Include:
+- The article author (if identifiable)
+- People who are a primary subject of or prominently featured in the article
+- Organizations or entities that are a primary focus
+
+Do NOT include:
+- People or entities only mentioned in passing
+- Generic references (e.g., "researchers", "the company")
+
+IMPORTANT: Always use full names (first and last name) for people. If you cannot determine someone's full name, omit them. The only exception is well-known single-word identifiers, brands, or aliases (e.g., "Banksy", "NASA", "OpenAI").
+
+If there are no clearly identifiable people or entities, return an empty array: []
+
+Examples:
+- An article by Paul Graham about startups mentioning Sam Altman: ["Paul Graham", "Sam Altman"]
+- A NYT profile of Jensen Huang: ["Jensen Huang"]
+- A blog post by an unknown author with no notable people: []
+
+Return ONLY the JSON array, no other text."""
+
+# Max chars of body text to send for people extraction (~10k tokens)
+_PEOPLE_EXTRACTION_BODY_LIMIT = 4000
+
+
+def _extract_people_from_article(
+    title: str | None, author: str | None, body_text: str | None
+) -> list[str]:
+    """Extract author and key people/entities from an article using gpt-4o.
+
+    Returns a list of names, or empty list if none identified or API unavailable.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return []
+
+    parts = []
+    if title:
+        parts.append(f"Title: {title}")
+    if author:
+        parts.append(f"Author: {author}")
+    if body_text:
+        truncated = body_text[:_PEOPLE_EXTRACTION_BODY_LIMIT]
+        parts.append(f"Article text:\n{truncated}")
+
+    if not parts:
+        return []
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": ARTICLE_PEOPLE_EXTRACTION_PROMPT},
+                {"role": "user", "content": "\n\n".join(parts)},
+            ],
+            temperature=0.0,
+        )
+        content = response.choices[0].message.content
+        if content:
+            names = json.loads(content.strip())
+            if isinstance(names, list):
+                return [n for n in names if isinstance(n, str) and n.strip()]
+        return []
+    except Exception as e:
+        logger.warning("Article people extraction failed: %s", e)
+        return []
+
+
+def _sanitize_obsidian_link(name: str) -> str:
+    """Remove characters that are illegal in Obsidian [[]] links."""
+    return re.sub(r'[\[\]|#^\\\\/]', '', name).strip()
 
 
 def _refresh_access_token() -> str:
@@ -209,6 +285,16 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         # Build author field (empty string if not available)
         author_value = author if author else ""
 
+        # Extract people/entities using AI
+        people = _extract_people_from_article(link_title, author, body_text)
+        if people:
+            people_lines = "\n".join(
+                f'  - "[[{_sanitize_obsidian_link(name)}]]"' for name in people
+            )
+            people_yaml = f"\n{people_lines}"
+        else:
+            people_yaml = ""
+
         # Generate markdown content with YAML frontmatter
         markdown_content = f"""---
 Journal:
@@ -216,7 +302,7 @@ Journal:
 created time: {now_utc.isoformat()}
 modified time: {now_utc.isoformat()}
 key words:
-People:
+People:{people_yaml}
 URL: {url}
 author: {author_value}
 Notes+Ideas:
