@@ -58,6 +58,7 @@ def create_bookmark(url: str, title: str | None = None) -> RaindropBookmarkResul
     body: dict = {
         "link": url,
         "collectionId": UNSORTED_COLLECTION_ID,
+        "tags": ["obsidian-share"],
     }
 
     if title:
