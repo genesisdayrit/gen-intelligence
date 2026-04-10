@@ -27,6 +27,7 @@ from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import add_shared_link, get_predicted_link_path
 from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
+from services.raindrop.client import create_bookmark
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -817,20 +818,36 @@ async def manus_webhook(
     return JSONResponse(content={"status": "received"})
 
 
+def _mirror_to_raindrop(url: str, title: str | None) -> None:
+    """Save a bookmark to Raindrop.io unsorted collection. Logs errors but never raises."""
+    try:
+        raindrop_result = create_bookmark(url, title)
+        if raindrop_result["success"]:
+            logger.info("Mirrored to Raindrop.io: %s (id=%s)", url[:100], raindrop_result["bookmark_id"])
+        else:
+            logger.error("Failed to mirror to Raindrop.io: %s - %s", url[:100], raindrop_result["error"])
+    except Exception as e:
+        logger.error("Unexpected error mirroring to Raindrop.io: %s - %s", url[:100], e)
+
+
 def _process_shared_link(url: str, title: str | None) -> None:
-    """Background task to save shared link to Obsidian."""
+    """Background task to save shared link to Obsidian and mirror to Raindrop.io."""
     result = add_shared_link(url, title)
     if result["success"]:
         logger.info("Saved shared link: %s (action=%s)", url[:100], result.get("action"))
+        if result.get("action") == "created":
+            _mirror_to_raindrop(url, title)
     else:
         logger.error("Failed to save link: %s - %s", url[:100], result["error"])
 
 
 def _process_youtube_link(url: str) -> None:
-    """Background task to save YouTube link to Obsidian."""
+    """Background task to save YouTube link to Obsidian and mirror to Raindrop.io."""
     result = add_youtube_link(url)
     if result["success"]:
         logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
+        if result.get("action") == "created":
+            _mirror_to_raindrop(url, result.get("title"))
     else:
         logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
 
