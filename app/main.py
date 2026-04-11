@@ -818,10 +818,10 @@ async def manus_webhook(
     return JSONResponse(content={"status": "received"})
 
 
-def _mirror_to_raindrop(url: str, title: str | None) -> None:
+def _mirror_to_raindrop(url: str, title: str | None, excerpt: str | None = None) -> None:
     """Save a bookmark to Raindrop.io unsorted collection. Logs errors but never raises."""
     try:
-        raindrop_result = create_bookmark(url, title)
+        raindrop_result = create_bookmark(url, title, excerpt)
         if raindrop_result["success"]:
             logger.info("Mirrored to Raindrop.io: %s (id=%s)", url[:100], raindrop_result["bookmark_id"])
         else:
@@ -847,7 +847,7 @@ def _process_youtube_link(url: str) -> None:
     if result["success"]:
         logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
         if result.get("action") == "created":
-            _mirror_to_raindrop(url, result.get("title"))
+            _mirror_to_raindrop(url, result.get("title"), result.get("description"))
     else:
         logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
 

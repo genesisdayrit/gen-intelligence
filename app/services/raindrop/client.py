@@ -37,12 +37,13 @@ def _get_headers() -> dict[str, str]:
     }
 
 
-def create_bookmark(url: str, title: str | None = None) -> RaindropBookmarkResult:
+def create_bookmark(url: str, title: str | None = None, excerpt: str | None = None) -> RaindropBookmarkResult:
     """Save a URL to Raindrop.io unsorted collection.
 
     Args:
         url: The URL to bookmark
         title: Optional title for the bookmark. Raindrop.io will fetch one if omitted.
+        excerpt: Optional description/excerpt for the bookmark.
 
     Returns:
         RaindropBookmarkResult with success status, bookmark_id, and error message
@@ -63,6 +64,8 @@ def create_bookmark(url: str, title: str | None = None) -> RaindropBookmarkResul
 
     if title:
         body["title"] = title
+    if excerpt:
+        body["excerpt"] = excerpt
 
     try:
         with httpx.Client(timeout=10.0) as client:

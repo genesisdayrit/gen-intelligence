@@ -547,7 +547,7 @@ def add_youtube_link(url: str) -> dict:
             - action: str | None ("created" or "skipped")
             - error: str | None
     """
-    result = {"success": False, "action": None, "error": None}
+    result = {"success": False, "action": None, "error": None, "title": None, "description": None}
 
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
@@ -646,6 +646,8 @@ Tags:
         logger.info("Created YouTube link file: %s", file_path)
         result["success"] = True
         result["action"] = "created"
+        result["title"] = video_title
+        result["description"] = description
 
     except FileNotFoundError as e:
         result["error"] = str(e)
