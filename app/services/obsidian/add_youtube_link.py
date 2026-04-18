@@ -543,6 +543,7 @@ def add_youtube_link(url: str) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
     If the file already exists, appends today's journal date if not already present.
+    Also backfills missing People and Channel fields if they are empty.
 
     Args:
         url: The YouTube URL to save
@@ -628,6 +629,28 @@ def add_youtube_link(url: str) -> dict:
 
             # Add today's date to journal
             frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+
+            # NEW: Backfill missing fields (People, Channel) if empty
+            backfill_performed = False
+
+            # Check if People is missing or empty
+            existing_people = frontmatter.get("People", [])
+            if not isinstance(existing_people, list):
+                existing_people = [existing_people] if existing_people else []
+
+            if not existing_people and people:
+                frontmatter["People"] = [f"[[{_sanitize_obsidian_link(name)}]]" for name in people]
+                backfill_performed = True
+                logger.info("Backfilled People field for existing file: %s", file_path)
+
+            # Check if Channel is missing or empty (only for videos/playlists, not channels)
+            existing_channel = frontmatter.get("Channel", "")
+            channel_name = metadata.get("author_name")
+            if not existing_channel and channel_name and not _is_channel_url(url):
+                safe_channel = _sanitize_obsidian_link(channel_name)
+                frontmatter["Channel"] = f"[[{safe_channel}]]"
+                backfill_performed = True
+                logger.info("Backfilled Channel field for existing file: %s", file_path)
 
             # Also update modified_time
             frontmatter["modified time"] = now_utc.isoformat()

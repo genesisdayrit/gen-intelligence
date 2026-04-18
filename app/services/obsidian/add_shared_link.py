@@ -302,6 +302,7 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
     If the file already exists, appends today's journal date if not already present.
+    Also backfills missing People and author fields if they are empty.
 
     Args:
         url: The URL to save
@@ -389,6 +390,29 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
 
             # Add today's date to journal
             frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+
+            # NEW: Backfill missing fields (People, author) if empty
+            backfill_performed = False
+
+            # Check if People is missing or empty
+            existing_people = frontmatter.get("People", [])
+            if not isinstance(existing_people, list):
+                existing_people = [existing_people] if existing_people else []
+
+            if not existing_people:
+                # Extract people from web content we already have
+                people = _extract_people_from_article(extracted_title, author, body_text)
+                if people:
+                    frontmatter["People"] = [f"[[{_sanitize_obsidian_link(name)}]]" for name in people]
+                    backfill_performed = True
+                    logger.info("Backfilled People field for existing file: %s", file_path)
+
+            # Check if author is missing or empty
+            existing_author = frontmatter.get("author", "")
+            if not existing_author and author:
+                frontmatter["author"] = author
+                backfill_performed = True
+                logger.info("Backfilled author field for existing file: %s", file_path)
 
             # Also update modified_time
             frontmatter["modified time"] = now_utc.isoformat()
