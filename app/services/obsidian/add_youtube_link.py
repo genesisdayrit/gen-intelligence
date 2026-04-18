@@ -16,6 +16,10 @@ from .add_shared_link import (
     _find_knowledge_hub_path,
     _sanitize_filename,
     _file_exists,
+    _get_file_content,
+    _extract_frontmatter,
+    _update_journal_date,
+    _rebuild_markdown,
 )
 
 logger = logging.getLogger(__name__)
@@ -538,13 +542,15 @@ def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
 def add_youtube_link(url: str) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
+    If the file already exists, appends today's journal date if not already present.
+
     Args:
         url: The YouTube URL to save
 
     Returns:
         dict with keys:
             - success: bool
-            - action: str | None ("created" or "skipped")
+            - action: str | None ("created", "updated", or "skipped")
             - error: str | None
     """
     result = {"success": False, "action": None, "error": None, "title": None, "description": None}
@@ -585,13 +591,6 @@ def add_youtube_link(url: str) -> dict:
         filename = sanitized_title + '.md'
         file_path = f"{knowledge_hub_path}/{filename}"
 
-        # Check if file already exists
-        if _file_exists(dbx, file_path):
-            logger.info("File already exists, skipping: %s", file_path)
-            result["success"] = True
-            result["action"] = "skipped"
-            return result
-
         # Get timestamps
         system_tz = pytz.timezone(timezone_str)
         now_local = datetime.now(timezone.utc).astimezone(system_tz)
@@ -599,6 +598,54 @@ def add_youtube_link(url: str) -> dict:
 
         # Format date for Journal link (e.g., "Jan 19, 2026")
         formatted_local_date = now_local.strftime('%b %-d, %Y')
+
+        # Check if file already exists
+        if _file_exists(dbx, file_path):
+            logger.info("File already exists, checking journal date: %s", file_path)
+
+            # Download existing file
+            existing_content = _get_file_content(dbx, file_path)
+            if existing_content is None:
+                logger.warning("Could not download existing file, skipping: %s", file_path)
+                result["success"] = True
+                result["action"] = "skipped"
+                return result
+
+            # Parse frontmatter and body
+            frontmatter, body = _extract_frontmatter(existing_content)
+
+            # Check if today's date is already linked
+            today_link = f"[[{formatted_local_date}]]"
+            existing_journals = frontmatter.get("Journal", [])
+            if not isinstance(existing_journals, list):
+                existing_journals = [existing_journals] if existing_journals else []
+
+            if today_link in existing_journals:
+                logger.info("Today's date already linked, skipping: %s", file_path)
+                result["success"] = True
+                result["action"] = "skipped"
+                return result
+
+            # Add today's date to journal
+            frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+
+            # Also update modified_time
+            frontmatter["modified time"] = now_utc.isoformat()
+
+            # Rebuild and upload
+            updated_content = _rebuild_markdown(frontmatter, body)
+            dbx.files_upload(
+                updated_content.encode('utf-8'),
+                file_path,
+                mode=dropbox.files.WriteMode.overwrite
+            )
+
+            logger.info("Updated existing file with new journal date: %s", file_path)
+            result["success"] = True
+            result["action"] = "updated"
+            result["title"] = video_title
+            result["description"] = description
+            return result
 
         # Build description section
         description_section = ""
