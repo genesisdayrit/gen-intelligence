@@ -10,6 +10,7 @@ import dropbox
 import pytz
 import redis
 import requests
+import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -173,6 +174,93 @@ def _file_exists(dbx: dropbox.Dropbox, path: str) -> bool:
         raise
 
 
+def _get_file_content(dbx: dropbox.Dropbox, path: str) -> str | None:
+    """Download and return file content from Dropbox.
+
+    Returns None if file doesn't exist or download fails.
+    """
+    try:
+        _, result = dbx.files_download(path)
+        return result.content.decode('utf-8')
+    except dropbox.exceptions.ApiError as e:
+        if e.error.is_path() and e.error.get_path().is_not_found():
+            return None
+        raise
+    except Exception as e:
+        logger.warning("Failed to download file %s: %s", path, e)
+        return None
+
+
+def _extract_frontmatter(content: str) -> tuple[dict, str]:
+    """Extract YAML frontmatter and body from markdown content.
+
+    Returns tuple of (frontmatter_dict, body_content).
+    If no frontmatter found, returns ({}, original_content).
+    """
+    # Match --- at start, then YAML content, then ---
+    pattern = r'^---\s*\n(.*?)\n---\s*\n(.*)$'
+    match = re.match(pattern, content, re.DOTALL)
+
+    if match:
+        try:
+            frontmatter = yaml.safe_load(match.group(1)) or {}
+            body = match.group(2)
+            return frontmatter, body
+        except yaml.YAMLError as e:
+            logger.warning("Failed to parse YAML frontmatter: %s", e)
+
+    return {}, content
+
+
+def _update_journal_date(frontmatter: dict, today_date: str) -> dict:
+    """Add today's date to Journal list if not already present.
+
+    Args:
+        frontmatter: The parsed YAML frontmatter
+        today_date: Today's date string (e.g., "Jan 19, 2026")
+
+    Returns:
+        Updated frontmatter dict
+    """
+    journal_key = "Journal"
+    today_link = f"[[{today_date}]]"
+
+    if journal_key not in frontmatter:
+        frontmatter[journal_key] = []
+
+    journal = frontmatter[journal_key]
+
+    # Ensure it's a list
+    if not isinstance(journal, list):
+        # If it's a single value, convert to list
+        journal = [journal] if journal else []
+        frontmatter[journal_key] = journal
+
+    # Check if today's date is already in the list
+    if today_link not in journal:
+        journal.append(today_link)
+        logger.info("Added journal date %s to existing file", today_date)
+
+    return frontmatter
+
+
+def _rebuild_markdown(frontmatter: dict, body: str) -> str:
+    """Rebuild markdown content with updated frontmatter.
+
+    Preserves the exact format expected by Obsidian.
+    """
+    # Custom YAML dumping to match Obsidian format
+    yaml_content = yaml.dump(
+        frontmatter,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+        width=float('inf')
+    )
+
+    return f"---\n{yaml_content}---\n\n{body.lstrip()}"
+
+
 def _generate_title_from_url(url: str) -> str:
     """Generate a title from URL if none provided."""
     # Remove protocol
@@ -213,6 +301,8 @@ def get_predicted_link_path(url: str, title: str | None = None) -> dict:
 def add_shared_link(url: str, title: str | None = None) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
+    If the file already exists, appends today's journal date if not already present.
+
     Args:
         url: The URL to save
         title: Optional title for the link. Uses extracted or URL-derived title if not provided.
@@ -220,7 +310,7 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
     Returns:
         dict with keys:
             - success: bool
-            - action: str | None ("created" or "skipped")
+            - action: str | None ("created", "updated", or "skipped")
             - error: str | None
             - file_path: str | None (relative path within vault)
             - vault_name: str | None (name of the Obsidian vault)
@@ -262,13 +352,6 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         relative_file_path = file_path.replace(vault_path.lower(), '').lstrip('/')
         result["file_path"] = relative_file_path
 
-        # Check if file already exists
-        if _file_exists(dbx, file_path):
-            logger.info("File already exists, skipping: %s", file_path)
-            result["success"] = True
-            result["action"] = "skipped"
-            return result
-
         # Get timestamps
         system_tz = pytz.timezone(timezone_str)
         now_local = datetime.now(timezone.utc).astimezone(system_tz)
@@ -276,6 +359,52 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
 
         # Format date for Journal link (e.g., "Jan 19, 2026")
         formatted_local_date = now_local.strftime('%b %-d, %Y')
+
+        # Check if file already exists
+        if _file_exists(dbx, file_path):
+            logger.info("File already exists, checking journal date: %s", file_path)
+
+            # Download existing file
+            existing_content = _get_file_content(dbx, file_path)
+            if existing_content is None:
+                logger.warning("Could not download existing file, skipping: %s", file_path)
+                result["success"] = True
+                result["action"] = "skipped"
+                return result
+
+            # Parse frontmatter and body
+            frontmatter, body = _extract_frontmatter(existing_content)
+
+            # Check if today's date is already linked
+            today_link = f"[[{formatted_local_date}]]"
+            existing_journals = frontmatter.get("Journal", [])
+            if not isinstance(existing_journals, list):
+                existing_journals = [existing_journals] if existing_journals else []
+
+            if today_link in existing_journals:
+                logger.info("Today's date already linked, skipping: %s", file_path)
+                result["success"] = True
+                result["action"] = "skipped"
+                return result
+
+            # Add today's date to journal
+            frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+
+            # Also update modified_time
+            frontmatter["modified time"] = now_utc.isoformat()
+
+            # Rebuild and upload
+            updated_content = _rebuild_markdown(frontmatter, body)
+            dbx.files_upload(
+                updated_content.encode('utf-8'),
+                file_path,
+                mode=dropbox.files.WriteMode.overwrite
+            )
+
+            logger.info("Updated existing file with new journal date: %s", file_path)
+            result["success"] = True
+            result["action"] = "updated"
+            return result
 
         # Build body section
         body_section = ""
