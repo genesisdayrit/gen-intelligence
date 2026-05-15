@@ -60,6 +60,12 @@ def _fetch_manus_tasks():
     return fetch_and_upsert_manus_tasks()
 
 
+def _send_daily_initiative_update():
+    from scripts.send_daily_initiative_update import run_daily_initiative_update
+
+    return run_daily_initiative_update()
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -123,6 +129,16 @@ SCHEDULED_JOBS = [
         "func": _fetch_manus_tasks,
         "trigger": CronTrigger(
             minute="*/30",
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_daily_initiative_update",
+        "name": "Daily Initiative Update on Active Linear Initiative",
+        "func": _send_daily_initiative_update,
+        "trigger": CronTrigger(
+            hour=4,
+            minute=0,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
