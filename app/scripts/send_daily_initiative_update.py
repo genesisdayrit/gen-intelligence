@@ -52,29 +52,29 @@ SUMMARY_MODEL = "gpt-4o-mini"
 SUMMARY_SYSTEM_PROMPT = """You write daily initiative updates for a personal productivity system.
 
 Goals:
-- Reinforce real wins from YESTERDAY only — the most recent of the daily action notes.
+- Reinforce real wins from YESTERDAY only — sourced from yesterday's daily action note.
 - Surface in-progress work clearly so progress is visible — draw from all three daily action notes.
 - Flag anything that looks incomplete or carried-over so it can be followed up — draw from all three daily action notes.
-- Avoid repeating items already covered by the most recent initiative updates.
 
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
-- Use exactly these three section headers in this order: `## Wins`, `## In-progress`, `## Follow-ups`.
-- `## Wins` must reflect only the YESTERDAY note (the most recent one, dated as specified in the user message). Do not pull wins from older notes — older completed items belong in In-progress or Follow-ups if still relevant.
-- `## In-progress` and `## Follow-ups` may draw from any of the three daily action notes.
+- Use exactly these three section headers in this order: `## Previous Day's Wins`, `## In-progress`, `## Follow-ups`.
+- `## Previous Day's Wins` reflects only YESTERDAY's completed work (the most recent daily action note, dated as specified in the user message). Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — those prior updates describe earlier days and their wins belong to those days, not this one.
+- The prior initiative updates are provided ONLY as deduplication context for the `## In-progress` and `## Follow-ups` sections (so you don't restate items already reported there). They are never a source for `## Previous Day's Wins`.
+- `## In-progress` and `## Follow-ups` may draw from any of the three daily action notes, but should avoid repeating items already covered in the prior initiative updates.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
 - Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
 - First person, plain voice. No hype, no emojis."""
 
 SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_local}.
 
-Yesterday is {yesterday_local} — the `## Wins` section must reflect only that day's completed work.
+Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflect only that day's completed work, sourced from the daily action note dated {yesterday_local}.
 
-The daily action notes below capture raw activity; they may be incomplete or noisy. Read across all three days and synthesize a coherent picture rather than copying lines verbatim. `## In-progress` and `## Follow-ups` should draw from any of the three notes; `## Wins` is restricted to the yesterday note.
+Do not source wins from older daily action notes (they belong to earlier days) and do not source wins from prior initiative updates (their wins were yesterday-of-when-they-were-written, not yesterday-of-today). The prior initiative updates below are deduplication context for In-progress and Follow-ups only.
 
-The previous initiative updates are included so you do not repeat work that has already been reported.
+The daily action notes capture raw activity; they may be incomplete or noisy. Synthesize a coherent picture rather than copying lines verbatim.
 
-=== Last {recent_updates_count} initiative updates (oldest first) ===
+=== Last {recent_updates_count} initiative updates (oldest first, for dedup context only) ===
 {recent_updates_block}
 
 === Daily Action notes (oldest first) ===
