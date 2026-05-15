@@ -52,21 +52,25 @@ SUMMARY_MODEL = "gpt-4o-mini"
 SUMMARY_SYSTEM_PROMPT = """You write daily initiative updates for a personal productivity system.
 
 Goals:
-- Reinforce real wins from the last few days.
-- Surface in-progress work clearly so progress is visible.
-- Flag anything that looks incomplete or carried-over so it can be followed up.
+- Reinforce real wins from YESTERDAY only — the most recent of the daily action notes.
+- Surface in-progress work clearly so progress is visible — draw from all three daily action notes.
+- Flag anything that looks incomplete or carried-over so it can be followed up — draw from all three daily action notes.
 - Avoid repeating items already covered by the most recent initiative updates.
 
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
 - Use exactly these three section headers in this order: `## Wins`, `## In-progress`, `## Follow-ups`.
+- `## Wins` must reflect only the YESTERDAY note (the most recent one, dated as specified in the user message). Do not pull wins from older notes — older completed items belong in In-progress or Follow-ups if still relevant.
+- `## In-progress` and `## Follow-ups` may draw from any of the three daily action notes.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
 - Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
 - First person, plain voice. No hype, no emojis."""
 
 SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_local}.
 
-The daily action notes below capture raw activity; they may be incomplete or noisy. Read across all three days and synthesize a coherent picture rather than copying lines verbatim.
+Yesterday is {yesterday_local} — the `## Wins` section must reflect only that day's completed work.
+
+The daily action notes below capture raw activity; they may be incomplete or noisy. Read across all three days and synthesize a coherent picture rather than copying lines verbatim. `## In-progress` and `## Follow-ups` should draw from any of the three notes; `## Wins` is restricted to the yesterday note.
 
 The previous initiative updates are included so you do not repeat work that has already been reported.
 
@@ -232,8 +236,10 @@ def generate_update_body(
     """Call OpenAI to produce the markdown body for the new initiative update."""
     client = _get_openai_client()
 
+    yesterday_local = (now_local - timedelta(days=1)).strftime("%A, %B %d, %Y")
     user_prompt = SUMMARY_USER_PROMPT_TEMPLATE.format(
         today_local=now_local.strftime("%A, %B %d, %Y"),
+        yesterday_local=yesterday_local,
         recent_updates_count=len(recent_updates),
         recent_updates_block=_format_recent_updates_block(recent_updates),
         daily_action_block=_format_daily_action_block(daily_action_notes),
