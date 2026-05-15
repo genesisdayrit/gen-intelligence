@@ -257,6 +257,20 @@ query ProjectIssues($projectId: String!, $first: Int!, $after: String) {
 }
 """
 
+INITIATIVE_UPDATE_CREATE_MUTATION = """
+mutation CreateInitiativeUpdate($input: InitiativeUpdateCreateInput!) {
+  initiativeUpdateCreate(input: $input) {
+    success
+    initiativeUpdate {
+      id
+      url
+      body
+      createdAt
+    }
+  }
+}
+"""
+
 # =============================================================================
 # Linear API Functions
 # =============================================================================
@@ -342,6 +356,41 @@ def fetch_initiative_updates(initiative_id: str) -> list[dict]:
         {"initiativeId": initiative_id, "first": 50},
         ["initiative", "initiativeUpdates"],
     )
+
+
+def create_initiative_update(
+    initiative_id: str,
+    body: str,
+    health: str | None = None,
+) -> dict:
+    """Create a new initiative update on Linear.
+
+    Args:
+        initiative_id: Linear initiative ID.
+        body: Markdown body for the update.
+        health: Optional health value (e.g. "onTrack", "atRisk", "offTrack").
+
+    Returns the new update dict ({id, url, body, createdAt}) on success.
+    Raises Exception on GraphQL error or success=false.
+    """
+    input_payload: dict = {"initiativeId": initiative_id, "body": body}
+    if health is not None:
+        input_payload["health"] = health
+
+    data = execute_query(
+        INITIATIVE_UPDATE_CREATE_MUTATION,
+        {"input": input_payload},
+    )
+
+    payload = data.get("data", {}).get("initiativeUpdateCreate") or {}
+    if not payload.get("success"):
+        raise Exception(f"initiativeUpdateCreate did not return success: {payload}")
+
+    update = payload.get("initiativeUpdate")
+    if not update:
+        raise Exception(f"initiativeUpdateCreate returned no update: {payload}")
+
+    return update
 
 
 def fetch_initiative_documents(initiative_id: str) -> list[dict]:
