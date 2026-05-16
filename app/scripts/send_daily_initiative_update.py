@@ -61,8 +61,8 @@ Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
 - Use exactly these three section headers in this order: `## Previous Day's Wins`, `## In-progress`, `## Follow-ups`.
 - `## Previous Day's Wins` reflects only YESTERDAY's completed work. Source priority:
-  1. PRIMARY: any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note. These are the user's deliberate end-of-day reflections and should be the basis of the section when present.
-  2. FALLBACK (only if Win 1/2/3 are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
+  1. PRIMARY (equal-weight): any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note AND any wins-shaped content (accomplishments, things-that-went-well, completed work, breakthroughs) in yesterday's journal entry. Both are user-authored end-of-day reflections and should be the basis of the section when present.
+  2. FALLBACK (only if both PRIMARY sources are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday daily action note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
   3. Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — their wins describe earlier days. (Their wins sections have already been stripped from the dedup context for safety.)
 - `## In-progress` and `## Follow-ups` digest BOTH the daily action notes (across all three days) AND the in-progress/follow-up lines from the prior initiative updates. The prior updates show what was open before yesterday; the DA notes show what happened since. Use both:
   - Carry forward items still genuinely relevant (mark continuity, e.g. "still working on X").
@@ -77,7 +77,7 @@ SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_
 
 Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflect only that day's completed work, sourced from the daily action note dated {yesterday_local}.
 
-For Previous Day's Wins, first look for user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's note — those are the primary source. Only if those labels are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in that day's note. Do not source wins from older daily action notes or from prior initiative updates.
+For Previous Day's Wins, look in two primary places (equal weight): (a) user-authored bullets under `Win 1:` / `Win 2:` / `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note, AND (b) wins-shaped content in yesterday's journal entry — accomplishments, things that went well, completed work, breakthroughs the user wrote about. Merge the wins surfaced from both. Only if both are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in the daily action note. Do not source wins from older daily action notes or from prior initiative updates.
 
 For In-progress and Follow-ups, digest both the prior initiative updates and the daily action notes. The prior updates' In-progress and Follow-ups are real trajectory — carry forward what is still relevant (with continuity wording), drop what has clearly resolved, and weave in new items from yesterday's DA note. Do not restate prior bullets verbatim — re-express them in light of what has happened since.
 
@@ -85,6 +85,9 @@ The daily action notes capture raw activity; they may be incomplete or noisy. Sy
 
 === Last {recent_updates_count} initiative updates (oldest first; wins stripped — In-progress and Follow-ups are valid trajectory signal) ===
 {recent_updates_block}
+
+=== Yesterday's Journal entry ===
+{journal_block}
 
 === Daily Action notes (oldest first) ===
 {daily_action_block}
@@ -166,6 +169,24 @@ def _find_daily_action_folder(dbx: dropbox.Dropbox, daily_folder_path: str) -> s
     raise FileNotFoundError("Could not find '_Daily-Action' folder in Dropbox")
 
 
+def _find_journal_folder(dbx: dropbox.Dropbox, daily_folder_path: str) -> str:
+    """Find folder ending with '_Journal' in the daily folder."""
+    result = dbx.files_list_folder(daily_folder_path)
+    while True:
+        for entry in result.entries:
+            if isinstance(entry, dropbox.files.FolderMetadata) and entry.name.endswith("_Journal"):
+                return entry.path_lower
+        if not result.has_more:
+            break
+        result = dbx.files_list_folder_continue(result.cursor)
+    raise FileNotFoundError("Could not find '_Journal' folder in Dropbox")
+
+
+def _journal_filename_for_date(d) -> str:
+    """Build the journal filename for a date. Format: `{Mmm} {D}, {YYYY}.md` (no zero-padded day)."""
+    return f"{d.strftime('%b')} {d.day}, {d.strftime('%Y')}.md"
+
+
 def _download_da_note(dbx: dropbox.Dropbox, folder_path: str, date_str: str) -> str | None:
     """Download `DA YYYY-MM-DD.md` content. Returns None if not present."""
     path = f"{folder_path}/DA {date_str}.md"
@@ -232,6 +253,30 @@ def load_recent_daily_action_notes(
     return notes
 
 
+def load_yesterday_journal(now_local: datetime) -> tuple[str, str | None]:
+    """Load yesterday's journal entry from Obsidian.
+
+    Returns (filename, content_or_none). Missing journal returns content=None.
+    """
+    vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
+    if not vault_path:
+        raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
+
+    dbx = get_dropbox_client()
+    daily_folder = _find_daily_folder(dbx, vault_path)
+    journal_folder = _find_journal_folder(dbx, daily_folder)
+
+    yesterday = (now_local - timedelta(days=1)).date()
+    filename = _journal_filename_for_date(yesterday)
+    path = f"{journal_folder}/{filename}"
+    try:
+        _, response = dbx.files_download(path)
+        return filename, response.content.decode("utf-8")
+    except dropbox.exceptions.ApiError:
+        logger.info("Yesterday's journal not found: %s", path)
+        return filename, None
+
+
 # =============================================================================
 # Summarizer
 # =============================================================================
@@ -269,10 +314,18 @@ def _format_daily_action_block(notes: list[tuple[str, str | None]]) -> str:
     return "\n\n".join(parts)
 
 
+def _format_journal_block(journal: tuple[str, str | None]) -> str:
+    filename, content = journal
+    if not content:
+        return f"(no journal entry found for {filename})"
+    return f"--- {filename} ---\n{content.strip()}"
+
+
 def generate_update_body(
     daily_action_notes: list[tuple[str, str | None]],
     recent_updates: list[dict],
     now_local: datetime,
+    yesterday_journal: tuple[str, str | None] | None = None,
 ) -> str:
     """Call OpenAI to produce the markdown body for the new initiative update."""
     client = _get_openai_client()
@@ -284,6 +337,7 @@ def generate_update_body(
         recent_updates_count=len(recent_updates),
         recent_updates_block=_format_recent_updates_block(recent_updates),
         daily_action_block=_format_daily_action_block(daily_action_notes),
+        journal_block=_format_journal_block(yesterday_journal or ("yesterday's journal", None)),
     )
 
     response = client.chat.completions.create(
@@ -362,13 +416,20 @@ def run_daily_initiative_update(
             ", ".join(present) or "none",
         )
 
-        if not present and not recent_updates:
+        journal = load_yesterday_journal(now_local)
+        logger.info(
+            "Loaded yesterday's journal: %s (%s)",
+            journal[0],
+            "present" if journal[1] else "missing",
+        )
+
+        if not present and not recent_updates and not journal[1]:
             logger.warning(
-                "No daily action notes and no prior updates; nothing to summarize. Skipping."
+                "No daily action notes, prior updates, or journal; nothing to summarize. Skipping."
             )
             return True
 
-        body = generate_update_body(daily_notes, recent_updates, now_local)
+        body = generate_update_body(daily_notes, recent_updates, now_local, journal)
         if not body:
             logger.error("LLM returned empty body; aborting.")
             return False
