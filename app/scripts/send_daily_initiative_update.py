@@ -54,8 +54,8 @@ SUMMARY_SYSTEM_PROMPT = """You write daily initiative updates for a personal pro
 
 Goals:
 - Reinforce real wins from YESTERDAY only — sourced from yesterday's daily action note.
-- Surface in-progress work clearly so progress is visible — draw from all three daily action notes.
-- Flag anything that looks incomplete or carried-over so it can be followed up — draw from all three daily action notes.
+- Surface in-progress work clearly so trajectory is visible — synthesize across both the daily action notes AND the in-progress lines from prior initiative updates.
+- Flag anything still incomplete or carried-over so it can be followed up — synthesize across both the daily action notes AND the follow-up lines from prior initiative updates.
 
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
@@ -63,9 +63,12 @@ Constraints:
 - `## Previous Day's Wins` reflects only YESTERDAY's completed work. Source priority:
   1. PRIMARY: any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note. These are the user's deliberate end-of-day reflections and should be the basis of the section when present.
   2. FALLBACK (only if Win 1/2/3 are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
-- Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — those prior updates describe earlier days and their wins belong to those days, not this one.
-- The prior initiative updates are provided ONLY as deduplication context for the `## In-progress` and `## Follow-ups` sections (so you don't restate items already reported there). Their wins sections have been removed; they are never a source for `## Previous Day's Wins` regardless.
-- `## In-progress` and `## Follow-ups` may draw from any of the three daily action notes, but should avoid repeating items already covered in the prior initiative updates.
+  3. Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — their wins describe earlier days. (Their wins sections have already been stripped from the dedup context for safety.)
+- `## In-progress` and `## Follow-ups` digest BOTH the daily action notes (across all three days) AND the in-progress/follow-up lines from the prior initiative updates. The prior updates show what was open before yesterday; the DA notes show what happened since. Use both:
+  - Carry forward items still genuinely relevant (mark continuity, e.g. "still working on X").
+  - Drop items the DA notes show as resolved.
+  - Add new items that emerged in yesterday's DA note.
+  - Refine wording when the situation has evolved — do not paste prior lines verbatim.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
 - Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
 - First person, plain voice. No hype, no emojis."""
@@ -74,13 +77,13 @@ SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_
 
 Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflect only that day's completed work, sourced from the daily action note dated {yesterday_local}.
 
-First look for user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's note — those are the primary source. Only if those labels are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in that day's note.
+For Previous Day's Wins, first look for user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's note — those are the primary source. Only if those labels are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in that day's note. Do not source wins from older daily action notes or from prior initiative updates.
 
-Do not source wins from older daily action notes (they belong to earlier days) and do not source wins from prior initiative updates (their wins were yesterday-of-when-they-were-written, not yesterday-of-today). The prior initiative updates below have had their wins sections stripped — what remains is deduplication context for In-progress and Follow-ups only.
+For In-progress and Follow-ups, digest both the prior initiative updates and the daily action notes. The prior updates' In-progress and Follow-ups are real trajectory — carry forward what is still relevant (with continuity wording), drop what has clearly resolved, and weave in new items from yesterday's DA note. Do not restate prior bullets verbatim — re-express them in light of what has happened since.
 
 The daily action notes capture raw activity; they may be incomplete or noisy. Synthesize a coherent picture rather than copying lines verbatim.
 
-=== Last {recent_updates_count} initiative updates (oldest first, wins stripped — for dedup context only) ===
+=== Last {recent_updates_count} initiative updates (oldest first; wins stripped — In-progress and Follow-ups are valid trajectory signal) ===
 {recent_updates_block}
 
 === Daily Action notes (oldest first) ===
