@@ -60,8 +60,11 @@ Goals:
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
 - Use exactly these three section headers in this order: `## Previous Day's Wins`, `## In-progress`, `## Follow-ups`.
-- `## Previous Day's Wins` reflects only YESTERDAY's completed work (the most recent daily action note, dated as specified in the user message). Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — those prior updates describe earlier days and their wins belong to those days, not this one.
-- The prior initiative updates are provided ONLY as deduplication context for the `## In-progress` and `## Follow-ups` sections (so you don't restate items already reported there). They are never a source for `## Previous Day's Wins`.
+- `## Previous Day's Wins` reflects only YESTERDAY's completed work. Source priority:
+  1. PRIMARY: any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note. These are the user's deliberate end-of-day reflections and should be the basis of the section when present.
+  2. FALLBACK (only if Win 1/2/3 are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
+- Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — those prior updates describe earlier days and their wins belong to those days, not this one.
+- The prior initiative updates are provided ONLY as deduplication context for the `## In-progress` and `## Follow-ups` sections (so you don't restate items already reported there). Their wins sections have been removed; they are never a source for `## Previous Day's Wins` regardless.
 - `## In-progress` and `## Follow-ups` may draw from any of the three daily action notes, but should avoid repeating items already covered in the prior initiative updates.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
 - Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
@@ -71,11 +74,13 @@ SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_
 
 Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflect only that day's completed work, sourced from the daily action note dated {yesterday_local}.
 
-Do not source wins from older daily action notes (they belong to earlier days) and do not source wins from prior initiative updates (their wins were yesterday-of-when-they-were-written, not yesterday-of-today). The prior initiative updates below are deduplication context for In-progress and Follow-ups only.
+First look for user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's note — those are the primary source. Only if those labels are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in that day's note.
+
+Do not source wins from older daily action notes (they belong to earlier days) and do not source wins from prior initiative updates (their wins were yesterday-of-when-they-were-written, not yesterday-of-today). The prior initiative updates below have had their wins sections stripped — what remains is deduplication context for In-progress and Follow-ups only.
 
 The daily action notes capture raw activity; they may be incomplete or noisy. Synthesize a coherent picture rather than copying lines verbatim.
 
-=== Last {recent_updates_count} initiative updates (oldest first, for dedup context only) ===
+=== Last {recent_updates_count} initiative updates (oldest first, wins stripped — for dedup context only) ===
 {recent_updates_block}
 
 === Daily Action notes (oldest first) ===
@@ -185,6 +190,20 @@ def _strip_initiative_updates_section(content: str) -> str:
     return _INITIATIVE_UPDATES_SECTION_RE.sub("", content)
 
 
+# Prior initiative updates are passed to the LLM as dedup context for the
+# In-progress and Follow-ups sections only. Their `## Wins` sections describe
+# earlier days and must not be a source for today's `## Previous Day's Wins`.
+_PRIOR_UPDATE_WINS_SECTION_RE = re.compile(
+    r"^##\s+(?:Previous Day's\s+)?Wins\s*$.*?(?=^##\s|\Z)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_wins_section_from_update_body(body: str) -> str:
+    """Remove `## Wins` or `## Previous Day's Wins` sections from a prior update body."""
+    return _PRIOR_UPDATE_WINS_SECTION_RE.sub("", body)
+
+
 def load_recent_daily_action_notes(
     now_local: datetime, lookback_days: int = LOOKBACK_DAYS
 ) -> list[tuple[str, str | None]]:
@@ -228,7 +247,8 @@ def _format_recent_updates_block(updates: list[dict]) -> str:
     lines: list[str] = []
     for u in updates:
         created = u.get("createdAt", "?")
-        body = (u.get("body") or "").strip() or "(empty body)"
+        raw_body = (u.get("body") or "").strip()
+        body = _strip_wins_section_from_update_body(raw_body).strip() or "(no in-progress/follow-ups context)"
         lines.append(f"--- update created {created} ---\n{body}")
     return "\n\n".join(lines)
 
