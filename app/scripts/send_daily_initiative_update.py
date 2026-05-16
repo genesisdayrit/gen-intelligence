@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -168,6 +169,22 @@ def _download_da_note(dbx: dropbox.Dropbox, folder_path: str, date_str: str) -> 
         return None
 
 
+# The Linear webhook mirrors every initiative update into the current day's DA
+# note under `### Initiative Updates:`. If we feed that mirrored content back to
+# the LLM, it will treat our own prior cron output as fresh activity and loop
+# yesterday's "Previous Day's Wins" forward forever. Strip the section before
+# summarizing.
+_INITIATIVE_UPDATES_SECTION_RE = re.compile(
+    r"^###\s+Initiative Updates:\s*$.*?(?=^###\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _strip_initiative_updates_section(content: str) -> str:
+    """Remove the `### Initiative Updates:` section (and its body) from a DA note."""
+    return _INITIATIVE_UPDATES_SECTION_RE.sub("", content)
+
+
 def load_recent_daily_action_notes(
     now_local: datetime, lookback_days: int = LOOKBACK_DAYS
 ) -> list[tuple[str, str | None]]:
@@ -224,7 +241,8 @@ def _format_daily_action_block(notes: list[tuple[str, str | None]]) -> str:
         if content is None:
             parts.append(f"--- DA {date_str} (no note) ---")
         else:
-            parts.append(f"--- DA {date_str} ---\n{content.strip()}")
+            cleaned = _strip_initiative_updates_section(content).strip()
+            parts.append(f"--- DA {date_str} ---\n{cleaned}")
     return "\n\n".join(parts)
 
 
