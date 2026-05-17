@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
 
@@ -30,8 +31,9 @@ TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
 ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
 MANUS_TASKS_HEADER = "### Manus Tasks:"
 
-# Template section boundary (marks end of tracked sections)
-TEMPLATE_BOUNDARY = "Vision Objective 1:"
+# Template section boundary detection lives in
+# `services.obsidian.utils.template_boundary` so any change to the user's
+# template label only needs to be updated in one place.
 
 # Patterns
 LOG_ENTRY_PATTERN = re.compile(r'^\[\d{2}:\d{2}\]')
@@ -274,7 +276,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                     break
                 elif _is_section_header(line):
                     break
-                elif line.strip() == TEMPLATE_BOUNDARY:
+                elif is_template_boundary(line):
                     break
                 else:
                     # Content line or blank line - part of this entry
@@ -288,7 +290,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
             next_line_index = existing_line_index + 1
             if next_line_index < len(lines):
                 next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or next_line.strip() == TEMPLATE_BOUNDARY:
+                if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or is_template_boundary(next_line):
                     lines.insert(next_line_index, '')
             action = "updated"
         else:
@@ -315,7 +317,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                     line = lines[i]
                     if _is_section_header(line):
                         break
-                    elif line.strip() == TEMPLATE_BOUNDARY:
+                    elif is_template_boundary(line):
                         break
                     else:
                         # Any other line (content, blank, notes) - keep going
@@ -328,8 +330,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 # Add blank line after if next line is a section header or template boundary
                 next_line_index = insert_index + 1
                 if next_line_index < len(lines):
-                    next_line = lines[next_line_index].strip()
-                    if _is_section_header(lines[next_line_index]) or next_line == TEMPLATE_BOUNDARY:
+                    if _is_section_header(lines[next_line_index]) or is_template_boundary(lines[next_line_index]):
                         lines.insert(next_line_index, '')
             else:
                 # Header doesn't exist - need to create it in the right position

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dedup_helpers import extract_task_contents_from_section, is_task_duplicate
+from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
 
@@ -32,8 +33,8 @@ INITIATIVE_UPDATES_HEADER = "### Initiative Updates:"
 PROJECT_UPDATES_HEADER = "### Project Updates:"
 ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
 
-# Template section boundary (marks end of tracked sections)
-TEMPLATE_BOUNDARY = "Vision Objective 1:"
+# Template boundary detection lives in
+# `services.obsidian.utils.template_boundary`.
 
 
 def _refresh_access_token() -> str:
@@ -242,7 +243,7 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
                 in_project = False
 
         # Check for template boundary
-        if stripped == TEMPLATE_BOUNDARY:
+        if is_template_boundary(line):
             template_boundary_line = i
             if in_initiative:
                 initiative_end = i

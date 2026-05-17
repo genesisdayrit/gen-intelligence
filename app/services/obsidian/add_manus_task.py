@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
 
@@ -35,7 +36,8 @@ DAILY_INITIATIVE_HEADER = "### Initiative Updates:"
 DAILY_PROJECT_HEADER = "### Project Updates:"
 DAILY_TODOIST_HEADER = "### Completed Tasks on Todoist:"
 DAILY_ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
-DAILY_TEMPLATE_BOUNDARY = "Vision Objective 1:"
+# Daily template boundary detection lives in
+# `services.obsidian.utils.template_boundary` (shared with other inserters).
 
 # Weekly Cycle section ordering (must match add_weekly_cycle_updates.py)
 WEEKLY_INITIATIVE_HEADER = "##### Initiative Updates:"
@@ -252,7 +254,7 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
                     break
                 elif line.strip() == '---':
                     break
-                elif line.strip() == DAILY_TEMPLATE_BOUNDARY:
+                elif is_template_boundary(line):
                     break
                 elif line.strip() == '':
                     # Don't advance past blank lines — insert before them
@@ -286,7 +288,7 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
                 # Look for template boundary or insert after Daily Review
                 insert_pos = None
                 for i in range(len(lines) - 1, daily_review_end_line - 1, -1):
-                    if lines[i].strip() == DAILY_TEMPLATE_BOUNDARY:
+                    if is_template_boundary(lines[i]):
                         insert_pos = i
                         break
 

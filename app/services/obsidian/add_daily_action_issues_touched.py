@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
 
@@ -29,8 +30,8 @@ PROJECT_UPDATES_HEADER = "### Project Updates:"
 TODOIST_COMPLETED_HEADER = "### Completed Tasks on Todoist:"
 ISSUES_TOUCHED_HEADER = "### Linear Issues Touched:"
 
-# Template section boundary (marks end of tracked sections)
-TEMPLATE_BOUNDARY = "Vision Objective 1:"
+# Template boundary detection lives in
+# `services.obsidian.utils.template_boundary`.
 
 
 def _refresh_access_token() -> str:
@@ -252,7 +253,7 @@ def _find_issues_touched_insert_position(lines: list[str], daily_review_end_line
                 initiative_end = i
                 in_initiative = False
 
-        if stripped == TEMPLATE_BOUNDARY:
+        if is_template_boundary(line):
             template_boundary_line = i
             if in_todoist:
                 todoist_end = i
@@ -340,7 +341,7 @@ def upsert_daily_action_issue_touched(
                 in_issues_section = True
                 continue
             if in_issues_section:
-                if line.strip().startswith('#') or line.strip() == '---' or line.strip() == TEMPLATE_BOUNDARY:
+                if line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
                     break
                 if identifier_pattern.match(line):
                     existing_line_index = i
@@ -370,7 +371,7 @@ def upsert_daily_action_issue_touched(
                     if section_found:
                         if line.strip() == '':
                             break
-                        elif line.strip().startswith('#') or line.strip() == '---' or line.strip() == TEMPLATE_BOUNDARY:
+                        elif line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
                             break
                         else:
                             # Content line - update insert position
