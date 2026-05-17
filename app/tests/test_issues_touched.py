@@ -27,8 +27,8 @@ from services.obsidian.add_daily_action_issues_touched import (
     TODOIST_COMPLETED_HEADER,
     INITIATIVE_UPDATES_HEADER,
     PROJECT_UPDATES_HEADER,
-    TEMPLATE_BOUNDARY,
 )
+from services.obsidian.utils.template_boundary import TEMPLATE_BOUNDARY
 from services.obsidian.add_weekly_cycle_issues_touched import (
     ISSUES_TOUCHED_HEADER as WC_ISSUES_TOUCHED_HEADER,
     INITIATIVE_UPDATES_HEADER as WC_INITIATIVE_UPDATES_HEADER,

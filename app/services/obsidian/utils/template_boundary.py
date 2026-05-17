@@ -14,6 +14,11 @@ constant directly, so any future template change only needs a fix here.
 
 import re
 
+# Canonical literal form of the boundary — used by tests and fixtures that
+# need a concrete string. Production code should call `is_template_boundary`
+# rather than comparing against this constant directly.
+TEMPLATE_BOUNDARY = "Vision Objective 1:"
+
 _TEMPLATE_BOUNDARY_RE = re.compile(r"^Vision Objective\s+\d")
 
 
