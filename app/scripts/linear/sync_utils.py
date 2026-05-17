@@ -532,7 +532,23 @@ def _refresh_access_token() -> str:
 
 
 def get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client."""
+    """Get authenticated Dropbox client.
+
+    When refresh-token credentials are available, construct a client that the
+    Dropbox SDK can auto-refresh on 401. Otherwise fall back to the legacy
+    Redis-cached access token (which the SDK cannot refresh on its own, so a
+    stale cache will fail mid-request — see GD-447 incident on 2026-05-17).
+    """
+    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
+    app_key = os.getenv('DROPBOX_ACCESS_KEY')
+    app_secret = os.getenv('DROPBOX_ACCESS_SECRET')
+    if refresh_token and app_key and app_secret:
+        return dropbox.Dropbox(
+            oauth2_refresh_token=refresh_token,
+            app_key=app_key,
+            app_secret=app_secret,
+        )
+
     access_token = redis_client.get('DROPBOX_ACCESS_TOKEN')
     if not access_token:
         access_token = _refresh_access_token()
