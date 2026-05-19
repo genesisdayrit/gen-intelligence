@@ -214,6 +214,35 @@ def _strip_initiative_updates_section(content: str) -> str:
     return _INITIATIVE_UPDATES_SECTION_RE.sub("", content)
 
 
+# Defensive second strip: in DA notes that were written by older / buggy upsert
+# code, the H2 subsections of a mirrored update body (`## Previous Day's Wins`,
+# `## In-progress`, `## Follow-ups`) can survive outside the parent `### Initiative
+# Updates:` section — e.g. orphaned under `### Completed Tasks on Todoist:` after
+# a partial wipe. Those H2 headers never appear in the user's hand-written
+# template (which uses inline `Win 1:` labels, not H2s), so it is safe to strip
+# any of them wherever they appear in a DA note before feeding to the LLM.
+_DA_MIRRORED_UPDATE_H2_RE = re.compile(
+    r"^##\s+(?:Previous Day's\s+Wins|Wins|In-progress|Follow-ups)\s*$.*?(?=^#{1,6}\s|\Z)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_mirrored_update_fragments(content: str) -> str:
+    """Remove H2 wins/in-progress/follow-ups subsections from anywhere in a DA note.
+
+    Defends against orphaned fragments left behind by older upsert bugs. Safe
+    because these H2 headers are not part of the user's template.
+    """
+    return _DA_MIRRORED_UPDATE_H2_RE.sub("", content)
+
+
+def _sanitize_da_note_for_llm(content: str) -> str:
+    """Apply all DA-note strips before feeding the note to the LLM."""
+    cleaned = _strip_initiative_updates_section(content)
+    cleaned = _strip_mirrored_update_fragments(cleaned)
+    return cleaned
+
+
 # Prior initiative updates are passed to the LLM as dedup context for the
 # In-progress and Follow-ups sections only. Their `## Wins` sections describe
 # earlier days and must not be a source for today's `## Previous Day's Wins`.
@@ -309,7 +338,7 @@ def _format_daily_action_block(notes: list[tuple[str, str | None]]) -> str:
         if content is None:
             parts.append(f"--- DA {date_str} (no note) ---")
         else:
-            cleaned = _strip_initiative_updates_section(content).strip()
+            cleaned = _sanitize_da_note_for_llm(content).strip()
             parts.append(f"--- DA {date_str} ---\n{cleaned}")
     return "\n\n".join(parts)
 
