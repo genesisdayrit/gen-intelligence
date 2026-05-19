@@ -64,11 +64,11 @@ Constraints:
   1. PRIMARY (equal-weight): any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note AND any wins-shaped content (accomplishments, things-that-went-well, completed work, breakthroughs) in yesterday's journal entry. Both are user-authored end-of-day reflections and should be the basis of the section when present.
   2. FALLBACK (only if both PRIMARY sources are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday daily action note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
   3. Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — their wins describe earlier days. (Their wins sections have already been stripped from the dedup context for safety.)
-- `## In-progress` and `## Follow-ups` digest BOTH the daily action notes (across all three days) AND the in-progress/follow-up lines from the prior initiative updates. The prior updates show what was open before yesterday; the DA notes show what happened since. Use both:
-  - Carry forward items still genuinely relevant (mark continuity, e.g. "still working on X").
-  - Drop items the DA notes show as resolved.
-  - Add new items that emerged in yesterday's DA note.
-  - Refine wording when the situation has evolved — do not paste prior lines verbatim.
+- `## In-progress` and `## Follow-ups` are sourced EXCLUSIVELY from the three daily action notes — never from prior initiative updates. Prior update bodies have been content-redacted in the context block; their existence is shown only so you know an update was already posted on those days. Rules:
+  - **Source from current evidence only.** An item belongs in In-progress / Follow-ups only if you can point to ACTIVE evidence in the past three DA notes (a completion, a status change, a new sub-task, a deliberate mention in the user's prose, a Linear issue touched, a Todoist task completed).
+  - Mere persistence in auto-synced sections like `### Manus Tasks:` does NOT count as evidence — Manus tasks linger in the DA note long after they're no longer being worked on. Treat unchanged Manus entries as background noise, not active work.
+  - Prefer recent evidence: items active in yesterday's DA note are more current than items only visible in older DA notes.
+  - When in doubt about whether an item is current, DROP it. It's better to be sparse and accurate than complete and stale.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
 - Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
 - First person, plain voice. No hype, no emojis."""
@@ -79,7 +79,7 @@ Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflec
 
 For Previous Day's Wins, look in two primary places (equal weight): (a) user-authored bullets under `Win 1:` / `Win 2:` / `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note, AND (b) wins-shaped content in yesterday's journal entry — accomplishments, things that went well, completed work, breakthroughs the user wrote about. Merge the wins surfaced from both. Only if both are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in the daily action note. Do not source wins from older daily action notes or from prior initiative updates.
 
-For In-progress and Follow-ups, digest both the prior initiative updates and the daily action notes. The prior updates' In-progress and Follow-ups are real trajectory — carry forward what is still relevant (with continuity wording), drop what has clearly resolved, and weave in new items from yesterday's DA note. Do not restate prior bullets verbatim — re-express them in light of what has happened since.
+For In-progress and Follow-ups, source EXCLUSIVELY from the three daily action notes. The prior updates' bodies have been redacted in the dedup-context block below; you can see that updates were posted on those days, but their content is not a valid source for today's In-progress or Follow-ups. Each item you include must be backed by active evidence in the DA notes (a completion, a status change, a new sub-task, a deliberate mention in the user's prose, a Linear issue touched, a Todoist task completed). Items that only show up in auto-synced Manus Tasks without other evidence are NOT current — drop them. When in doubt, drop.
 
 The daily action notes capture raw activity; they may be incomplete or noisy. Synthesize a coherent picture rather than copying lines verbatim.
 
@@ -214,18 +214,61 @@ def _strip_initiative_updates_section(content: str) -> str:
     return _INITIATIVE_UPDATES_SECTION_RE.sub("", content)
 
 
-# Prior initiative updates are passed to the LLM as dedup context for the
-# In-progress and Follow-ups sections only. Their `## Wins` sections describe
-# earlier days and must not be a source for today's `## Previous Day's Wins`.
-_PRIOR_UPDATE_WINS_SECTION_RE = re.compile(
-    r"^##\s+(?:Previous Day's\s+)?Wins\s*$.*?(?=^##\s|\Z)",
+# Defensive second strip: in DA notes that were written by older / buggy upsert
+# code, the H2 subsections of a mirrored update body (`## Previous Day's Wins`,
+# `## In-progress`, `## Follow-ups`) can survive outside the parent `### Initiative
+# Updates:` section — e.g. orphaned under `### Completed Tasks on Todoist:` after
+# a partial wipe. Those H2 headers never appear in the user's hand-written
+# template (which uses inline `Win 1:` labels, not H2s), so it is safe to strip
+# any of them wherever they appear in a DA note before feeding to the LLM.
+_DA_MIRRORED_UPDATE_H2_RE = re.compile(
+    r"^##\s+(?:Previous Day's\s+Wins|Wins|In-progress|Follow-ups)\s*$.*?(?=^#{1,6}\s|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 
 
-def _strip_wins_section_from_update_body(body: str) -> str:
-    """Remove `## Wins` or `## Previous Day's Wins` sections from a prior update body."""
-    return _PRIOR_UPDATE_WINS_SECTION_RE.sub("", body)
+def _strip_mirrored_update_fragments(content: str) -> str:
+    """Remove H2 wins/in-progress/follow-ups subsections from anywhere in a DA note.
+
+    Defends against orphaned fragments left behind by older upsert bugs. Safe
+    because these H2 headers are not part of the user's template.
+    """
+    return _DA_MIRRORED_UPDATE_H2_RE.sub("", content)
+
+
+def _sanitize_da_note_for_llm(content: str) -> str:
+    """Apply all DA-note strips before feeding the note to the LLM."""
+    cleaned = _strip_initiative_updates_section(content)
+    cleaned = _strip_mirrored_update_fragments(cleaned)
+    return cleaned
+
+
+# Prior initiative updates are passed to the LLM only as "an update was posted"
+# metadata. ALL of their H2 sections (Previous Day's Wins, Wins, In-progress,
+# Follow-ups) are stripped before display, because:
+#
+# 1. Their wins describe earlier days and must not source today's wins.
+# 2. Their In-progress / Follow-ups self-reinforce indefinitely if passed
+#    through — once an item is in a prior update, the model treats it as
+#    "real trajectory" and carries it forward into the next update, and the
+#    next, and the next. The DA notes are the only reliable source of truth
+#    for what is currently active; the prior updates' body is just historical
+#    artifact.
+_PRIOR_UPDATE_H2_SECTIONS_RE = re.compile(
+    r"^##\s+(?:Previous Day's\s+Wins|Wins|In-progress|Follow-ups)\s*$.*?(?=^#{1,6}\s|\Z)",
+    re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_h2_sections_from_update_body(body: str) -> str:
+    """Strip Wins / In-progress / Follow-ups H2 sections from a prior update body.
+
+    Prior updates' bodies are effectively just a structural skeleton after this
+    runs — anything outside the four standard H2s survives, but in practice the
+    body becomes empty. That's intentional: the prior updates contribute as
+    "an update was posted" signal, not as content.
+    """
+    return _PRIOR_UPDATE_H2_SECTIONS_RE.sub("", body)
 
 
 def load_recent_daily_action_notes(
@@ -296,7 +339,7 @@ def _format_recent_updates_block(updates: list[dict]) -> str:
     for u in updates:
         created = u.get("createdAt", "?")
         raw_body = (u.get("body") or "").strip()
-        body = _strip_wins_section_from_update_body(raw_body).strip() or "(no in-progress/follow-ups context)"
+        body = _strip_h2_sections_from_update_body(raw_body).strip() or "(body redacted — content not a valid source for this update)"
         lines.append(f"--- update created {created} ---\n{body}")
     return "\n\n".join(lines)
 
@@ -309,7 +352,7 @@ def _format_daily_action_block(notes: list[tuple[str, str | None]]) -> str:
         if content is None:
             parts.append(f"--- DA {date_str} (no note) ---")
         else:
-            cleaned = _strip_initiative_updates_section(content).strip()
+            cleaned = _sanitize_da_note_for_llm(content).strip()
             parts.append(f"--- DA {date_str} ---\n{cleaned}")
     return "\n\n".join(parts)
 
