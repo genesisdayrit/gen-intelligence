@@ -284,10 +284,9 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
                 lines.insert(insert_before_index, target_header)
                 lines.insert(insert_before_index, '')
             else:
-                # No later headers exist - find the best insertion point
-                # Look for template boundary or insert after Daily Review
+                # Walk forward — `is_template_boundary` matches any `Vision Objective N`, so backwards would land on the last instead of the first.
                 insert_pos = None
-                for i in range(len(lines) - 1, daily_review_end_line - 1, -1):
+                for i in range(daily_review_end_line, len(lines)):
                     if is_template_boundary(lines[i]):
                         insert_pos = i
                         break
