@@ -17,6 +17,7 @@ import argparse
 import logging
 import random
 import sys
+import time
 from pathlib import Path
 
 import feedparser
@@ -27,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from services.email.gmail_client import send_html_email
 
 logger = logging.getLogger(__name__)
+RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
 
 # =============================================================================
 # ArXiv Categories
@@ -151,7 +153,13 @@ ARXIV_CATEGORIES = {
 # =============================================================================
 
 
-def get_arxiv_articles(category: str, max_results: int = 5, total_fetch: int = 100):
+def get_arxiv_articles(
+    category: str,
+    max_results: int = 5,
+    total_fetch: int = 100,
+    max_retries: int = 3,
+    retry_backoff_seconds: float = 1.5,
+):
     """Fetch random articles from an arXiv category.
 
     Args:
@@ -162,20 +170,52 @@ def get_arxiv_articles(category: str, max_results: int = 5, total_fetch: int = 1
     Returns:
         List of (title, url) tuples
     """
-    base_url = "http://export.arxiv.org/api/query?"
+    base_url = "https://export.arxiv.org/api/query?"
     query = (
         f"{base_url}search_query=cat:{category}"
         f"&max_results={total_fetch}"
         f"&sortBy=lastUpdatedDate&sortOrder=descending"
     )
 
-    feed = feedparser.parse(query)
-    entries = []
-    for entry in feed.entries:
-        pdf_link = entry.link.replace("/abs/", "/pdf/")
-        entries.append((entry.title, entry.link, pdf_link))
+    for attempt in range(1, max_retries + 1):
+        feed = feedparser.parse(query, request_headers={"User-Agent": "gen-intelligence-arxiv-email/1.0"})
+        status = getattr(feed, "status", None)
 
-    return random.sample(entries, min(max_results, len(entries)))
+        if status in RETRYABLE_HTTP_STATUSES:
+            logger.warning(
+                "arXiv request failed for %s with HTTP %s (attempt %d/%d)",
+                category,
+                status,
+                attempt,
+                max_retries,
+            )
+            if attempt < max_retries:
+                time.sleep(retry_backoff_seconds * attempt)
+                continue
+            logger.warning("Exhausted retries for %s after HTTP %s", category, status)
+            return []
+
+        if status and status >= 400:
+            logger.error("arXiv request failed for %s with non-retryable HTTP %s", category, status)
+            return []
+
+        entries = []
+        for entry in feed.entries:
+            pdf_link = entry.link.replace("/abs/", "/pdf/")
+            entries.append((entry.title, entry.link, pdf_link))
+
+        if not entries:
+            if getattr(feed, "bozo", False):
+                logger.warning(
+                    "arXiv feed parse warning for %s: %s",
+                    category,
+                    getattr(feed, "bozo_exception", "unknown parse error"),
+                )
+            return []
+
+        return random.sample(entries, min(max_results, len(entries)))
+
+    return []
 
 
 def category_name_from_code(code: str) -> str:
@@ -218,6 +258,8 @@ def run_arxiv_email(
     output: str | None = None,
     categories_count: int = 3,
     articles_per_category: int = 5,
+    category_fetch_retries: int = 3,
+    max_category_attempts: int | None = None,
 ) -> bool:
     """Fetch arXiv articles and send email.
 
@@ -226,17 +268,45 @@ def run_arxiv_email(
     """
     load_dotenv()
 
-    random_codes = random.sample(
-        list(ARXIV_CATEGORIES.values()), min(categories_count, len(ARXIV_CATEGORIES))
+    target_categories = min(categories_count, len(ARXIV_CATEGORIES))
+    candidate_codes = list(ARXIV_CATEGORIES.values())
+    random.shuffle(candidate_codes)
+    # Keep a hard cap so prolonged API throttling cannot stall a run for too long.
+    effective_max_category_attempts = max_category_attempts or min(
+        len(candidate_codes), max(target_categories * 4, target_categories)
     )
 
     categories_data = []
-    for code in random_codes:
+    categories_tried = 0
+    for code in candidate_codes:
+        if categories_tried >= effective_max_category_attempts:
+            logger.warning(
+                "Hit max category attempt limit (%d) before filling target categories",
+                effective_max_category_attempts,
+            )
+            break
+        if len(categories_data) >= target_categories:
+            break
+
+        categories_tried += 1
         name = category_name_from_code(code)
         logger.info("Fetching articles for %s (%s)", name, code)
-        articles = get_arxiv_articles(code, articles_per_category)
+        articles = get_arxiv_articles(
+            code,
+            articles_per_category,
+            max_retries=category_fetch_retries,
+        )
         if articles:
             categories_data.append((name, articles))
+        else:
+            logger.warning("No articles returned for %s (%s), trying another category", name, code)
+
+    if len(categories_data) < target_categories:
+        logger.warning(
+            "Requested %d category(ies) but only found %d with articles",
+            target_categories,
+            len(categories_data),
+        )
 
     if not categories_data:
         logger.error("No articles fetched from any category")
