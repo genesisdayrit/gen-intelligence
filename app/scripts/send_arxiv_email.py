@@ -224,7 +224,8 @@ def get_arxiv_articles(
         entries = []
         for entry in feed.entries:
             pdf_link = entry.link.replace("/abs/", "/pdf/")
-            entries.append((entry.title, entry.link, pdf_link))
+            html_link = entry.link.replace("/abs/", "/html/")
+            entries.append((entry.title, entry.link, pdf_link, html_link))
 
         if not entries:
             if getattr(feed, "bozo", False):
@@ -263,8 +264,8 @@ def build_plain_text_email(categories_data: list[tuple[str, list]]) -> str:
     email_body = ""
     for category_name, articles in categories_data:
         email_body += f"Articles from category: {category_name}\n\n"
-        for title, url, pdf_url in articles:
-            email_body += f"Title: {title}\nURL: {url}\nPDF: {pdf_url}\n\n"
+        for title, url, pdf_url, html_url in articles:
+            email_body += f"Title: {title}\nURL: {url}\nPDF: {pdf_url}\nHTML: {html_url}\n\n"
         email_body += "-" * 50 + "\n"
 
     return email_body
