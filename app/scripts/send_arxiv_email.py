@@ -17,6 +17,7 @@ import argparse
 import logging
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -29,6 +30,22 @@ from services.email.gmail_client import send_html_email
 
 logger = logging.getLogger(__name__)
 RETRYABLE_HTTP_STATUSES = {429, 500, 502, 503, 504}
+ARXIV_MIN_REQUEST_INTERVAL_SECONDS = 3.2
+ARXIV_429_COOLDOWN_SECONDS = 6.0
+_ARXIV_REQUEST_LOCK = threading.Lock()
+_LAST_ARXIV_REQUEST_TS = 0.0
+
+
+def _wait_for_arxiv_slot(min_interval_seconds: float = ARXIV_MIN_REQUEST_INTERVAL_SECONDS) -> None:
+    """Enforce a minimum delay between arXiv API requests across this process."""
+    global _LAST_ARXIV_REQUEST_TS
+
+    with _ARXIV_REQUEST_LOCK:
+        now = time.monotonic()
+        elapsed = now - _LAST_ARXIV_REQUEST_TS
+        if elapsed < min_interval_seconds:
+            time.sleep(min_interval_seconds - elapsed)
+        _LAST_ARXIV_REQUEST_TS = time.monotonic()
 
 # =============================================================================
 # ArXiv Categories
@@ -159,6 +176,7 @@ def get_arxiv_articles(
     total_fetch: int = 100,
     max_retries: int = 3,
     retry_backoff_seconds: float = 1.5,
+    min_request_interval_seconds: float = ARXIV_MIN_REQUEST_INTERVAL_SECONDS,
 ):
     """Fetch random articles from an arXiv category.
 
@@ -178,6 +196,7 @@ def get_arxiv_articles(
     )
 
     for attempt in range(1, max_retries + 1):
+        _wait_for_arxiv_slot(min_request_interval_seconds)
         feed = feedparser.parse(query, request_headers={"User-Agent": "gen-intelligence-arxiv-email/1.0"})
         status = getattr(feed, "status", None)
 
@@ -190,7 +209,10 @@ def get_arxiv_articles(
                 max_retries,
             )
             if attempt < max_retries:
-                time.sleep(retry_backoff_seconds * attempt)
+                if status == 429:
+                    time.sleep(max(retry_backoff_seconds * attempt, ARXIV_429_COOLDOWN_SECONDS))
+                else:
+                    time.sleep(retry_backoff_seconds * attempt)
                 continue
             logger.warning("Exhausted retries for %s after HTTP %s", category, status)
             return []
@@ -260,6 +282,7 @@ def run_arxiv_email(
     articles_per_category: int = 5,
     category_fetch_retries: int = 3,
     max_category_attempts: int | None = None,
+    min_request_interval_seconds: float = ARXIV_MIN_REQUEST_INTERVAL_SECONDS,
 ) -> bool:
     """Fetch arXiv articles and send email.
 
@@ -295,6 +318,7 @@ def run_arxiv_email(
             code,
             articles_per_category,
             max_retries=category_fetch_retries,
+            min_request_interval_seconds=min_request_interval_seconds,
         )
         if articles:
             categories_data.append((name, articles))
