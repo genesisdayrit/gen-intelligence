@@ -60,37 +60,43 @@ Goals:
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
 - Use exactly these three section headers in this order: `## Previous Day's Wins`, `## In-progress`, `## Follow-ups`.
-- `## Previous Day's Wins` reflects only YESTERDAY's completed work. Source priority:
-  1. PRIMARY (equal-weight): any user-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note AND any wins-shaped content (accomplishments, things-that-went-well, completed work, breakthroughs) in yesterday's journal entry. Both are user-authored end-of-day reflections and should be the basis of the section when present.
-  2. FALLBACK (only if both PRIMARY sources are blank or absent): infer wins from concrete completed-yesterday activity in the yesterday daily action note — `### Todoist Completed Tasks:`, `### Linear Issues Touched:` (status indicating done), `### Manus Tasks:` (status indicating done), and other clearly-completed items in that day's note.
-  3. Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — their wins describe earlier days. (Their wins sections have already been stripped from the dedup context for safety.)
+- `## Previous Day's Wins` reflects only YESTERDAY's completed work. Sweep ALL of the following sources and MERGE them — this is additive, not a fallback hierarchy. Capture every distinct win you find; do not impose a cap on bullet count.
+  - User-authored bullets directly under `Win 1:`, `Win 2:`, `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note. When present, these are the highest-confidence wins and should appear first in the section.
+  - Wins-shaped content in yesterday's journal entry — accomplishments, things-that-went-well, completed work, breakthroughs, meaningful experiences the user wrote about in prose.
+  - Concrete completions in yesterday's daily action note: `### Todoist Completed Tasks:`, `### Linear Issues Touched:` with done-status, `### Manus Tasks:` with done-status, and any other clearly-completed items mentioned in the user's prose anywhere in that day's note.
+  - De-duplicate when sources overlap (e.g. a Todoist completion that the user also wrote about in the journal — surface once, prefer the user's wording).
+  - QUALITY BAR: include only items that represent meaningful completed work or genuine experiences. Skip trivial/admin signal ("checked email", "opened a tab", routine pings, webhook test events). Do not fabricate — every bullet must trace back to something concrete in the sources.
+  - Do NOT carry over wins from older daily action notes, and do NOT copy wins from prior initiative updates — their wins describe earlier days. (Their wins sections have already been stripped from the dedup context for safety.)
 - `## In-progress` and `## Follow-ups` are sourced EXCLUSIVELY from the three daily action notes — never from prior initiative updates. Prior update bodies have been content-redacted in the context block; their existence is shown only so you know an update was already posted on those days. Rules:
   - **Source from current evidence only.** An item belongs in In-progress / Follow-ups only if you can point to ACTIVE evidence in the past three DA notes (a completion, a status change, a new sub-task, a deliberate mention in the user's prose, a Linear issue touched, a Todoist task completed).
   - Mere persistence in auto-synced sections like `### Manus Tasks:` does NOT count as evidence — Manus tasks linger in the DA note long after they're no longer being worked on. Treat unchanged Manus entries as background noise, not active work.
   - Prefer recent evidence: items active in yesterday's DA note are more current than items only visible in older DA notes.
   - When in doubt about whether an item is current, DROP it. It's better to be sparse and accurate than complete and stale.
 - Each section is a bulleted list. If a section has nothing real to say, write a single bullet `- (nothing notable)`.
-- Keep bullets short (one line each). Aim for 3-6 bullets per section total across the post.
+- Keep bullets short (one line each). For `## Previous Day's Wins` there is no cap — include every distinct meaningful win you find. For `## In-progress` and `## Follow-ups` keep it tight (around 3-6 bullets) since those benefit from being curated rather than exhaustive.
 - First person, plain voice. No hype, no emojis."""
 
-SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_local}.
+SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_local}. Yesterday is {yesterday_local}.
 
-Yesterday is {yesterday_local}. The `## Previous Day's Wins` section must reflect only that day's completed work, sourced from the daily action note dated {yesterday_local}.
+# Sourcing rules — strictly enforced
 
-For Previous Day's Wins, look in two primary places (equal weight): (a) user-authored bullets under `Win 1:` / `Win 2:` / `Win 3:` (or similar `Win N:` labels) in yesterday's daily action note, AND (b) wins-shaped content in yesterday's journal entry — accomplishments, things that went well, completed work, breakthroughs the user wrote about. Merge the wins surfaced from both. Only if both are blank or absent should you fall back to inferring wins from yesterday's completed Todoist tasks, completed Linear issues, completed Manus tasks, and other clearly-completed activity in the daily action note. Do not source wins from older daily action notes or from prior initiative updates.
+`## Previous Day's Wins` is sourced EXCLUSIVELY from the two blocks below labelled "YESTERDAY DA NOTE" and "YESTERDAY JOURNAL". Sweep both additively — no cap on bullet count — and merge: (a) user-authored bullets under `Win 1:` / `Win 2:` / `Win 3:` (or similar `Win N:` labels) in the yesterday DA note, (b) wins-shaped content in the yesterday journal (accomplishments, things that went well, completed work, breakthroughs, meaningful experiences the user wrote about), and (c) concrete completions elsewhere in the yesterday DA note — completed Todoist tasks, Linear issues moved to done, Manus tasks moved to done, clearly-completed items in the user's prose. De-duplicate where sources overlap (prefer the user's wording). Quality bar: only meaningful items, skip trivial admin signal, never fabricate. If yesterday is genuinely sparse, write `- (nothing notable)` — it is better to honestly report a quiet day than to reach into older notes. DO NOT pull wins from the OLDER DA NOTES block or from the PRIOR INITIATIVE UPDATES block.
 
-For In-progress and Follow-ups, source EXCLUSIVELY from the three daily action notes. The prior updates' bodies have been redacted in the dedup-context block below; you can see that updates were posted on those days, but their content is not a valid source for today's In-progress or Follow-ups. Each item you include must be backed by active evidence in the DA notes (a completion, a status change, a new sub-task, a deliberate mention in the user's prose, a Linear issue touched, a Todoist task completed). Items that only show up in auto-synced Manus Tasks without other evidence are NOT current — drop them. When in doubt, drop.
+`## In-progress` and `## Follow-ups` are sourced from the YESTERDAY DA NOTE and the OLDER DA NOTES blocks. Prior updates' bodies have been redacted; their existence is visible only so you know an update was posted. Each item must be backed by active evidence in the DA notes (a completion, a status change, a new sub-task, deliberate mention in prose, a Linear issue touched, a Todoist task completed). Mere persistence in auto-synced Manus Tasks is NOT evidence — drop those. Prefer recent evidence; when in doubt, drop.
 
-The daily action notes capture raw activity; they may be incomplete or noisy. Synthesize a coherent picture rather than copying lines verbatim.
+# Context
 
-=== Last {recent_updates_count} initiative updates (oldest first; wins stripped — In-progress and Follow-ups are valid trajectory signal) ===
+=== PRIOR INITIATIVE UPDATES — last {recent_updates_count}, oldest first; bodies redacted, content NOT a valid source ===
 {recent_updates_block}
 
-=== Yesterday's Journal entry ===
+=== YESTERDAY JOURNAL — only valid source for Previous Day's Wins (alongside Yesterday DA Note) ===
 {journal_block}
 
-=== Daily Action notes (oldest first) ===
-{daily_action_block}
+=== YESTERDAY DA NOTE — only valid source for Previous Day's Wins (alongside Yesterday Journal); also a source for In-progress/Follow-ups ===
+{yesterday_da_note_block}
+
+=== OLDER DA NOTES — context for In-progress/Follow-ups ONLY; NOT a valid source for Previous Day's Wins ===
+{older_da_notes_block}
 """
 
 
@@ -344,11 +350,27 @@ def _format_recent_updates_block(updates: list[dict]) -> str:
     return "\n\n".join(lines)
 
 
-def _format_daily_action_block(notes: list[tuple[str, str | None]]) -> str:
+def _format_yesterday_da_note_block(notes: list[tuple[str, str | None]]) -> str:
+    """Format JUST yesterday's DA note — the only DA-note source for Previous Day's Wins.
+
+    `notes` is the full list (oldest first); yesterday is the last entry.
+    """
     if not notes:
         return "(no daily action notes available)"
+    date_str, content = notes[-1]
+    if content is None:
+        return f"--- DA {date_str} (no note) ---"
+    cleaned = _sanitize_da_note_for_llm(content).strip()
+    return f"--- DA {date_str} ---\n{cleaned}"
+
+
+def _format_older_da_notes_block(notes: list[tuple[str, str | None]]) -> str:
+    """Format the older DA notes (everything except yesterday) — used only for
+    In-progress / Follow-ups trajectory context, never for wins."""
+    if not notes or len(notes) <= 1:
+        return "(no older daily action notes available)"
     parts: list[str] = []
-    for date_str, content in notes:
+    for date_str, content in notes[:-1]:
         if content is None:
             parts.append(f"--- DA {date_str} (no note) ---")
         else:
@@ -379,7 +401,8 @@ def generate_update_body(
         yesterday_local=yesterday_local,
         recent_updates_count=len(recent_updates),
         recent_updates_block=_format_recent_updates_block(recent_updates),
-        daily_action_block=_format_daily_action_block(daily_action_notes),
+        yesterday_da_note_block=_format_yesterday_da_note_block(daily_action_notes),
+        older_da_notes_block=_format_older_da_notes_block(daily_action_notes),
         journal_block=_format_journal_block(yesterday_journal or ("yesterday's journal", None)),
     )
 
