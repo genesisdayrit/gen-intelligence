@@ -11,6 +11,10 @@ const errorMessage = document.getElementById('error-message');
 const openObsidianBtn = document.getElementById('open-obsidian-btn');
 const openSettingsBtn = document.getElementById('open-settings-btn');
 const settingsBtn = document.getElementById('settings-btn');
+const healthBtn = document.getElementById('health-btn');
+const healthBtnText = document.getElementById('health-btn-text');
+const healthSpinner = document.getElementById('health-spinner');
+const healthStatus = document.getElementById('health-status');
 
 // State
 let currentUrl = '';
@@ -38,6 +42,9 @@ async function init() {
   // Focus title input
   titleInput.focus();
   titleInput.select();
+
+  // Automatically check whether the server can accept saves
+  checkHealth();
 }
 
 // Format URL for display (truncate if too long)
@@ -133,6 +140,101 @@ async function saveLink() {
   }
 }
 
+// Render the health/readiness result
+function renderHealthStatus({ ready, checks, message }) {
+  healthStatus.classList.remove('hidden', 'ok', 'error');
+  healthStatus.classList.add(ready ? 'ok' : 'error');
+
+  const header = document.createElement('div');
+  header.className = 'health-header';
+  header.textContent = ready
+    ? 'Ready to accept bookmarks'
+    : 'Not ready to accept bookmarks';
+
+  healthStatus.replaceChildren(header);
+
+  if (message) {
+    const msg = document.createElement('div');
+    msg.className = 'health-detail';
+    msg.textContent = message;
+    healthStatus.appendChild(msg);
+  }
+
+  // List individual checks (failing ones first to surface what to debug)
+  if (Array.isArray(checks)) {
+    const sorted = [...checks].sort((a, b) => Number(a.ok) - Number(b.ok));
+    const list = document.createElement('ul');
+    list.className = 'health-checks';
+    for (const check of sorted) {
+      const item = document.createElement('li');
+      item.className = check.ok ? 'check-ok' : 'check-fail';
+      const label = check.ok ? '\u2713' : '\u2717';
+      item.textContent = `${label} ${check.name}`;
+      if (!check.ok && check.detail) {
+        const detail = document.createElement('div');
+        detail.className = 'check-detail';
+        detail.textContent = check.detail;
+        item.appendChild(detail);
+      }
+      list.appendChild(item);
+    }
+    healthStatus.appendChild(list);
+  }
+}
+
+// Set health-check loading state
+function setHealthLoading(loading) {
+  healthBtn.disabled = loading;
+  healthBtnText.textContent = loading ? 'Checking...' : 'Check connection';
+  healthSpinner.classList.toggle('hidden', !loading);
+}
+
+// Ping the readiness endpoint to see if the server can accept new saves
+async function checkHealth() {
+  hideError();
+  setHealthLoading(true);
+
+  try {
+    const settings = await chrome.storage.sync.get(['apiBaseUrl', 'apiKey']);
+
+    const response = await fetch(`${settings.apiBaseUrl}/share/health`, {
+      method: 'GET',
+      headers: {
+        'X-API-Key': settings.apiKey,
+      },
+    });
+
+    if (response.status === 401) {
+      renderHealthStatus({
+        ready: false,
+        message: 'Invalid API key - check extension settings',
+      });
+      return;
+    }
+
+    // 200 = ready, 503 = not ready; both return the JSON breakdown
+    const data = await response.json().catch(() => null);
+
+    if (!data || typeof data.ready === 'undefined') {
+      renderHealthStatus({
+        ready: false,
+        message: `Unexpected response from server (HTTP ${response.status})`,
+      });
+      return;
+    }
+
+    renderHealthStatus(data);
+  } catch (err) {
+    console.error('Health check error:', err);
+    renderHealthStatus({
+      ready: false,
+      message: 'Connection error - is the server running and the URL correct?',
+    });
+  } finally {
+    setHealthLoading(false);
+  }
+}
+
 // Open in Obsidian
 function openInObsidian() {
   if (savedVaultName && savedFilePath) {
@@ -159,6 +261,7 @@ saveBtn.addEventListener('click', saveLink);
 openObsidianBtn.addEventListener('click', openInObsidian);
 openSettingsBtn.addEventListener('click', openSettings);
 settingsBtn.addEventListener('click', openSettings);
+healthBtn.addEventListener('click', checkHealth);
 
 // Enter key handlers
 document.addEventListener('keydown', (e) => {
