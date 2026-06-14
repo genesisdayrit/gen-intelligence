@@ -144,6 +144,96 @@ body {
   border-radius: 4px;
 }
 
+/* Health Check Row */
+.health-row {
+  margin-top: 10px;
+}
+
+/* Link-style button for the connection check */
+.link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-family: inherit;
+  color: #9b9a97;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.1s ease;
+}
+
+.link-btn:hover {
+  color: #2383e2;
+}
+
+.link-btn:disabled {
+  color: #c4c4c2;
+  cursor: not-allowed;
+}
+
+/* Health Status Panel */
+.health-status {
+  margin-top: 10px;
+  padding: 10px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  line-height: 1.5;
+}
+
+.health-status.ok {
+  color: #1c7a3d;
+  background-color: #edf7ee;
+}
+
+.health-status.error {
+  color: #eb5757;
+  background-color: #fdf2f2;
+}
+
+.health-header {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.health-detail {
+  margin-top: 4px;
+  color: #37352f;
+}
+
+.health-checks {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.health-checks li {
+  margin-top: 4px;
+}
+
+.health-checks .check-ok {
+  color: #1c7a3d;
+}
+
+.health-checks .check-fail {
+  color: #eb5757;
+  font-weight: 500;
+}
+
+.health-checks .check-detail {
+  margin: 2px 0 2px 14px;
+  font-weight: 400;
+  color: #6b6b6b;
+  word-break: break-word;
+}
+
+/* Dark spinner variant (for use on light backgrounds) */
+.spinner-dark {
+  border: 2px solid rgba(35, 131, 226, 0.25);
+  border-top-color: #2383e2;
+}
+
 /* Success State - Notion style centered */
 .success-container {
   display: flex;

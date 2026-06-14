@@ -134,6 +134,54 @@ def test_share_link_requires_url():
     assert response.status_code == 422
 
 
+# Share readiness (health) endpoint tests
+def test_share_health_requires_api_key():
+    """Share health endpoint rejects requests without API key."""
+    response = client.get("/share/health")
+    assert response.status_code == 401
+
+
+def test_share_health_rejects_invalid_key():
+    """Share health endpoint rejects requests with invalid API key."""
+    response = client.get("/share/health", headers={"X-API-Key": "wrong-key"})
+    assert response.status_code == 401
+
+
+@patch(
+    "main.check_save_readiness",
+    lambda: {
+        "ready": True,
+        "checks": [{"name": "Vault path configured", "ok": True, "detail": "/vault"}],
+    },
+)
+def test_share_health_ready_returns_200():
+    """Share health endpoint returns 200 with ready=True when all checks pass."""
+    response = client.get("/share/health", headers={"X-API-Key": "test-link-api-key"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["checks"][0]["ok"] is True
+
+
+@patch(
+    "main.check_save_readiness",
+    lambda: {
+        "ready": False,
+        "checks": [
+            {"name": "Dropbox connection", "ok": False, "detail": "token expired"}
+        ],
+    },
+)
+def test_share_health_not_ready_returns_503():
+    """Share health endpoint returns 503 with failing check details when not ready."""
+    response = client.get("/share/health", headers={"X-API-Key": "test-link-api-key"})
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ready"] is False
+    assert body["checks"][0]["ok"] is False
+    assert body["checks"][0]["detail"] == "token expired"
+
+
 # YouTube sharing endpoint tests
 def test_share_youtube_requires_api_key():
     """Share YouTube endpoint rejects requests without API key."""

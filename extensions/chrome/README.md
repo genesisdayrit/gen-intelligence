@@ -8,6 +8,7 @@ A Chrome extension to quickly save web page links to your Obsidian Knowledge Hub
 - Edit the page title before saving
 - Keyboard shortcut support (Enter to save/open)
 - Open saved links directly in Obsidian
+- "Check connection" button to verify the server can accept new saves, with a per-check breakdown to help debug failures
 
 ## Installation
 
@@ -51,12 +52,40 @@ Body:
   "title": "Optional custom title"
 }
 
-Response:
+Response (HTTP 202, processed asynchronously):
 {
-  "status": "success",
-  "message": "Link created successfully",
+  "status": "accepted",
+  "message": "Link queued for processing",
   "file_path": "01_Knowledge-Hub/Article Title.md",
   "vault_name": "personal"
+}
+```
+
+### Checking the connection
+
+Click **Check connection** in the popup at any time to confirm the server can
+accept new bookmarks. The extension calls the readiness endpoint and shows
+either "Ready to accept bookmarks" or "Not ready to accept bookmarks" along
+with each underlying check (vault path, Redis, Dropbox credentials, Dropbox
+connection, and the Knowledge Hub folder) so you can see exactly what to fix.
+
+This uses the `/share/health` endpoint:
+
+```
+GET /share/health
+Headers:
+  X-API-Key: <your-api-key>
+
+Response (200 when ready, 503 when not):
+{
+  "ready": true,
+  "checks": [
+    { "name": "Vault path configured", "ok": true, "detail": "/obsidian/personal" },
+    { "name": "Redis reachable", "ok": true, "detail": "localhost:6379" },
+    { "name": "Dropbox credentials present", "ok": true, "detail": "..." },
+    { "name": "Dropbox connection", "ok": true, "detail": "Authenticated as you@example.com" },
+    { "name": "Knowledge Hub folder", "ok": true, "detail": "/obsidian/personal/01_Knowledge-Hub" }
+  ]
 }
 ```
 

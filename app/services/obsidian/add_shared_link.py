@@ -298,6 +298,84 @@ def get_predicted_link_path(url: str, title: str | None = None) -> dict:
     return {"vault_name": vault_name, "file_path": file_path}
 
 
+def check_save_readiness() -> dict:
+    """Check whether the service can currently accept and save new links.
+
+    Runs through the same dependencies that an actual save relies on so the
+    result can be used as a pre-flight / debugging signal (e.g. from the
+    browser extension). Checks run in dependency order and stop probing
+    Dropbox once an earlier Dropbox step fails, but every check still reports
+    a status so the caller can see exactly what is wrong.
+
+    Returns:
+        dict with keys:
+            - ready: bool (True only if every check passed)
+            - checks: list[dict] each with {name, ok, detail}
+    """
+    checks: list[dict] = []
+
+    def record(name: str, ok: bool, detail: str) -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail})
+
+    # 1. Vault path configured
+    vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
+    if vault_path:
+        record("Vault path configured", True, vault_path)
+    else:
+        record("Vault path configured", False, "DROPBOX_OBSIDIAN_VAULT_PATH not set")
+
+    # 2. Redis (caches the Dropbox access token)
+    try:
+        redis_client.ping()
+        record("Redis reachable", True, f"{redis_host}:{redis_port}")
+    except Exception as e:
+        record("Redis reachable", False, str(e))
+
+    # 3. Dropbox credentials present
+    dropbox_creds_ok = all(
+        os.getenv(k)
+        for k in ("DROPBOX_ACCESS_KEY", "DROPBOX_ACCESS_SECRET", "DROPBOX_REFRESH_TOKEN")
+    )
+    if dropbox_creds_ok:
+        record("Dropbox credentials present", True, "ACCESS_KEY, ACCESS_SECRET, REFRESH_TOKEN set")
+    else:
+        record(
+            "Dropbox credentials present",
+            False,
+            "Missing one of DROPBOX_ACCESS_KEY / DROPBOX_ACCESS_SECRET / DROPBOX_REFRESH_TOKEN",
+        )
+
+    # 4. Dropbox connectivity (only if creds present)
+    dbx = None
+    if dropbox_creds_ok:
+        try:
+            dbx = _get_dropbox_client()
+            account = dbx.users_get_current_account()
+            record("Dropbox connection", True, f"Authenticated as {account.email}")
+        except Exception as e:
+            record("Dropbox connection", False, str(e))
+            dbx = None
+    else:
+        record("Dropbox connection", False, "Skipped - credentials missing")
+
+    # 5. Knowledge Hub folder reachable (needs both vault path and a Dropbox client)
+    if dbx and vault_path:
+        try:
+            hub_path = _find_knowledge_hub_path(dbx, vault_path)
+            record("Knowledge Hub folder", True, hub_path)
+        except Exception as e:
+            record("Knowledge Hub folder", False, str(e))
+    else:
+        record(
+            "Knowledge Hub folder",
+            False,
+            "Skipped - requires vault path and Dropbox connection",
+        )
+
+    ready = all(check["ok"] for check in checks)
+    return {"ready": ready, "checks": checks}
+
+
 def add_shared_link(url: str, title: str | None = None) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
