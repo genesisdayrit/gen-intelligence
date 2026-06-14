@@ -106,6 +106,7 @@ async function saveLink() {
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': settings.apiKey,
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({
         url: currentUrl,
@@ -201,6 +202,8 @@ async function checkHealth() {
       method: 'GET',
       headers: {
         'X-API-Key': settings.apiKey,
+        // Skip the ngrok-free browser interstitial so we get JSON, not HTML
+        'ngrok-skip-browser-warning': 'true',
       },
     });
 
@@ -213,12 +216,21 @@ async function checkHealth() {
     }
 
     // 200 = ready, 503 = not ready; both return the JSON breakdown
-    const data = await response.json().catch(() => null);
+    const rawBody = await response.text();
+    let data = null;
+    try {
+      data = JSON.parse(rawBody);
+    } catch (_) {
+      data = null;
+    }
 
     if (!data || typeof data.ready === 'undefined') {
+      const looksLikeHtml = /^\s*</.test(rawBody);
       renderHealthStatus({
         ready: false,
-        message: `Unexpected response from server (HTTP ${response.status})`,
+        message: looksLikeHtml
+          ? `Server returned a web page instead of JSON (HTTP ${response.status}) - the request may be hitting a proxy/interstitial rather than the API.`
+          : `Unexpected response from server (HTTP ${response.status})`,
       });
       return;
     }
