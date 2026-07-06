@@ -66,6 +66,13 @@ def _send_daily_initiative_update():
     return run_daily_initiative_update()
 
 
+def _send_main_thread_rollup():
+    from scripts.send_main_thread_rollup import run_main_thread_rollup
+
+    # Runs every 6 hours; use a 6-hour look-back so windows are contiguous.
+    return run_main_thread_rollup(hours=6)
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -139,6 +146,17 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=4,
             minute=0,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_main_thread_rollup",
+        "name": "Main-Thread Rollup Initiative Update (every 6h)",
+        "func": _send_main_thread_rollup,
+        # 05:30, 11:30, 17:30, 23:30 Pacific.
+        "trigger": CronTrigger(
+            hour="5,11,17,23",
+            minute=30,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
     },
