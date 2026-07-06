@@ -42,12 +42,14 @@ from config import SYSTEM_TZ
 from scripts.linear.sync_utils import (
     create_initiative_update,
     fetch_all_pages,
+    fetch_initiative_comments,
     fetch_initiative_documents,
     fetch_initiative_labels,
     fetch_initiative_projects,
-    fetch_initiative_updates,
+    fetch_initiative_updates_with_comments,
+    fetch_project_comments,
     fetch_project_documents,
-    fetch_project_updates,
+    fetch_project_updates_with_comments,
     set_initiative_labels,
 )
 
@@ -182,48 +184,110 @@ def _update_entry(u: dict) -> dict:
     }
 
 
-def collect_recent_activity(
-    initiative: dict, threshold: datetime, today: tuple[int, int]
-) -> dict:
-    """Gather in-window updates and today-section documents for an initiative."""
-    iid = initiative["id"]
+def _update_meta(u: dict) -> dict:
+    """Light descriptor of a status update — parent context for its comments."""
+    return {
+        "author": (u.get("user") or {}).get("name"),
+        "health": u.get("health"),
+        "date": u.get("createdAt"),
+        "url": u.get("url"),
+    }
 
-    ini_updates = [_update_entry(u) for u in fetch_initiative_updates(iid) if is_recent(u, threshold)]
 
-    ini_docs = []
-    for d in fetch_initiative_documents(iid):
+def _comment_entry(c: dict) -> dict:
+    return {
+        "author": (c.get("user") or {}).get("name"),
+        "createdAt": c.get("createdAt"),
+        "updatedAt": c.get("updatedAt") or c.get("createdAt"),
+        "url": c.get("url"),
+        "body": (c.get("body") or "").strip(),
+    }
+
+
+def _recent_update_comments(update_nodes: list[dict], threshold: datetime) -> list[dict]:
+    """Recent comments grouped under their parent status update.
+
+    A comment counts even when its parent update is old — a new comment on a
+    stale update is still fresh activity — so this scans every update's comments
+    rather than only the in-window updates.
+    """
+    groups = []
+    for u in update_nodes:
+        recent = [
+            _comment_entry(c)
+            for c in (u.get("comments") or {}).get("nodes", [])
+            if is_recent(c, threshold)
+        ]
+        if recent:
+            groups.append({"update": _update_meta(u), "comments": recent})
+    return groups
+
+
+def _recent_today_documents(documents: list[dict], threshold: datetime, today: tuple[int, int]) -> list[dict]:
+    docs = []
+    for d in documents:
         if not is_recent(d, threshold):
             continue
         section = extract_today_section(d.get("content"), today)
         if section:  # skip docs with no section dated today
-            ini_docs.append({"title": d.get("title"), "url": d.get("url"), "today_section": section})
+            docs.append({"title": d.get("title"), "url": d.get("url"), "today_section": section})
+    return docs
+
+
+def collect_recent_activity(
+    initiative: dict, threshold: datetime, today: tuple[int, int]
+) -> dict:
+    """Gather in-window updates, comments, and today-section documents.
+
+    Comments are kept with their parent context: initiative-level comments,
+    comments on the initiative's status updates, and — per project — project
+    comments and comments on project status updates.
+    """
+    iid = initiative["id"]
+
+    ini_update_nodes = fetch_initiative_updates_with_comments(iid)
+    ini_updates = [_update_entry(u) for u in ini_update_nodes if is_recent(u, threshold)]
+    ini_update_comments = _recent_update_comments(ini_update_nodes, threshold)
+    ini_comments = [_comment_entry(c) for c in fetch_initiative_comments(iid) if is_recent(c, threshold)]
+    ini_docs = _recent_today_documents(fetch_initiative_documents(iid), threshold, today)
 
     projects = []
     for project in fetch_initiative_projects(iid):
         pid = project["id"]
-        p_updates = [_update_entry(u) for u in fetch_project_updates(pid) if is_recent(u, threshold)]
-        p_docs = []
-        for d in fetch_project_documents(pid):
-            if not is_recent(d, threshold):
-                continue
-            section = extract_today_section(d.get("content"), today)
-            if section:
-                p_docs.append({"title": d.get("title"), "url": d.get("url"), "today_section": section})
-        if p_updates or p_docs:
+        p_update_nodes = fetch_project_updates_with_comments(pid)
+        p_updates = [_update_entry(u) for u in p_update_nodes if is_recent(u, threshold)]
+        p_update_comments = _recent_update_comments(p_update_nodes, threshold)
+        p_comments = [_comment_entry(c) for c in fetch_project_comments(pid) if is_recent(c, threshold)]
+        p_docs = _recent_today_documents(fetch_project_documents(pid), threshold, today)
+        if p_updates or p_comments or p_update_comments or p_docs:
             projects.append(
-                {"name": project.get("name"), "updates": p_updates, "documents": p_docs}
+                {
+                    "name": project.get("name"),
+                    "updates": p_updates,
+                    "comments": p_comments,
+                    "update_comments": p_update_comments,
+                    "documents": p_docs,
+                }
             )
 
     return {
         "name": initiative["name"],
         "updates": ini_updates,
+        "comments": ini_comments,
+        "update_comments": ini_update_comments,
         "documents": ini_docs,
         "projects": projects,
     }
 
 
 def has_activity(report: dict) -> bool:
-    return bool(report["updates"] or report["documents"] or report["projects"])
+    return bool(
+        report["updates"]
+        or report["comments"]
+        or report["update_comments"]
+        or report["documents"]
+        or report["projects"]
+    )
 
 
 # =============================================================================
@@ -232,19 +296,20 @@ def has_activity(report: dict) -> bool:
 
 SUMMARY_SYSTEM_PROMPT = """You write concise, high-level "main thread" initiative updates for a personal productivity system.
 
-The main thread is a single rolling overview initiative that sits above the user's other active initiatives and projects. Your job: read the raw activity from the last few hours (status updates and today's document sections) and synthesize a compact update that gives the user a high-level overview while preserving the specific context worth remembering.
+The main thread is a single rolling overview initiative that sits above the user's other active initiatives and projects. Your job: read the raw activity from the last few hours (status updates, comments, and today's document sections) and synthesize a compact update that gives the user a high-level overview while preserving the specific context worth remembering.
 
 Constraints:
 - Output GitHub-flavored markdown only — no preamble, no closing remarks.
 - Start with a one-line `## Summary` section: 1-2 sentences on the overall shape of the last few hours.
 - Then a `## By initiative` section: one `### <Initiative name>` subsection per initiative that had activity, with tight bullets. Nest project activity under its initiative and name the project inline.
 - Keep bullets short and high-level, but keep concrete specifics (names, systems, decisions, numbers) — that's the point of the main thread.
-- Synthesize and de-duplicate; don't just transcribe. If a status update and a document section cover the same thing, merge them.
+- Comments are provided with the parent they belong to (an initiative, a project, or a specific status update). Preserve that context — attribute a comment to what it's replying to rather than treating it as a standalone update.
+- Synthesize and de-duplicate; don't just transcribe. If a status update, a comment, and a document section cover the same thing, merge them.
 - First person, plain voice. No hype, no emojis. Never fabricate — every bullet must trace to the provided context."""
 
 SUMMARY_USER_PROMPT_TEMPLATE = """Generate the main-thread initiative update for {now_local}, covering activity from the last {hours} hours.
 
-Below is the raw activity gathered from the OTHER active initiatives (the main thread itself is excluded). Status updates include their full body; documents include only today's dated section.
+Below is the raw activity gathered from the OTHER active initiatives (the main thread itself is excluded). Status updates include their full body; comments are nested under the parent they reply to; documents include only today's dated section.
 
 # Activity
 
@@ -279,16 +344,46 @@ def _format_documents(documents: list[dict], indent: str) -> list[str]:
     return lines
 
 
+def _format_comments(comments: list[dict], indent: str, parent_desc: str) -> list[str]:
+    """Render comments made directly on a parent (initiative or project)."""
+    lines = []
+    for c in comments:
+        lines.append(f"{indent}- comment on {parent_desc} by {c['author']} — {c['updatedAt']}")
+        for bl in (c["body"] or "(empty)").splitlines():
+            lines.append(f"{indent}  {bl}")
+    return lines
+
+
+def _format_update_comments(groups: list[dict], indent: str, parent_kind: str) -> list[str]:
+    """Render comments on status updates, grouped under the update they reply to."""
+    lines = []
+    for g in groups:
+        u = g["update"]
+        lines.append(
+            f"{indent}- comments on {parent_kind} status update by {u['author']} "
+            f"({u['health']}, {u['date']}):"
+        )
+        for c in g["comments"]:
+            lines.append(f"{indent}  - {c['author']} — {c['updatedAt']}:")
+            for bl in (c["body"] or "(empty)").splitlines():
+                lines.append(f"{indent}    {bl}")
+    return lines
+
+
 def build_activity_block(reports: list[dict]) -> str:
     """Render the gathered activity into a plain-text context block for the LLM."""
     parts: list[str] = []
     for r in reports:
         parts.append(f"=== INITIATIVE: {r['name']} ===")
         parts.extend(_format_updates(r["updates"], ""))
+        parts.extend(_format_comments(r["comments"], "", f"initiative '{r['name']}'"))
+        parts.extend(_format_update_comments(r["update_comments"], "", "initiative"))
         parts.extend(_format_documents(r["documents"], ""))
         for p in r["projects"]:
             parts.append(f"  --- project: {p['name']} ---")
             parts.extend(_format_updates(p["updates"], "  "))
+            parts.extend(_format_comments(p["comments"], "  ", f"project '{p['name']}'"))
+            parts.extend(_format_update_comments(p["update_comments"], "  ", "project"))
             parts.extend(_format_documents(p["documents"], "  "))
         parts.append("")
     return "\n".join(parts).strip()
