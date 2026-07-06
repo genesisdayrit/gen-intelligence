@@ -29,6 +29,7 @@ Every 6 hours the job (`send_main_thread_rollup.py`) does the following:
 2. **Pick the sources.** Every *other* active initiative (`status == "Active"`, not archived, does not carry `main-thread`).
 3. **Gather recent activity** in the last N hours (default 6) for each source, at both the initiative and project level:
    - **Status updates** → contribute their **full body**.
+   - **Comments** → contribute their body, **kept with their parent context** (see below). Document comments are intentionally excluded.
    - **Documents** → contribute **only today's dated section** (see below). Documents with no section dated today are skipped.
 4. **Synthesize.** Hand the assembled context to an LLM, which writes a concise `## Summary` + `## By initiative` markdown update.
 5. **Post** it as a new initiative update on the main-thread initiative. If no source had any activity in the window, it skips posting.
@@ -40,6 +41,26 @@ Every 6 hours the job (`send_main_thread_rollup.py`) does the following:
 An item counts as "recent" if `max(createdAt, updatedAt) >= now - hours`. Both freshly-created and re-edited items are caught. Timestamps from Linear are UTC ISO-8601 (`2026-07-06T18:24:34.353Z`); they're parsed and compared against `now - hours` in `SYSTEM_TZ`.
 
 The scheduled job uses a **6-hour look-back to match its 6-hour cadence**, so the windows tile contiguously — no gaps, no double-counting. If you change the schedule, change the look-back to match (see `_send_main_thread_rollup` in `scheduler.py`).
+
+---
+
+## Comments (with parent context)
+
+The rollup gathers comments from **four** places and keeps each with the parent it belongs to, so the LLM can attribute a comment to what it's replying to instead of treating it as a standalone update:
+
+| Source | How it's fetched | Parent context rendered |
+|--------|------------------|-------------------------|
+| Comments on an **initiative** | top-level `comments(filter: { initiative: { id: { eq } } })` | `comment on initiative '<name>'` |
+| Comments on an **initiative status update** | nested `initiativeUpdates { comments }` | `comments on initiative status update by <author> (<health>, <date>)` |
+| Comments on a **project** | nested `project { comments }` | `comment on project '<name>'` |
+| Comments on a **project status update** | nested `projectUpdates { comments }` | `comments on project status update by <author> (<health>, <date>)` |
+
+Notes and gotchas:
+
+- **The `Initiative` type has no `comments` field.** Initiative-level comments are only reachable via the top-level `comments` query with a `CommentFilter` on `initiative`. The other three parents expose a direct nested `comments` connection, fetched inline so we don't lose the parent.
+- **Document comments are excluded** (the `documentContent` comment relation). Issue comments are excluded too. Only the four sources above are gathered.
+- **A comment on an old update still counts.** `_recent_update_comments` scans *every* update's comments and keeps the recent ones — a fresh reply on a stale update is still fresh activity — even though that update itself is outside the window and won't appear as an "update".
+- **Query complexity.** Nesting `comments` inside the updates connection is expensive; Linear caps query complexity at 10,000. The with-comments queries therefore page updates in batches of **25** with **25** nested comments each (`fetch_initiative_updates_with_comments` / `fetch_project_updates_with_comments`), and comment nodes only select `user { name }`. If you widen these, watch for `Query too complex` (HTTP 400).
 
 ---
 
@@ -239,7 +260,7 @@ SYSTEM_TIMEZONE=America/Los_Angeles      # window + today-date resolution (defau
 | `app/scripts/send_main_thread_rollup.py` | The rollup job: gather → parse → synthesize → post; plus `run_label_triggered_rollup` (on-demand trigger) |
 | `app/scheduler.py` | Registers the 6-hourly `send_main_thread_rollup` job |
 | `app/main.py` | `/linear/webhook` → `Initiative` update handler that schedules the label-triggered rollup |
-| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers (`fetch_*`, `create_initiative_update`, `fetch_initiative_labels`, `set_initiative_labels`) |
+| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers: `fetch_*`, `create_initiative_update`, `fetch_initiative_labels` / `set_initiative_labels`, and the comment fetchers (`fetch_initiative_comments`, `fetch_project_comments`, `fetch_initiative_updates_with_comments`, `fetch_project_updates_with_comments`) |
 | `app/scripts/linear/test_find_main_thread_initiative.py` | Probe: find the main-thread initiative by label |
 | `app/scripts/linear/test_recent_initiative_activity.py` | Probe: dump recent activity (JSON includes full content) |
 | `app/scripts/send_daily_initiative_update.py` | Sibling job; template for the LLM + posting pattern (and idempotency) |

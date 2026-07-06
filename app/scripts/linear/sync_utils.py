@@ -290,6 +290,80 @@ mutation SetInitiativeLabels($id: String!, $labelIds: [String!]!) {
 }
 """
 
+# ---------------------------------------------------------------------------
+# Comment queries
+#
+# `Comment` has no direct connection on the Initiative type, but it does carry
+# an `initiative` relation and CommentFilter supports it — so initiative-level
+# comments are fetched via the top-level `comments` query with a filter. The
+# other parents (initiative updates, projects, project updates) expose a nested
+# `comments` connection, which we fetch inline so each comment keeps its parent.
+# ---------------------------------------------------------------------------
+
+_COMMENT_NODE_FIELDS = "id body createdAt updatedAt url user { name }"
+
+INITIATIVE_COMMENTS_QUERY = f"""
+query InitiativeComments($initiativeId: ID!, $first: Int!, $after: String) {{
+  comments(
+    filter: {{ initiative: {{ id: {{ eq: $initiativeId }} }} }}
+    first: $first
+    after: $after
+  ) {{
+    nodes {{ {_COMMENT_NODE_FIELDS} }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
+INITIATIVE_UPDATES_WITH_COMMENTS_QUERY = f"""
+query InitiativeUpdatesWithComments($initiativeId: String!, $first: Int!, $after: String) {{
+  initiative(id: $initiativeId) {{
+    initiativeUpdates(first: $first, after: $after) {{
+      nodes {{
+        id
+        health
+        createdAt
+        updatedAt
+        url
+        user {{ name }}
+        comments(first: 25) {{ nodes {{ {_COMMENT_NODE_FIELDS} }} }}
+      }}
+      pageInfo {{ hasNextPage endCursor }}
+    }}
+  }}
+}}
+"""
+
+PROJECT_COMMENTS_QUERY = f"""
+query ProjectComments($projectId: String!, $first: Int!, $after: String) {{
+  project(id: $projectId) {{
+    comments(first: $first, after: $after) {{
+      nodes {{ {_COMMENT_NODE_FIELDS} }}
+      pageInfo {{ hasNextPage endCursor }}
+    }}
+  }}
+}}
+"""
+
+PROJECT_UPDATES_WITH_COMMENTS_QUERY = f"""
+query ProjectUpdatesWithComments($projectId: String!, $first: Int!, $after: String) {{
+  project(id: $projectId) {{
+    projectUpdates(first: $first, after: $after) {{
+      nodes {{
+        id
+        health
+        createdAt
+        updatedAt
+        url
+        user {{ name }}
+        comments(first: 25) {{ nodes {{ {_COMMENT_NODE_FIELDS} }} }}
+      }}
+      pageInfo {{ hasNextPage endCursor }}
+    }}
+  }}
+}}
+"""
+
 # =============================================================================
 # Linear API Functions
 # =============================================================================
@@ -433,6 +507,45 @@ def set_initiative_labels(initiative_id: str, label_ids: list[str]) -> list[dict
     if not payload.get("success"):
         raise Exception(f"initiativeUpdate(labelIds) did not return success: {payload}")
     return payload.get("initiative", {}).get("labels", {}).get("nodes", [])
+
+
+def fetch_initiative_comments(initiative_id: str) -> list[dict]:
+    """Fetch comments made directly on an initiative (via top-level filter)."""
+    return fetch_all_pages(
+        INITIATIVE_COMMENTS_QUERY,
+        {"initiativeId": initiative_id, "first": 50},
+        ["comments"],
+    )
+
+
+def fetch_initiative_updates_with_comments(initiative_id: str) -> list[dict]:
+    """Fetch an initiative's status updates, each with its nested comments."""
+    # Smaller page size: nesting comments raises the query's complexity, so we
+    # page the updates in smaller batches to stay under Linear's limit.
+    return fetch_all_pages(
+        INITIATIVE_UPDATES_WITH_COMMENTS_QUERY,
+        {"initiativeId": initiative_id, "first": 25},
+        ["initiative", "initiativeUpdates"],
+    )
+
+
+def fetch_project_comments(project_id: str) -> list[dict]:
+    """Fetch comments made directly on a project."""
+    return fetch_all_pages(
+        PROJECT_COMMENTS_QUERY,
+        {"projectId": project_id, "first": 50},
+        ["project", "comments"],
+    )
+
+
+def fetch_project_updates_with_comments(project_id: str) -> list[dict]:
+    """Fetch a project's status updates, each with its nested comments."""
+    # Smaller page size to keep the nested-comments query under Linear's limit.
+    return fetch_all_pages(
+        PROJECT_UPDATES_WITH_COMMENTS_QUERY,
+        {"projectId": project_id, "first": 25},
+        ["project", "projectUpdates"],
+    )
 
 
 def fetch_initiative_documents(initiative_id: str) -> list[dict]:
