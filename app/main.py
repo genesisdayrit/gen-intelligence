@@ -296,6 +296,7 @@ def verify_linear_signature(payload: bytes, signature: str, secret: str) -> bool
 @app.post("/linear/webhook")
 async def linear_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     linear_signature: str | None = Header(None, alias="Linear-Signature"),
 ):
     """Receive Linear webhook events."""
@@ -455,6 +456,30 @@ async def linear_webhook(
                     logger.info("Synced initiative for project: %s", project_id)
             except Exception as e:
                 logger.error("Failed to sync initiative for project: %s", e)
+
+        return JSONResponse(content={"status": "ok"})
+
+    # Handle Initiative events (on-demand main-thread rollup trigger via label)
+    if event_type == "Initiative" and action == "update":
+        initiative_id = event_data.get("id")
+        initiative_name = event_data.get("name", "(unknown initiative)")
+
+        logger.info("🧵 Linear initiative | %s | %s", initiative_name, action)
+
+        # Adding the `status-update` label to the main-thread initiative triggers
+        # a rollup. run_label_triggered_rollup is a safe no-op for every other
+        # initiative (and once the label is removed), so we can schedule it for
+        # any initiative update. It's slow (LLM + many API calls) so run it in the
+        # background and return 200 immediately.
+        if initiative_id:
+            def _trigger_rollup(iid: str):
+                try:
+                    from scripts.send_main_thread_rollup import run_label_triggered_rollup
+                    run_label_triggered_rollup(iid)
+                except Exception:
+                    logger.exception("Main-thread rollup trigger failed for %s", iid)
+
+            background_tasks.add_task(_trigger_rollup, initiative_id)
 
         return JSONResponse(content={"status": "ok"})
 

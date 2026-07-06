@@ -43,16 +43,21 @@ from scripts.linear.sync_utils import (
     create_initiative_update,
     fetch_all_pages,
     fetch_initiative_documents,
+    fetch_initiative_labels,
     fetch_initiative_projects,
     fetch_initiative_updates,
     fetch_project_documents,
     fetch_project_updates,
+    set_initiative_labels,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_WINDOW_HOURS = 4
 MAIN_THREAD_LABEL = "main-thread"
+# Adding this label to the main-thread initiative triggers an on-demand rollup;
+# the label is removed again once the rollup has been posted.
+TRIGGER_LABEL = "status-update"
 ACTIVE_STATUS = "Active"
 SUMMARY_MODEL = "gpt-4o-mini"
 
@@ -384,6 +389,50 @@ def run_main_thread_rollup(
     except Exception:
         logger.exception("Main-thread rollup failed")
         return False
+
+
+def run_label_triggered_rollup(initiative_id: str, hours: int = 6) -> bool:
+    """On-demand rollup triggered by the `status-update` label on the main thread.
+
+    Meant to be called from the Linear `Initiative` webhook for any initiative
+    update. It is a safe no-op unless the given initiative carries BOTH the
+    `main-thread` and `status-update` labels — so the webhook can call it for
+    every initiative update without gating logic of its own.
+
+    On a real trigger it runs the rollup and then removes the `status-update`
+    label so the initiative returns to its resting state (and so removing the
+    label doesn't itself re-trigger).
+
+    Returns True if a rollup was run, False if it was a no-op.
+    """
+    load_dotenv()
+
+    labels = fetch_initiative_labels(initiative_id)
+    names = {l["name"].lower() for l in labels}
+
+    if MAIN_THREAD_LABEL not in names or TRIGGER_LABEL not in names:
+        # Not the main thread, or the trigger label isn't present — nothing to do.
+        return False
+
+    logger.info(
+        "'%s' label detected on the main-thread initiative (%s); running on-demand rollup.",
+        TRIGGER_LABEL,
+        initiative_id,
+    )
+
+    try:
+        run_main_thread_rollup(hours=hours)
+    finally:
+        # Always clear the trigger label, even if the rollup failed, so a stuck
+        # label doesn't silently re-fire on the next unrelated initiative edit.
+        remaining = [l["id"] for l in labels if l["name"].lower() != TRIGGER_LABEL]
+        try:
+            set_initiative_labels(initiative_id, remaining)
+            logger.info("Removed '%s' label from initiative %s.", TRIGGER_LABEL, initiative_id)
+        except Exception:
+            logger.exception("Failed to remove '%s' label from %s", TRIGGER_LABEL, initiative_id)
+
+    return True
 
 
 def main():

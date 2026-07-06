@@ -119,6 +119,44 @@ The system/user prompts live in `SUMMARY_SYSTEM_PROMPT` / `SUMMARY_USER_PROMPT_T
 
 ---
 
+## Triggering on demand (the `status-update` label)
+
+Besides the 6-hourly schedule, you can fire a rollup **right now** by adding the **`status-update`** label to the main-thread initiative in Linear. When the rollup finishes, the label is removed automatically, so the initiative returns to its resting state (just the `main-thread` label) and is ready to trigger again.
+
+### How it flows
+
+```
+You add `status-update` label ──► Linear fires Initiative/update webhook
+                                         │
+                          POST /linear/webhook  (main.py)
+                                         │  schedules a BackgroundTask (returns 200 fast)
+                                         ▼
+                    run_label_triggered_rollup(initiative_id)
+                       │  fetch initiative labels
+                       │  has BOTH main-thread AND status-update?
+                       ├── no  ──► no-op (this is how every other initiative
+                       │           update — and the label-removal below — is ignored)
+                       └── yes ──► run_main_thread_rollup(hours=6)  → posts update
+                                   then set_initiative_labels(minus status-update)
+                                         │
+                          removal fires another Initiative/update webhook
+                                         ▼
+                                   no-op (label no longer present) — no loop
+```
+
+### Why it's loop-safe and cheap
+
+- `run_label_triggered_rollup` is a **safe no-op unless the initiative carries both `main-thread` and `status-update`**. The webhook can therefore schedule it for *every* `Initiative` update without any gating of its own.
+- Removing the label is itself an `Initiative` update, but by then `status-update` is gone → the next invocation no-ops. No infinite loop.
+- The heavy work (LLM + many API calls, ~15–20s) runs in a **FastAPI `BackgroundTask`** so the webhook returns `200` immediately (Linear retries slow/failed deliveries).
+- The label is removed in a `finally` block — even if the rollup errors, a stuck `status-update` label won't silently re-fire on the next unrelated initiative edit.
+
+### Requirements
+
+- The webhook subscription must include the **`Initiative`** resource type (this workspace's `gen-intelligence` webhook already does).
+- A **`status-update`** initiative label must exist (it does — created in the initiative-label pool, separate from issue labels). Initiative labels are managed via `initiativeLabelCreate` / `initiativeUpdate(input: {labelIds})`.
+- `run_label_triggered_rollup` uses a **6-hour** look-back by default (matching the schedule); change the `hours=` arg if you want on-demand triggers to look back further.
+
 ## Schedule
 
 Wired into `app/scheduler.py` (APScheduler `BackgroundScheduler`, runs inside the FastAPI process):
@@ -198,9 +236,10 @@ SYSTEM_TIMEZONE=America/Los_Angeles      # window + today-date resolution (defau
 
 | File | Purpose |
 |------|---------|
-| `app/scripts/send_main_thread_rollup.py` | The rollup job: gather → parse → synthesize → post |
+| `app/scripts/send_main_thread_rollup.py` | The rollup job: gather → parse → synthesize → post; plus `run_label_triggered_rollup` (on-demand trigger) |
 | `app/scheduler.py` | Registers the 6-hourly `send_main_thread_rollup` job |
-| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers (`fetch_*`, `create_initiative_update`) |
+| `app/main.py` | `/linear/webhook` → `Initiative` update handler that schedules the label-triggered rollup |
+| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers (`fetch_*`, `create_initiative_update`, `fetch_initiative_labels`, `set_initiative_labels`) |
 | `app/scripts/linear/test_find_main_thread_initiative.py` | Probe: find the main-thread initiative by label |
 | `app/scripts/linear/test_recent_initiative_activity.py` | Probe: dump recent activity (JSON includes full content) |
 | `app/scripts/send_daily_initiative_update.py` | Sibling job; template for the LLM + posting pattern (and idempotency) |

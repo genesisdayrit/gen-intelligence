@@ -271,6 +271,25 @@ mutation CreateInitiativeUpdate($input: InitiativeUpdateCreateInput!) {
 }
 """
 
+INITIATIVE_LABELS_QUERY = """
+query InitiativeLabels($id: String!) {
+  initiative(id: $id) {
+    id
+    name
+    labels { nodes { id name } }
+  }
+}
+"""
+
+INITIATIVE_SET_LABELS_MUTATION = """
+mutation SetInitiativeLabels($id: String!, $labelIds: [String!]!) {
+  initiativeUpdate(id: $id, input: { labelIds: $labelIds }) {
+    success
+    initiative { labels { nodes { id name } } }
+  }
+}
+"""
+
 # =============================================================================
 # Linear API Functions
 # =============================================================================
@@ -391,6 +410,29 @@ def create_initiative_update(
         raise Exception(f"initiativeUpdateCreate returned no update: {payload}")
 
     return update
+
+
+def fetch_initiative_labels(initiative_id: str) -> list[dict]:
+    """Fetch an initiative's labels as a list of {id, name} dicts."""
+    data = execute_query(INITIATIVE_LABELS_QUERY, {"id": initiative_id})
+    initiative = data.get("data", {}).get("initiative") or {}
+    return initiative.get("labels", {}).get("nodes", [])
+
+
+def set_initiative_labels(initiative_id: str, label_ids: list[str]) -> list[dict]:
+    """Set (replace) the labels on an initiative. Returns the resulting labels.
+
+    Note: labelIds fully replaces the label set, so pass the complete desired
+    list (e.g. to remove one label, pass the current ids minus that one).
+    """
+    data = execute_query(
+        INITIATIVE_SET_LABELS_MUTATION,
+        {"id": initiative_id, "labelIds": label_ids},
+    )
+    payload = data.get("data", {}).get("initiativeUpdate") or {}
+    if not payload.get("success"):
+        raise Exception(f"initiativeUpdate(labelIds) did not return success: {payload}")
+    return payload.get("initiative", {}).get("labels", {}).get("nodes", [])
 
 
 def fetch_initiative_documents(initiative_id: str) -> list[dict]:
