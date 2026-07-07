@@ -31,8 +31,10 @@ Every 6 hours the job (`send_main_thread_rollup.py`) does the following:
    - **Status updates** → contribute their **full body**.
    - **Comments** → contribute their body, **kept with their parent context** (see below). Document comments are intentionally excluded.
    - **Documents** → contribute **only today's dated section** (see below). Documents with no section dated today are skipped.
-4. **Synthesize.** Hand the assembled context to an LLM, which writes a concise `## Summary` + `## By initiative` markdown update.
-5. **Post** it as a new initiative update on the main-thread initiative. If no source had any activity in the window, it skips posting.
+   - **Touched issues** → project issues updated in the window, collected for the **deterministic** issues-touched section (see below). These are *not* fed to the LLM.
+4. **Synthesize.** Hand the assembled context (updates, comments, documents — *not* issues) to an LLM, which writes a concise `## Summary` + `## By initiative` markdown update.
+5. **Append the deterministic `## Issues touched` section** beneath the AI summary (rendered in code, not by the LLM).
+6. **Post** the combined body as a new initiative update on the main-thread initiative. If no source had any activity in the window, it skips posting.
 
 ---
 
@@ -61,6 +63,24 @@ Notes and gotchas:
 - **Document comments are excluded** (the `documentContent` comment relation). Issue comments are excluded too. Only the four sources above are gathered.
 - **A comment on an old update still counts.** `_recent_update_comments` scans *every* update's comments and keeps the recent ones — a fresh reply on a stale update is still fresh activity — even though that update itself is outside the window and won't appear as an "update".
 - **Query complexity.** Nesting `comments` inside the updates connection is expensive; Linear caps query complexity at 10,000. The with-comments queries therefore page updates in batches of **25** with **25** nested comments each (`fetch_initiative_updates_with_comments` / `fetch_project_updates_with_comments`), and comment nodes only select `user { name }`. If you widen these, watch for `Query too complex` (HTTP 400).
+
+---
+
+## Issues touched (deterministic)
+
+Beneath the AI summary, the rollup appends a **deterministic** `## Issues touched` section: for each source initiative's projects, the Linear issues updated within the window, grouped **initiative → project**, each rendered as `[<identifier>](<url>) <title> — <state>`.
+
+Why deterministic (not LLM-generated):
+
+- The list is a **complete, verbatim factual record** — the LLM would summarize or drop items. It's built in code by `format_issues_touched(reports)` and appended to the body *after* `generate_update_body(...)`.
+- Issues are therefore **not** part of the LLM context (`build_activity_block` excludes them).
+
+Mechanics:
+
+- **Server-side filter.** `fetch_project_updated_issues(project_id, since)` queries `project.issues(filter: { updatedAt: { gte: $since } })`, so only touched issues come back — no over-fetch, no client-side filtering. `since` is the rollup threshold normalized to a UTC ISO-8601 string (`…Z`).
+- **"Touched" = `updatedAt` in-window.** Linear bumps `updatedAt` on edits, state changes, assignment, etc. (Comment-only activity is already covered by the comments feature.)
+- **Touched issues count as activity.** A project is included in the report if it has updates/comments/docs **or** touched issues, and `has_activity` returns True whenever a report has any such project — so a window where *only* issues moved still posts (with a thin AI summary + the deterministic list).
+- **Empty → omitted.** If no project in any report has touched issues, `format_issues_touched` returns `""` and no section is added. An otherwise-empty window still skips the whole post.
 
 ---
 
@@ -260,7 +280,7 @@ SYSTEM_TIMEZONE=America/Los_Angeles      # window + today-date resolution (defau
 | `app/scripts/send_main_thread_rollup.py` | The rollup job: gather → parse → synthesize → post; plus `run_label_triggered_rollup` (on-demand trigger) |
 | `app/scheduler.py` | Registers the 6-hourly `send_main_thread_rollup` job |
 | `app/main.py` | `/linear/webhook` → `Initiative` update handler that schedules the label-triggered rollup |
-| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers: `fetch_*`, `create_initiative_update`, `fetch_initiative_labels` / `set_initiative_labels`, and the comment fetchers (`fetch_initiative_comments`, `fetch_project_comments`, `fetch_initiative_updates_with_comments`, `fetch_project_updates_with_comments`) |
+| `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers: `fetch_*`, `create_initiative_update`, `fetch_initiative_labels` / `set_initiative_labels`, the comment fetchers (`fetch_initiative_comments`, `fetch_project_comments`, `fetch_initiative_updates_with_comments`, `fetch_project_updates_with_comments`), and `fetch_project_updated_issues` (deterministic issues-touched) |
 | `app/scripts/linear/test_find_main_thread_initiative.py` | Probe: find the main-thread initiative by label |
 | `app/scripts/linear/test_recent_initiative_activity.py` | Probe: dump recent activity (JSON includes full content) |
 | `app/scripts/send_daily_initiative_update.py` | Sibling job; template for the LLM + posting pattern (and idempotency) |
