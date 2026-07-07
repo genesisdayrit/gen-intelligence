@@ -321,6 +321,7 @@ query InitiativeUpdatesWithComments($initiativeId: String!, $first: Int!, $after
     initiativeUpdates(first: $first, after: $after) {{
       nodes {{
         id
+        body
         health
         createdAt
         updatedAt
@@ -351,6 +352,7 @@ query ProjectUpdatesWithComments($projectId: String!, $first: Int!, $after: Stri
     projectUpdates(first: $first, after: $after) {{
       nodes {{
         id
+        body
         health
         createdAt
         updatedAt
