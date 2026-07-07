@@ -404,6 +404,32 @@ def build_activity_block(reports: list[dict]) -> str:
     return "\n".join(parts).strip()
 
 
+def format_issues_touched(reports: list[dict]) -> str:
+    """Deterministic `## Issues touched` markdown section, grouped initiative → project.
+
+    Rendered in code (never via the LLM) so the list is complete and verbatim.
+    Returns "" when no project in any report has touched issues, so the caller
+    can omit the section entirely.
+    """
+    lines: list[str] = []
+    for r in reports:
+        projects_with_issues = [p for p in r["projects"] if p.get("issues")]
+        if not projects_with_issues:
+            continue
+        lines.append(f"### {r['name']}")
+        for p in projects_with_issues:
+            lines.append(f"- **{p['name']}**")
+            for i in p["issues"]:
+                link = f"[{i['identifier']}]({i['url']})" if i.get("url") else (i.get("identifier") or "?")
+                state = f" — {i['state']}" if i.get("state") else ""
+                lines.append(f"  - {link} {i['title']}{state}")
+        lines.append("")
+
+    if not lines:
+        return ""
+    return "## Issues touched\n\n" + "\n".join(lines).strip()
+
+
 def generate_update_body(reports: list[dict], now_local: datetime, hours: int) -> str:
     """Call OpenAI to synthesize the main-thread update body."""
     client = _get_openai_client()
@@ -483,6 +509,12 @@ def run_main_thread_rollup(
             logger.error("LLM returned empty body; aborting.")
             return False
         logger.info("Generated body (%d chars)", len(body))
+
+        # Append the deterministic issues-touched section beneath the AI summary.
+        issues_section = format_issues_touched(active_reports)
+        if issues_section:
+            body = f"{body}\n\n{issues_section}"
+            logger.info("Appended deterministic issues-touched section (%d chars)", len(issues_section))
 
         if output:
             Path(output).write_text(body, encoding="utf-8")
