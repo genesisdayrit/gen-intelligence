@@ -257,6 +257,26 @@ query ProjectIssues($projectId: String!, $first: Int!, $after: String) {
 }
 """
 
+# Issues in a project touched (updatedAt) at/after a cutoff — a lean projection
+# used by the main-thread rollup for its deterministic "issues touched" list.
+# The `updatedAt` filter is applied server-side so we never over-fetch.
+PROJECT_UPDATED_ISSUES_QUERY = """
+query ProjectUpdatedIssues($projectId: String!, $since: DateTimeOrDuration!, $first: Int!, $after: String) {
+  project(id: $projectId) {
+    issues(filter: { updatedAt: { gte: $since } }, first: $first, after: $after) {
+      nodes {
+        identifier
+        title
+        url
+        updatedAt
+        state { name type }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 INITIATIVE_UPDATE_CREATE_MUTATION = """
 mutation CreateInitiativeUpdate($input: InitiativeUpdateCreateInput!) {
   initiativeUpdateCreate(input: $input) {
@@ -597,6 +617,23 @@ def fetch_project_issues(project_id: str) -> list[dict]:
     return fetch_all_pages(
         PROJECT_ISSUES_QUERY,
         {"projectId": project_id, "first": 50},
+        ["project", "issues"],
+    )
+
+
+def fetch_project_updated_issues(project_id: str, since: str) -> list[dict]:
+    """Fetch issues in a project updated at/after `since` (server-side filtered).
+
+    Args:
+        project_id: Linear project id.
+        since: ISO-8601 timestamp (e.g. "2026-07-06T01:48:46Z"). Only issues whose
+            `updatedAt` is >= this are returned.
+
+    Each node is a lean projection: {identifier, title, url, updatedAt, state{name,type}}.
+    """
+    return fetch_all_pages(
+        PROJECT_UPDATED_ISSUES_QUERY,
+        {"projectId": project_id, "since": since, "first": 50},
         ["project", "issues"],
     )
 
