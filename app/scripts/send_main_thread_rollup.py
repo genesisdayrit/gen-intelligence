@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,6 +49,7 @@ from scripts.linear.sync_utils import (
     fetch_initiative_updates_with_comments,
     fetch_project_comments,
     fetch_project_documents,
+    fetch_project_updated_issues,
     fetch_project_updates_with_comments,
     set_initiative_labels,
 )
@@ -223,6 +224,15 @@ def _recent_update_comments(update_nodes: list[dict], threshold: datetime) -> li
     return groups
 
 
+def _issue_entry(i: dict) -> dict:
+    return {
+        "identifier": i.get("identifier"),
+        "title": (i.get("title") or "").strip(),
+        "state": (i.get("state") or {}).get("name"),
+        "url": i.get("url"),
+    }
+
+
 def _recent_today_documents(documents: list[dict], threshold: datetime, today: tuple[int, int]) -> list[dict]:
     docs = []
     for d in documents:
@@ -244,6 +254,8 @@ def collect_recent_activity(
     comments and comments on project status updates.
     """
     iid = initiative["id"]
+    # `updatedAt` filter cutoff for touched issues (server-side, UTC ISO-8601).
+    since = threshold.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     ini_update_nodes = fetch_initiative_updates_with_comments(iid)
     ini_updates = [_update_entry(u) for u in ini_update_nodes if is_recent(u, threshold)]
@@ -259,7 +271,9 @@ def collect_recent_activity(
         p_update_comments = _recent_update_comments(p_update_nodes, threshold)
         p_comments = [_comment_entry(c) for c in fetch_project_comments(pid) if is_recent(c, threshold)]
         p_docs = _recent_today_documents(fetch_project_documents(pid), threshold, today)
-        if p_updates or p_comments or p_update_comments or p_docs:
+        # Touched issues are already filtered server-side by `since`, so no is_recent().
+        p_issues = [_issue_entry(i) for i in fetch_project_updated_issues(pid, since)]
+        if p_updates or p_comments or p_update_comments or p_docs or p_issues:
             projects.append(
                 {
                     "name": project.get("name"),
@@ -267,6 +281,7 @@ def collect_recent_activity(
                     "comments": p_comments,
                     "update_comments": p_update_comments,
                     "documents": p_docs,
+                    "issues": p_issues,
                 }
             )
 
