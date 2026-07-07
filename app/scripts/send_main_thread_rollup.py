@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -49,6 +49,7 @@ from scripts.linear.sync_utils import (
     fetch_initiative_updates_with_comments,
     fetch_project_comments,
     fetch_project_documents,
+    fetch_project_updated_issues,
     fetch_project_updates_with_comments,
     set_initiative_labels,
 )
@@ -223,6 +224,15 @@ def _recent_update_comments(update_nodes: list[dict], threshold: datetime) -> li
     return groups
 
 
+def _issue_entry(i: dict) -> dict:
+    return {
+        "identifier": i.get("identifier"),
+        "title": (i.get("title") or "").strip(),
+        "state": (i.get("state") or {}).get("name"),
+        "url": i.get("url"),
+    }
+
+
 def _recent_today_documents(documents: list[dict], threshold: datetime, today: tuple[int, int]) -> list[dict]:
     docs = []
     for d in documents:
@@ -244,6 +254,8 @@ def collect_recent_activity(
     comments and comments on project status updates.
     """
     iid = initiative["id"]
+    # `updatedAt` filter cutoff for touched issues (server-side, UTC ISO-8601).
+    since = threshold.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     ini_update_nodes = fetch_initiative_updates_with_comments(iid)
     ini_updates = [_update_entry(u) for u in ini_update_nodes if is_recent(u, threshold)]
@@ -259,7 +271,9 @@ def collect_recent_activity(
         p_update_comments = _recent_update_comments(p_update_nodes, threshold)
         p_comments = [_comment_entry(c) for c in fetch_project_comments(pid) if is_recent(c, threshold)]
         p_docs = _recent_today_documents(fetch_project_documents(pid), threshold, today)
-        if p_updates or p_comments or p_update_comments or p_docs:
+        # Touched issues are already filtered server-side by `since`, so no is_recent().
+        p_issues = [_issue_entry(i) for i in fetch_project_updated_issues(pid, since)]
+        if p_updates or p_comments or p_update_comments or p_docs or p_issues:
             projects.append(
                 {
                     "name": project.get("name"),
@@ -267,6 +281,7 @@ def collect_recent_activity(
                     "comments": p_comments,
                     "update_comments": p_update_comments,
                     "documents": p_docs,
+                    "issues": p_issues,
                 }
             )
 
@@ -389,6 +404,32 @@ def build_activity_block(reports: list[dict]) -> str:
     return "\n".join(parts).strip()
 
 
+def format_issues_touched(reports: list[dict]) -> str:
+    """Deterministic `## Issues touched` markdown section, grouped initiative → project.
+
+    Rendered in code (never via the LLM) so the list is complete and verbatim.
+    Returns "" when no project in any report has touched issues, so the caller
+    can omit the section entirely.
+    """
+    lines: list[str] = []
+    for r in reports:
+        projects_with_issues = [p for p in r["projects"] if p.get("issues")]
+        if not projects_with_issues:
+            continue
+        lines.append(f"### {r['name']}")
+        for p in projects_with_issues:
+            lines.append(f"- **{p['name']}**")
+            for i in p["issues"]:
+                link = f"[{i['identifier']}]({i['url']})" if i.get("url") else (i.get("identifier") or "?")
+                state = f" — {i['state']}" if i.get("state") else ""
+                lines.append(f"  - {link} {i['title']}{state}")
+        lines.append("")
+
+    if not lines:
+        return ""
+    return "## Issues touched\n\n" + "\n".join(lines).strip()
+
+
 def generate_update_body(reports: list[dict], now_local: datetime, hours: int) -> str:
     """Call OpenAI to synthesize the main-thread update body."""
     client = _get_openai_client()
@@ -468,6 +509,12 @@ def run_main_thread_rollup(
             logger.error("LLM returned empty body; aborting.")
             return False
         logger.info("Generated body (%d chars)", len(body))
+
+        # Append the deterministic issues-touched section beneath the AI summary.
+        issues_section = format_issues_touched(active_reports)
+        if issues_section:
+            body = f"{body}\n\n{issues_section}"
+            logger.info("Appended deterministic issues-touched section (%d chars)", len(issues_section))
 
         if output:
             Path(output).write_text(body, encoding="utf-8")
