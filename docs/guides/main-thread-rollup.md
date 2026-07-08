@@ -32,9 +32,10 @@ Every 6 hours the job (`send_main_thread_rollup.py`) does the following:
    - **Comments** → contribute their body, **kept with their parent context** (see below). Document comments are intentionally excluded.
    - **Documents** → contribute **only today's dated section** (see below). Documents with no section dated today are skipped.
    - **Touched issues** → project issues updated in the window, collected for the **deterministic** issues-touched section (see below). These are *not* fed to the LLM.
-4. **Synthesize.** Hand the assembled context (updates, comments, documents — *not* issues) to an LLM, which writes a concise `## Summary` + `## By initiative` markdown update.
-5. **Append the deterministic `## Issues touched` section** beneath the AI summary (rendered in code, not by the LLM).
-6. **Post** the combined body as a new initiative update on the main-thread initiative. If no source had any activity in the window, it skips posting.
+4. **Gather GitHub activity** (optional; see below) — the user's own commits, PRs, issues, and comments across all repos, scoped to the **same look-back window**.
+5. **Synthesize.** Hand the assembled context (updates, comments, documents, GitHub activity — *not* issues) to an LLM, which writes a concise `## Summary` + `## By initiative` markdown update (with a `### GitHub` subsection when there was GitHub activity).
+6. **Append the deterministic `## Issues touched` section** beneath the AI summary (rendered in code, not by the LLM).
+7. **Post** the combined body as a new initiative update on the main-thread initiative. If no source had any activity in the window — Linear *or* GitHub — it skips posting.
 
 ---
 
@@ -81,6 +82,29 @@ Mechanics:
 - **"Touched" = `updatedAt` in-window.** Linear bumps `updatedAt` on edits, state changes, assignment, etc. (Comment-only activity is already covered by the comments feature.)
 - **Touched issues count as activity.** A project is included in the report if it has updates/comments/docs **or** touched issues, and `has_activity` returns True whenever a report has any such project — so a window where *only* issues moved still posts (with a thin AI summary + the deterministic list).
 - **Empty → omitted.** If no project in any report has touched issues, `format_issues_touched` returns `""` and no section is added. An otherwise-empty window still skips the whole post.
+
+---
+
+## GitHub activity (optional)
+
+Code work often happens without the Linear cards being updated. When configured, the rollup also gathers the user's own GitHub activity in the **same look-back window** and feeds it to the LLM, which summarizes it as a final `### GitHub` subsection under `## By initiative` (or ties it to an initiative's bullets when the connection is obvious).
+
+**How it's captured — pull, not webhooks.** `collect_recent_github_activity(threshold)` (`app/services/github/activity.py`) polls the GitHub **Events API** (`GET /users/{username}/events`) at rollup time, the same pull-based pattern as the Linear fetches. Authenticated as the same user, the endpoint includes **private-repo** events, so pushes to any branch, PRs, issues, comments, reviews, branch/tag creates, and releases across *every* repo are covered — no per-repo webhook setup. (The existing `/github/webhook` endpoint is unrelated; it only forwards main-branch commits to Todoist.)
+
+Mechanics and gotchas:
+
+- **Scoped to the window.** The pager stops as soon as a page falls below the rollup `threshold`, and `summarize_events` drops anything with `created_at < threshold` — so GitHub windows tile contiguously with the Linear ones.
+- **Noise filtering.** Merge commits, non-`distinct` commits (rebase/force-push re-deliveries), PR label/sync churn, and Watch/Fork/Delete events are dropped; commit SHAs are deduped across pushes. Comment bodies are truncated to 140 chars.
+- **GitHub-only activity still posts.** A window with code work but no Linear activity produces a rollup (the Linear block reads "(no Linear activity in this window)").
+- **Fail-open.** If the feature is unconfigured it's silently skipped; if the API call fails it's logged and the Linear rollup proceeds without it.
+- **Events API limits.** Only the most recent 300 events / 90 days are served, a PushEvent carries at most 20 commits, and delivery can lag ~30s. All fine at a few-hour cadence.
+
+Configuration — both required, otherwise the feature is off:
+
+```bash
+GITHUB_USERNAME=your_github_login
+GITHUB_ACCESS_TOKEN=a_pat_for_that_same_user   # so private events are included
+```
 
 ---
 
@@ -269,6 +293,10 @@ python -m scripts.linear.test_recent_initiative_activity --hours 6 --json
 LINEAR_API_KEY=your_linear_api_key      # read initiatives/projects/updates/docs + post the update
 OPENAI_API_KEY=your_openai_key          # LLM synthesis
 SYSTEM_TIMEZONE=America/Los_Angeles      # window + today-date resolution (defaults to America/Los_Angeles)
+
+# Optional — GitHub activity in the rollup (feature is off unless BOTH are set)
+GITHUB_USERNAME=your_github_login
+GITHUB_ACCESS_TOKEN=a_pat_for_that_user  # Events API; token must belong to GITHUB_USERNAME
 ```
 
 ---
@@ -281,6 +309,8 @@ SYSTEM_TIMEZONE=America/Los_Angeles      # window + today-date resolution (defau
 | `app/scheduler.py` | Registers the 6-hourly `send_main_thread_rollup` job |
 | `app/main.py` | `/linear/webhook` → `Initiative` update handler that schedules the label-triggered rollup |
 | `app/scripts/linear/sync_utils.py` | Linear GraphQL helpers: `fetch_*`, `create_initiative_update`, `fetch_initiative_labels` / `set_initiative_labels`, the comment fetchers (`fetch_initiative_comments`, `fetch_project_comments`, `fetch_initiative_updates_with_comments`, `fetch_project_updates_with_comments`), and `fetch_project_updated_issues` (deterministic issues-touched) |
+| `app/services/github/activity.py` | GitHub Events API fetcher + per-repo summarizer (`collect_recent_github_activity`) |
+| `app/tests/test_github_rollup.py` | Tests: event summarizing (window scoping, dedup, noise filtering) + LLM block rendering |
 | `app/scripts/linear/test_find_main_thread_initiative.py` | Probe: find the main-thread initiative by label |
 | `app/scripts/linear/test_recent_initiative_activity.py` | Probe: dump recent activity (JSON includes full content) |
 | `app/scripts/send_daily_initiative_update.py` | Sibling job; template for the LLM + posting pattern (and idempotency) |

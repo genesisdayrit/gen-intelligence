@@ -9,6 +9,11 @@ active initiatives that are NOT the 'main-thread' initiative:
   * initiative/project documents — only TODAY's dated section (the block from
     today's date header down to the next date header)
 
+When GITHUB_USERNAME + GITHUB_ACCESS_TOKEN are set, it also gathers the
+user's own GitHub activity in the same window (commits, PRs, issues,
+comments — across all repos, via the GitHub Events API), so code work that
+never made it onto a Linear card still shows up in the rollup.
+
 It hands that context to an LLM, which synthesizes a concise high-level
 initiative update, and posts it on the 'main-thread' initiative. This keeps a
 single rolling overview of the whole system while preserving the specific
@@ -39,6 +44,7 @@ from openai import OpenAI
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import SYSTEM_TZ
+from services.github.activity import collect_recent_github_activity
 from scripts.linear.sync_utils import (
     create_initiative_update,
     fetch_all_pages,
@@ -319,6 +325,7 @@ Constraints:
 - Then a `## By initiative` section: one `### <Initiative name>` subsection per initiative that had activity, with tight bullets. Nest project activity under its initiative and name the project inline.
 - Keep bullets short and high-level, but keep concrete specifics (names, systems, decisions, numbers) — that's the point of the main thread.
 - Comments are provided with the parent they belong to (an initiative, a project, or a specific status update). Preserve that context — attribute a comment to what it's replying to rather than treating it as a standalone update.
+- A `# GitHub activity` section may follow the Linear activity: the user's own recent commits, pull requests, and issue activity, grouped by repository. Summarize it as a final `### GitHub` subsection under `## By initiative` — one bullet per repository, merging related commits into what was actually worked on rather than listing every commit. This is often work that never made it onto a Linear card; if it clearly corresponds to an initiative's activity above, note the connection in that initiative's bullets instead of duplicating it.
 - Synthesize and de-duplicate; don't just transcribe. If a status update, a comment, and a document section cover the same thing, merge them.
 - First person, plain voice. No hype, no emojis. Never fabricate — every bullet must trace to the provided context."""
 
@@ -329,6 +336,15 @@ Below is the raw activity gathered from the OTHER active initiatives (the main t
 # Activity
 
 {activity_block}
+"""
+
+GITHUB_BLOCK_TEMPLATE = """
+
+# GitHub activity
+
+The user's own GitHub activity in the same {hours}-hour window, grouped by repository (commits, pull requests, issues, comments).
+
+{github_block}
 """
 
 
@@ -404,6 +420,25 @@ def build_activity_block(reports: list[dict]) -> str:
     return "\n".join(parts).strip()
 
 
+def build_github_block(repos: list[dict]) -> str:
+    """Render per-repo GitHub activity into a plain-text context block for the LLM."""
+    parts: list[str] = []
+    for r in repos:
+        parts.append(f"=== REPO: {r['repo']} ===")
+        for c in r["commits"]:
+            parts.append(f"- commit {c['sha']} on {c['branch']}: {c['message']}")
+        for p in r["prs"]:
+            parts.append(f"- PR #{p['number']} {p['action']}: {p['title']}")
+        for i in r["issues"]:
+            parts.append(f"- issue #{i['number']} {i['action']}: {i['title']}")
+        for c in r["comments"]:
+            parts.append(f"- commented on #{c['number']} '{c['title']}': {c['body']}")
+        for o in r["other"]:
+            parts.append(f"- {o}")
+        parts.append("")
+    return "\n".join(parts).strip()
+
+
 def format_issues_touched(reports: list[dict]) -> str:
     """Deterministic `## Issues touched` markdown section, grouped initiative → project.
 
@@ -430,14 +465,20 @@ def format_issues_touched(reports: list[dict]) -> str:
     return "## Issues touched\n\n" + "\n".join(lines).strip()
 
 
-def generate_update_body(reports: list[dict], now_local: datetime, hours: int) -> str:
+def generate_update_body(
+    reports: list[dict], github_repos: list[dict], now_local: datetime, hours: int
+) -> str:
     """Call OpenAI to synthesize the main-thread update body."""
     client = _get_openai_client()
     user_prompt = SUMMARY_USER_PROMPT_TEMPLATE.format(
         now_local=now_local.strftime("%A, %B %d, %Y %I:%M %p %Z"),
         hours=hours,
-        activity_block=build_activity_block(reports),
+        activity_block=build_activity_block(reports) or "(no Linear activity in this window)",
     )
+    if github_repos:
+        user_prompt += GITHUB_BLOCK_TEMPLATE.format(
+            hours=hours, github_block=build_github_block(github_repos)
+        )
     response = client.chat.completions.create(
         model=SUMMARY_MODEL,
         messages=[
@@ -500,11 +541,19 @@ def run_main_thread_rollup(
         active_reports = [r for r in reports if has_activity(r)]
         logger.info("%d initiative(s) had activity in the window", len(active_reports))
 
-        if not active_reports:
+        # GitHub activity is scoped to the same look-back threshold as Linear.
+        github_repos = collect_recent_github_activity(threshold)
+        if github_repos is None:
+            logger.info("GitHub activity capture not configured; using Linear activity only.")
+            github_repos = []
+        else:
+            logger.info("%d repo(s) had GitHub activity in the window", len(github_repos))
+
+        if not active_reports and not github_repos:
             logger.info("No activity in the last %dh; nothing to post. Skipping.", hours)
             return True
 
-        body = generate_update_body(active_reports, now_local, hours)
+        body = generate_update_body(active_reports, github_repos, now_local, hours)
         if not body:
             logger.error("LLM returned empty body; aborting.")
             return False
