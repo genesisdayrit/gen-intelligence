@@ -73,6 +73,7 @@ query Initiatives($first: Int!, $after: String, $includeArchived: Boolean) {
       createdAt
       owner { id name email }
       creator { id name email }
+      labels { nodes { id name } }
     }
     pageInfo { hasNextPage endCursor }
   }

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Post a Daily Initiative Update on the active Linear initiative.
+"""Post a Daily Initiative Update on the main-thread Linear initiative.
 
 The cron runs at 04:00 America/Los_Angeles, gathers the last 3 days of
 Daily Action notes from Obsidian/Dropbox plus the last 3 initiative
-updates on the active initiative, asks an LLM to synthesize a
-markdown summary (Wins / In-progress / Follow-ups), and posts it as a
-new initiative update. The existing Linear webhook handler mirrors the
-new update into today's Daily Action note automatically.
+updates on the initiative labeled `main-thread`, asks an LLM to
+synthesize a markdown summary (Wins / In-progress / Follow-ups), and
+posts it as a new initiative update. The existing Linear webhook
+handler mirrors the new update into today's Daily Action note
+automatically.
 
 Usage:
     python -m scripts.send_daily_initiative_update
@@ -48,6 +49,7 @@ DAILY_INITIATIVE_UPDATE_ENABLED = True
 LOOKBACK_DAYS = 3
 RECENT_UPDATES_CONTEXT = 3
 ACTIVE_STATUS_NAME = "Active"
+MAIN_THREAD_LABEL = "main-thread"
 SUMMARY_MODEL = "gpt-4o-mini"
 
 SUMMARY_SYSTEM_PROMPT = """You write daily initiative updates for a personal productivity system.
@@ -101,24 +103,37 @@ SUMMARY_USER_PROMPT_TEMPLATE = """Generate today's initiative update for {today_
 
 
 # =============================================================================
-# Active-initiative resolution + idempotency
+# Main-thread initiative resolution + idempotency
 # =============================================================================
 
 
-def _resolve_active_initiative(initiatives: list[dict]) -> dict:
-    """Return the single initiative whose status is Active.
+def _initiative_label_names(initiative: dict) -> list[str]:
+    """Return lowercased label names from a fetch_initiatives node."""
+    nodes = (initiative.get("labels") or {}).get("nodes") or []
+    return [str(n.get("name", "")).lower() for n in nodes if n.get("name")]
 
-    Aborts if zero or multiple initiatives are active.
+
+def _resolve_main_thread_initiative(initiatives: list[dict]) -> dict:
+    """Return the single Active initiative carrying the main-thread label.
+
+    Multiple Active initiatives are allowed; the update target is chosen by
+    the `main-thread` label. Aborts if zero or multiple Active initiatives
+    carry that label.
     """
     active = [i for i in initiatives if i.get("status") == ACTIVE_STATUS_NAME]
-    if len(active) == 0:
-        raise RuntimeError("No active initiative found.")
-    if len(active) > 1:
-        names = ", ".join(i.get("name", "?") for i in active)
+    matches = [i for i in active if MAIN_THREAD_LABEL in _initiative_label_names(i)]
+    if len(matches) == 0:
         raise RuntimeError(
-            f"Expected exactly one active initiative, found {len(active)}: {names}"
+            f"No active initiative carries the '{MAIN_THREAD_LABEL}' label "
+            f"(active count: {len(active)})."
         )
-    return active[0]
+    if len(matches) > 1:
+        names = ", ".join(i.get("name", "?") for i in matches)
+        raise RuntimeError(
+            f"Expected exactly one '{MAIN_THREAD_LABEL}' initiative among "
+            f"active initiatives, found {len(matches)}: {names}"
+        )
+    return matches[0]
 
 
 def _already_posted_today(updates: list[dict], now_local: datetime) -> bool:
@@ -447,11 +462,11 @@ def run_daily_initiative_update(
 
     try:
         initiatives = fetch_initiatives()
-        active = _resolve_active_initiative(initiatives)
-        initiative_id = active["id"]
-        initiative_name = active.get("name", "(unknown)")
+        target = _resolve_main_thread_initiative(initiatives)
+        initiative_id = target["id"]
+        initiative_name = target.get("name", "(unknown)")
         logger.info(
-            "Active initiative resolved: %s (%s)", initiative_name, initiative_id
+            "Main-thread initiative resolved: %s (%s)", initiative_name, initiative_id
         )
 
         # Fetch updates once, use for both idempotency and context.
@@ -526,7 +541,7 @@ def run_daily_initiative_update(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Post the daily initiative update to the active Linear initiative."
+        description="Post the daily initiative update to the main-thread Linear initiative."
     )
     parser.add_argument(
         "--dry-run",
