@@ -54,6 +54,12 @@ MANUS_API_KEY = os.getenv("MANUS_API_KEY")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
+# Feature flags
+# When False, Linear ProjectUpdate/InitiativeUpdate webhook events are
+# acknowledged but NOT written to the Obsidian Daily Action / Weekly Cycle
+# notes. The _Initiatives folder sync still runs. Flip to True to re-enable.
+WRITE_LINEAR_UPDATES_TO_OBSIDIAN = False
+
 
 # Telegram models (minimal)
 class Chat(BaseModel):
@@ -427,22 +433,25 @@ async def linear_webhook(
             update_body[:100],
         )
 
-        # Write to both Daily Action and Weekly Cycle
-        result = upsert_linear_update(
-            section_type="project",
-            url=update_url,
-            parent_name=project_name,
-            content=update_body,
-        )
-        if result["daily_action_success"]:
-            logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
+        if WRITE_LINEAR_UPDATES_TO_OBSIDIAN:
+            # Write to both Daily Action and Weekly Cycle
+            result = upsert_linear_update(
+                section_type="project",
+                url=update_url,
+                parent_name=project_name,
+                content=update_body,
+            )
+            if result["daily_action_success"]:
+                logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
+            else:
+                logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
+            if result["weekly_cycle_success"]:
+                logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+            else:
+                logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
+                # Still return 200 - don't want Linear to retry
         else:
-            logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
-        if result["weekly_cycle_success"]:
-            logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
-        else:
-            logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
-            # Still return 200 - don't want Linear to retry
+            logger.info("Skipped Obsidian write (WRITE_LINEAR_UPDATES_TO_OBSIDIAN=False)")
 
         # Sync the parent initiative to Obsidian _Initiatives folder
         project_id = event_data.get("project", {}).get("id")
@@ -496,22 +505,25 @@ async def linear_webhook(
             update_body[:100],
         )
 
-        # Write to both Daily Action and Weekly Cycle
-        result = upsert_linear_update(
-            section_type="initiative",
-            url=update_url,
-            parent_name=initiative_name,
-            content=update_body,
-        )
-        if result["daily_action_success"]:
-            logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
+        if WRITE_LINEAR_UPDATES_TO_OBSIDIAN:
+            # Write to both Daily Action and Weekly Cycle
+            result = upsert_linear_update(
+                section_type="initiative",
+                url=update_url,
+                parent_name=initiative_name,
+                content=update_body,
+            )
+            if result["daily_action_success"]:
+                logger.info("Written to Daily Action: action=%s", result["daily_action_action"])
+            else:
+                logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
+            if result["weekly_cycle_success"]:
+                logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+            else:
+                logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
+                # Still return 200 - don't want Linear to retry
         else:
-            logger.error("Failed to write to Daily Action: %s", result.get("daily_action_error"))
-        if result["weekly_cycle_success"]:
-            logger.info("Written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
-        else:
-            logger.error("Failed to write to Weekly Cycle: %s", result.get("weekly_cycle_error"))
-            # Still return 200 - don't want Linear to retry
+            logger.info("Skipped Obsidian write (WRITE_LINEAR_UPDATES_TO_OBSIDIAN=False)")
 
         # Sync the initiative to Obsidian _Initiatives folder
         initiative_id = event_data.get("initiative", {}).get("id")
