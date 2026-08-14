@@ -9,13 +9,14 @@ Jobs run inside the FastAPI process using BackgroundScheduler (thread pool).
 """
 
 import logging
-import os
 from datetime import datetime
 
 import pytz
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from config import SYSTEM_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ SCHEDULED_JOBS = [
             day_of_week="tue",
             hour=4,
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -103,7 +104,7 @@ SCHEDULED_JOBS = [
             day_of_week="wed",
             hour=3,
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -113,7 +114,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=4,
             minute=0,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -123,7 +124,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=19,
             minute=0,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -133,7 +134,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=17,
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -143,7 +144,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=4,
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -152,7 +153,7 @@ SCHEDULED_JOBS = [
         "func": _fetch_manus_tasks,
         "trigger": CronTrigger(
             minute="*/30",
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -162,7 +163,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=4,
             minute=0,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
     {
@@ -173,7 +174,7 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour="5,11,17,23",
             minute=30,
-            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+            timezone=SYSTEM_TZ,
         ),
     },
 ]
