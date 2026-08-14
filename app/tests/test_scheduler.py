@@ -2,6 +2,7 @@
 
 import os
 import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from config import SYSTEM_TIMEZONE_STR
 from main import app
-from scheduler import SCHEDULED_JOBS, scheduler
+from scheduler import SCHEDULED_JOBS, run_job_now, scheduler
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +45,12 @@ def test_linear_digest_job_in_registry():
     """The Linear digest email job is defined in SCHEDULED_JOBS."""
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     assert "send_linear_digest_email" in job_ids
+
+
+def test_essay_ideas_job_in_registry():
+    """The essay ideas from journal email job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "send_essay_ideas_from_journal" in job_ids
 
 
 def test_job_definitions_have_required_fields():
@@ -101,6 +108,17 @@ def test_linear_digest_runs_daily_at_7pm_system_timezone(client):
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
+def test_essay_ideas_job_runs_daily_at_430am_system_timezone(client):
+    """The essay ideas job is scheduled daily at 4:30am in system timezone."""
+    job = scheduler.get_job("send_essay_ideas_from_journal")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "hour='4'" in trigger_str
+    assert "minute='30'" in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
 # ---------------------------------------------------------------------------
 # API endpoint tests (need lifespan via client fixture)
 # ---------------------------------------------------------------------------
@@ -136,6 +154,23 @@ def test_list_jobs_contains_linear_digest(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "send_linear_digest_email" in job_ids
+
+
+def test_list_jobs_contains_essay_ideas_job(client):
+    """GET /scheduler/jobs includes the essay ideas from journal email job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "send_essay_ideas_from_journal" in job_ids
+
+
+def test_run_job_now_triggers_existing_job_without_executing_workflow():
+    """run_job_now should reschedule a known job immediately when present."""
+    fake_job = object()
+    with patch("scheduler.scheduler.get_job", return_value=fake_job), patch(
+        "scheduler.scheduler.modify_job"
+    ) as mock_modify:
+        assert run_job_now("send_essay_ideas_from_journal") is True
+    mock_modify.assert_called_once()
 
 
 def test_trigger_nonexistent_job(client):

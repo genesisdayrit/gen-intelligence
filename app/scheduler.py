@@ -54,6 +54,12 @@ def _send_plato_email():
     return run_plato_email()
 
 
+def _send_essay_ideas_from_journal():
+    from scripts.send_essay_ideas_from_journal import run_essay_ideas_from_journal
+
+    return run_essay_ideas_from_journal()
+
+
 def _fetch_manus_tasks():
     from services.manus.fetch_manus_tasks import fetch_and_upsert_manus_tasks
 
@@ -126,6 +132,16 @@ SCHEDULED_JOBS = [
         "func": _send_plato_email,
         "trigger": CronTrigger(
             hour=17,
+            minute=30,
+            timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
+        ),
+    },
+    {
+        "id": "send_essay_ideas_from_journal",
+        "name": "Daily Essay Ideas From Journal Email",
+        "func": _send_essay_ideas_from_journal,
+        "trigger": CronTrigger(
+            hour=4,
             minute=30,
             timezone=os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"),
         ),
