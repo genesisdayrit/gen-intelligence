@@ -11,6 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
 os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
+# Pin PT so Sunday 6:00am is asserted in America/Los_Angeles like other
+# timezone-sensitive scheduler tests.
+os.environ["SYSTEM_TIMEZONE"] = "America/Los_Angeles"
 
 from fastapi.testclient import TestClient
 
@@ -57,6 +60,12 @@ def test_readwise_backfill_job_in_registry():
     """The Readwise highlight backfill job is defined in SCHEDULED_JOBS."""
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     assert "backfill_readwise_highlights" in job_ids
+
+
+def test_sunday_wrap_up_job_in_registry():
+    """The Sunday wrap-up email job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "send_sunday_wrap_up_email" in job_ids
 
 
 def test_job_definitions_have_required_fields():
@@ -125,6 +134,18 @@ def test_essay_ideas_job_runs_daily_at_430am_system_timezone(client):
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
+def test_sunday_wrap_up_job_runs_sunday_6am_system_timezone(client):
+    """The Sunday wrap-up job is scheduled Sunday 6:00am in system timezone."""
+    job = scheduler.get_job("send_sunday_wrap_up_email")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "sun" in trigger_str
+    assert "hour='6'" in trigger_str
+    assert "minute='0'" in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
 # ---------------------------------------------------------------------------
 # API endpoint tests (need lifespan via client fixture)
 # ---------------------------------------------------------------------------
@@ -174,6 +195,13 @@ def test_list_jobs_contains_readwise_backfill_job(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "backfill_readwise_highlights" in job_ids
+
+
+def test_list_jobs_contains_sunday_wrap_up_job(client):
+    """GET /scheduler/jobs includes the Sunday wrap-up email job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "send_sunday_wrap_up_email" in job_ids
 
 
 def test_run_job_now_triggers_existing_job_without_executing_workflow():

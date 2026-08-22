@@ -12,7 +12,8 @@ Configuration (both required; the feature silently disables otherwise):
     GITHUB_ACCESS_TOKEN  a personal access token for that same user, so
                          private events are included
 
-Known Events API limits (all fine for a rolling few-hour window):
+Known Events API limits (fine for a rolling few-hour window; a 7-day
+Sunday wrap-up may hit the 300-event cap and cannot page past it):
     - only the most recent 300 events / 90 days are served
     - a PushEvent carries at most 20 commits
     - delivery can lag the action by ~30 seconds

@@ -86,6 +86,12 @@ def _backfill_readwise_highlights(since=None, updated_after=None):
     return backfill_readwise_highlights(since=since, updated_after=updated_after)
 
 
+def _send_sunday_wrap_up_email():
+    from scripts.send_sunday_wrap_up_email import run_sunday_wrap_up_email
+
+    return run_sunday_wrap_up_email()
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -195,6 +201,17 @@ SCHEDULED_JOBS = [
             month=1,
             day=1,
             hour=0,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "send_sunday_wrap_up_email",
+        "name": "Sunday Wrap-up Email",
+        "func": _send_sunday_wrap_up_email,
+        "trigger": CronTrigger(
+            day_of_week="sun",
+            hour=6,
             minute=0,
             timezone=SYSTEM_TZ,
         ),
