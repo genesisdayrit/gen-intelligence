@@ -1,4 +1,4 @@
-"""Append Readwise webhook events to today's Obsidian journal Content Buffet."""
+"""Append Readwise webhook events to the Obsidian journal for the highlight date."""
 
 import logging
 import os
@@ -40,15 +40,61 @@ def journal_filename(dt: datetime) -> str:
     return f"{dt.strftime('%b')} {dt.day}, {dt.strftime('%Y')}.md"
 
 
+def _as_system_tz(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return _system_tz().localize(dt)
+    return dt.astimezone(_system_tz())
+
+
+def parse_highlight_datetime(value: object) -> datetime | None:
+    """Parse an ISO8601 timestamp into SYSTEM_TIMEZONE.
+
+    Z / offset values are treated as UTC (or the given offset), then converted
+    to local time. Naive values are assumed UTC.
+    """
+    text = _nonempty(value)
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        logger.info("Readwise highlight timestamp not parseable: %s", value)
+        return None
+    if parsed.tzinfo is None:
+        parsed = pytz.UTC.localize(parsed)
+    return parsed.astimezone(_system_tz())
+
+
+def highlight_local_datetime(payload: dict, now: datetime | None = None) -> datetime:
+    """Local time for journal dating: highlighted_at, created_at, updated, else now."""
+    for key in ("highlighted_at", "created_at", "updated"):
+        parsed = parse_highlight_datetime(payload.get(key))
+        if parsed is not None:
+            return parsed
+    if now is None:
+        return datetime.now(_system_tz())
+    return _as_system_tz(now)
+
+
 def get_today_journal_path(journal_folder_path: str, now: datetime | None = None) -> str:
     """Journal path for the effective date (3am local rollover)."""
     if now is None:
         now = datetime.now(_system_tz())
-    elif now.tzinfo is None:
-        now = _system_tz().localize(now)
     else:
-        now = now.astimezone(_system_tz())
+        now = _as_system_tz(now)
     return f"{journal_folder_path}/{journal_filename(get_effective_date(now))}"
+
+
+def get_highlight_journal_path(
+    journal_folder_path: str,
+    payload: dict,
+    now: datetime | None = None,
+) -> str:
+    """Journal path for a highlight's created time (3am local rollover)."""
+    local = highlight_local_datetime(payload, now=now)
+    return f"{journal_folder_path}/{journal_filename(get_effective_date(local))}"
 
 
 def _get_dropbox_client() -> dropbox.Dropbox:
@@ -303,7 +349,7 @@ def insert_content_buffet_bullet(
 
 
 def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
-    """Append a Readwise highlight to today's journal Content Buffet section."""
+    """Append a Readwise highlight to the journal for its highlighted_at date."""
     if not is_highlight_event(payload):
         logger.info(
             "Readwise event ignored (not a highlight): %s",
@@ -323,8 +369,20 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     dbx = _get_dropbox_client()
     daily_folder = _find_folder_by_suffix(dbx, vault_path, "_Daily")
     journal_folder = _find_folder_by_suffix(dbx, daily_folder, "_Journal")
-    file_path = get_today_journal_path(journal_folder, now=now)
-    content = _get_file_content(dbx, file_path)
+    file_path = get_highlight_journal_path(journal_folder, payload, now=now)
+    try:
+        content = _get_file_content(dbx, file_path)
+    except FileNotFoundError:
+        logger.warning(
+            "Readwise buffet skipped; journal not found (will not write today): %s",
+            file_path,
+        )
+        return {
+            "success": True,
+            "action": "skipped_missing_journal",
+            "error": None,
+            "file_path": file_path,
+        }
 
     updated, action = insert_content_buffet_bullet(content, bullet, dedup_keys(payload))
     if action == "skipped":
