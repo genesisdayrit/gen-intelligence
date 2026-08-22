@@ -593,6 +593,76 @@ def insert_content_buffet_bullet(
     return "\n".join(updated), "inserted"
 
 
+def _wikilink_from_note_stem(note_title: str) -> str | None:
+    """Sanitize a Knowledge Hub filename stem for ``[[wikilink]]``.
+
+    Keeps the stem as-named (so the link resolves to the KH file) and only
+    strips characters that break Obsidian links: ``|``, ``#``, ``^``, ``]]``.
+    Does not collapse internal whitespace.
+    """
+    cleaned = note_title.replace("]]", "")
+    cleaned = re.sub(r"[|#^]", "", cleaned).strip()
+    return cleaned or None
+
+
+def append_wikilink_to_journal_buffet(
+    note_title: str,
+    journal_date: str,
+    dbx: dropbox.Dropbox | None = None,
+) -> dict:
+    """Append ``- [[note_title]]`` to that journal day's Content Buffet.
+
+    ``journal_date`` must be the same string written to KH YAML ``Journal``
+    (e.g. ``Aug 22, 2026``). Missing journal files are skipped — never created
+    and never raised to the caller.
+    """
+    result: dict = {"success": True, "action": None, "error": None, "file_path": None}
+    target = _wikilink_from_note_stem(note_title)
+    if not target:
+        logger.info("KH journal buffet skipped; empty wikilink target from %r", note_title)
+        result["action"] = "ignored"
+        return result
+
+    bullet = f"- [[{target}]]"
+    keys = [bullet, f"[[{target}]]", target]
+    if note_title and note_title != target:
+        keys.append(note_title)
+
+    try:
+        if dbx is None:
+            dbx = _get_dropbox_client()
+        journal_folder = _resolve_journal_folder(dbx)
+        file_path = f"{journal_folder}/{journal_date}.md"
+        result["file_path"] = file_path
+        try:
+            content = _get_file_content(dbx, file_path)
+        except FileNotFoundError:
+            logger.warning(
+                "KH journal buffet skipped; journal not found (will not create): %s",
+                file_path,
+            )
+            result["action"] = "skipped_missing_journal"
+            return result
+
+        updated, action = insert_content_buffet_bullet(content, bullet, keys)
+        result["action"] = action
+        if action != "skipped" and updated != content:
+            dbx.files_upload(
+                updated.encode("utf-8"),
+                file_path,
+                mode=dropbox.files.WriteMode.overwrite,
+            )
+            logger.info("KH journal buffet %s path=%s title=%s", action, file_path, target)
+        elif action == "skipped":
+            logger.info("KH journal buffet skipped (duplicate) path=%s title=%s", file_path, target)
+        return result
+    except Exception as exc:
+        logger.warning("KH journal buffet failed (KH save still succeeds): %s", exc)
+        result["action"] = "error"
+        result["error"] = str(exc)
+        return result
+
+
 def _resolve_journal_folder(dbx: dropbox.Dropbox) -> str:
     vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
     if not vault_path:

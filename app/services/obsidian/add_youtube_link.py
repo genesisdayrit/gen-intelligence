@@ -11,6 +11,7 @@ import httpx
 import pytz
 from openai import OpenAI
 
+from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
 from .add_shared_link import (
     _get_dropbox_client,
     _find_knowledge_hub_path,
@@ -21,6 +22,7 @@ from .add_shared_link import (
     _update_journal_date,
     _rebuild_markdown,
 )
+from .utils.date_helpers import get_effective_date
 
 logger = logging.getLogger(__name__)
 
@@ -597,8 +599,9 @@ def add_youtube_link(url: str) -> dict:
         now_local = datetime.now(timezone.utc).astimezone(system_tz)
         now_utc = datetime.now(timezone.utc)
 
-        # Format date for Journal link (e.g., "Jan 19, 2026")
-        formatted_local_date = now_local.strftime('%b %-d, %Y')
+        # Format date for Journal link (e.g., "Jan 19, 2026"); 3am-aware
+        formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
+        note_stem = sanitized_title
 
         # Check if file already exists
         if _file_exists(dbx, file_path):
@@ -664,6 +667,7 @@ def add_youtube_link(url: str) -> dict:
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
+            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
             result["action"] = "updated"
             result["title"] = video_title
@@ -714,6 +718,7 @@ Tags:
         )
 
         logger.info("Created YouTube link file: %s", file_path)
+        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
         result["success"] = True
         result["action"] = "created"
         result["title"] = video_title

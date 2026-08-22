@@ -14,6 +14,8 @@ import yaml
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
+from .utils.date_helpers import get_effective_date
 from .web_content_extractor import fetch_web_content
 
 load_dotenv()
@@ -436,8 +438,9 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         now_local = datetime.now(timezone.utc).astimezone(system_tz)
         now_utc = datetime.now(timezone.utc)
 
-        # Format date for Journal link (e.g., "Jan 19, 2026")
-        formatted_local_date = now_local.strftime('%b %-d, %Y')
+        # Format date for Journal link (e.g., "Jan 19, 2026"); 3am-aware
+        formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
+        note_stem = filename.removesuffix(".md")
 
         # Check if file already exists
         if _file_exists(dbx, file_path):
@@ -504,6 +507,7 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
+            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
             result["action"] = "updated"
             return result
@@ -553,6 +557,7 @@ Tags:
         )
 
         logger.info("Created shared link file: %s", file_path)
+        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
         result["success"] = True
         result["action"] = "created"
 
