@@ -27,6 +27,7 @@ from services.obsidian.add_readwise_buffet import (
     append_readwise_buffet,
     clear_book_cache,
     format_readwise_bullet,
+    get_highlight_journal_path,
     get_today_journal_path,
     insert_content_buffet_bullet,
     journal_filename,
@@ -175,6 +176,55 @@ def test_journal_path_rollover_at_3am_uses_today():
     now = LA.localize(datetime(2026, 8, 22, 3, 0))
     path = get_today_journal_path("/obsidian/personal/01_Daily/_Journal", now)
     assert path == "/obsidian/personal/01_Daily/_Journal/Aug 22, 2026.md"
+
+
+def test_highlighted_at_maps_to_journal_filename():
+    """Official sample 18:55Z on Nov 27 is 10:55am PT → Nov 27, 2025.md."""
+    path = get_highlight_journal_path(
+        "/obsidian/personal/01_Daily/_Journal",
+        OFFICIAL_HIGHLIGHT,
+        now=LA.localize(datetime(2026, 8, 22, 15, 0)),
+    )
+    assert path == "/obsidian/personal/01_Daily/_Journal/Nov 27, 2025.md"
+
+
+def test_3am_utc_vs_pt_edge():
+    """UTC 07:30 on Aug 22 is 00:30 PT (previous journal day); 10:00Z is 03:00 PT."""
+    folder = "/obsidian/personal/01_Daily/_Journal"
+    before = get_highlight_journal_path(
+        folder,
+        _highlight_payload(highlighted_at="2026-08-22T07:30:00Z"),
+    )
+    after = get_highlight_journal_path(
+        folder,
+        _highlight_payload(highlighted_at="2026-08-22T10:00:00Z"),
+    )
+    assert before == f"{folder}/Aug 21, 2026.md"
+    assert after == f"{folder}/Aug 22, 2026.md"
+
+
+def test_missing_highlighted_at_falls_back_to_today():
+    payload = _highlight_payload()
+    del payload["highlighted_at"]
+    del payload["updated"]
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    path = get_highlight_journal_path(
+        "/obsidian/personal/01_Daily/_Journal",
+        payload,
+        now=now,
+    )
+    assert path == "/obsidian/personal/01_Daily/_Journal/Aug 22, 2026.md"
+
+
+def test_created_at_used_when_highlighted_at_missing():
+    payload = _highlight_payload(created_at="2024-01-05T20:00:00Z")
+    del payload["highlighted_at"]
+    path = get_highlight_journal_path(
+        "/obsidian/personal/01_Daily/_Journal",
+        payload,
+        now=LA.localize(datetime(2026, 8, 22, 15, 0)),
+    )
+    assert path == "/obsidian/personal/01_Daily/_Journal/Jan 5, 2024.md"
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +412,28 @@ def test_append_replaces_placeholder_on_effective_journal_path():
 
     assert result["success"] is True
     assert result["action"] == "replaced"
-    assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Aug 21, 2026.md"
+    assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Nov 27, 2025.md"
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded["content"]
     assert uploaded["content"].index("### Content Buffet:") < uploaded["content"].index("### Content Planning")
+
+
+def test_missing_journal_file_does_not_write_today():
+    """A 2019 highlight with no journal file is skipped, not written to today."""
+    clear_book_cache()
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = FileNotFoundError("Journal not found")
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _highlight_payload(highlighted_at="2019-03-15T18:00:00Z")
+
+    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
+         patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
+             "/obsidian/personal/01_daily",
+             "/obsidian/personal/01_daily/_journal",
+         ]):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "skipped_missing_journal"
+    assert result["file_path"] == "/obsidian/personal/01_daily/_journal/Mar 15, 2019.md"
+    mock_dbx.files_upload.assert_not_called()
+    assert "Aug 22, 2026" not in (result["file_path"] or "")
