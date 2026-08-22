@@ -5,6 +5,7 @@ import sys
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
 import pytz
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,11 +14,17 @@ os.environ.setdefault("READWISE_WEBHOOK_SECRET", "test-readwise-secret")
 os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
 os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
-os.environ.setdefault("SYSTEM_TIMEZONE", "America/Los_Angeles")
+# Force PT so CI's exported SYSTEM_TIMEZONE (UTC / US/Eastern) cannot skip 3am rollover.
+os.environ["SYSTEM_TIMEZONE"] = "America/Los_Angeles"
 os.environ.setdefault("DROPBOX_OBSIDIAN_VAULT_PATH", "/obsidian/personal")
 os.environ.setdefault("DROPBOX_ACCESS_KEY", "test-key")
 os.environ.setdefault("DROPBOX_ACCESS_SECRET", "test-secret")
 os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
+
+
+@pytest.fixture(autouse=True)
+def _force_la_timezone(monkeypatch):
+    monkeypatch.setenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
 
 from fastapi.testclient import TestClient
 
