@@ -215,6 +215,18 @@ def fetch_book(book_id: object) -> dict | None:
     return book
 
 
+def _wikilink_title(title: str) -> str | None:
+    """Sanitize a Readwise title for use inside ``[[...]]``.
+
+    Only characters that would break a wikilink are removed: ``|``, ``#``,
+    ``^``, and ``]]``. The title is otherwise used as-is (no `` (Book)``
+    suffix, no vault fuzzy-match). Returns None if nothing usable remains.
+    """
+    text = _collapse(title).replace("]]", "")
+    text = re.sub(r"[|#^]", "", text)
+    return _collapse(text) or None
+
+
 def _highlight_permalink(payload: dict) -> str | None:
     """``https://readwise.io/open/{id}``. Prefer this over payload.url (often null)."""
     highlight_id = payload.get("id")
@@ -244,14 +256,14 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if not text:
         return None
     note = _nonempty(payload.get("note"))
-    title = _nonempty((book or {}).get("title"))
+    title = _wikilink_title((book or {}).get("title") or "")
     highlight_url = _highlight_permalink(payload)
     quote = f'"{_collapse(text)}"'
     if highlight_url:
         quote = f"[{quote}]({highlight_url})"
 
     if title:
-        line = f"- {_collapse(title)}: {quote}"
+        line = f"- [[{title}]]: {quote}"
     else:
         line = f"- {quote}"
     if note:

@@ -287,7 +287,7 @@ def test_dedup_on_second_run():
     assert first["replaced"] == 1
     assert first["files_written"] == 1
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded_first[0]["content"]
-    assert "Deep Work: " in uploaded_first[0]["content"]
+    assert "[[Deep Work]]:" in uploaded_first[0]["content"]
     assert "bookreview" not in uploaded_first[0]["content"]
 
     second, uploaded_second, _, _ = _run_backfill(
@@ -358,9 +358,10 @@ def test_export_title_used_without_books_api():
     assert result["files_written"] == 1
     mock_fetch.assert_not_called()
     assert "book 8237" not in uploaded[0]["content"]
-    assert "Deep Work: " in uploaded[0]["content"]
+    assert "[[Deep Work]]:" in uploaded[0]["content"]
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded[0]["content"]
     assert "bookreview" not in uploaded[0]["content"]
+    assert "(Book)" not in uploaded[0]["content"]
 
 
 def test_missing_title_writes_quote_only():
@@ -374,6 +375,7 @@ def test_missing_title_writes_quote_only():
     assert result["files_written"] == 1
     line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
     assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert "[[" not in line
     assert "book 8237" not in uploaded[0]["content"]
 
 
