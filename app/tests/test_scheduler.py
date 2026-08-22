@@ -53,6 +53,12 @@ def test_essay_ideas_job_in_registry():
     assert "send_essay_ideas_from_journal" in job_ids
 
 
+def test_readwise_backfill_job_in_registry():
+    """The Readwise highlight backfill job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "backfill_readwise_highlights" in job_ids
+
+
 def test_job_definitions_have_required_fields():
     """Every job definition has the required fields."""
     required = {"id", "name", "func", "trigger"}
@@ -161,6 +167,13 @@ def test_list_jobs_contains_essay_ideas_job(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "send_essay_ideas_from_journal" in job_ids
+
+
+def test_list_jobs_contains_readwise_backfill_job(client):
+    """GET /scheduler/jobs includes the Readwise highlight backfill job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "backfill_readwise_highlights" in job_ids
 
 
 def test_run_job_now_triggers_existing_job_without_executing_workflow():
