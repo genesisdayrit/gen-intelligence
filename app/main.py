@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import os
 import time
@@ -23,6 +24,7 @@ from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.upsert_issue_touched import upsert_issue_touched
 from services.obsidian.add_manus_task import upsert_manus_task
+from services.obsidian.add_readwise_buffet import append_readwise_buffet
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import (
@@ -51,6 +53,7 @@ GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET")
 GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
 MANUS_API_KEY = os.getenv("MANUS_API_KEY")
+READWISE_WEBHOOK_SECRET = os.getenv("READWISE_WEBHOOK_SECRET")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
@@ -857,6 +860,61 @@ async def manus_webhook(
         logger.info("Manus event: %s (unhandled)", event_type)
 
     return JSONResponse(content={"status": "received"})
+
+
+def _readwise_secret() -> str | None:
+    return os.getenv("READWISE_WEBHOOK_SECRET") or READWISE_WEBHOOK_SECRET
+
+
+def _readwise_secrets_match(provided: object) -> bool:
+    expected = _readwise_secret()
+    if not expected or provided is None:
+        return False
+    return hmac.compare_digest(str(provided), expected)
+
+
+def _process_readwise_event(data: dict) -> None:
+    """Write a Readwise event to today's journal. Logs errors; never raises."""
+    event_type = data.get("event_type", "unknown")
+    title = data.get("title") or data.get("text") or data.get("id") or "(no title)"
+    logger.info("Readwise webhook | event=%s | %s", event_type, str(title)[:100])
+    try:
+        result = append_readwise_buffet(data)
+        logger.info("Readwise buffet write: action=%s", result.get("action"))
+    except Exception:
+        logger.exception("Failed to write Readwise event to journal")
+
+
+@app.post("/readwise/webhook")
+async def readwise_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Receive Readwise Reader / highlight webhook events.
+
+    Empty-body "Test Webhook" pings return 200 with no Dropbox write.
+    Authenticated events return 202 and write in the background so Readwise
+    is not stuck retrying on a later Dropbox hiccup.
+    """
+    raw = await request.body()
+    if not raw.strip():
+        logger.info("Readwise webhook test ping received")
+        return JSONResponse(content={"status": "ok"})
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not _readwise_secrets_match(data.get("secret")):
+        logger.warning("Invalid or missing Readwise webhook secret")
+        raise HTTPException(status_code=401, detail="Invalid secret")
+
+    background_tasks.add_task(_process_readwise_event, data)
+    return JSONResponse(status_code=202, content={"status": "accepted"})
 
 
 def _mirror_to_raindrop(url: str, title: str | None, excerpt: str | None = None) -> None:

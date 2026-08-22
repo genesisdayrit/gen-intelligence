@@ -51,6 +51,7 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Telegram Webhook Setup](docs/guides/todoist-webhook-setup.md)
 - [Todoist Webhook Setup](docs/guides/todoist-webhook-setup.md)
 - [Linear Webhook Setup](docs/guides/linear-webhook-setup.md)
+- [Readwise Webhook Setup](docs/guides/readwise-webhook-setup.md) — point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` with `READWISE_WEBHOOK_SECRET`
 - [GitHub Webhook Setup](docs/guides/github-webhook-setup.md)
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
 - [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)

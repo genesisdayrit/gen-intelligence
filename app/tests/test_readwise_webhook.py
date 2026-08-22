@@ -1,0 +1,303 @@
+"""Readwise webhook and Content Buffet journal writer tests."""
+
+import os
+import sys
+from datetime import datetime
+from unittest.mock import MagicMock, patch
+
+import pytz
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+os.environ.setdefault("READWISE_WEBHOOK_SECRET", "test-readwise-secret")
+os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
+os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
+os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
+os.environ.setdefault("SYSTEM_TIMEZONE", "America/Los_Angeles")
+os.environ.setdefault("DROPBOX_OBSIDIAN_VAULT_PATH", "/obsidian/personal")
+os.environ.setdefault("DROPBOX_ACCESS_KEY", "test-key")
+os.environ.setdefault("DROPBOX_ACCESS_SECRET", "test-secret")
+os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
+
+from fastapi.testclient import TestClient
+
+from main import app
+from services.obsidian.add_readwise_buffet import (
+    _get_dropbox_client,
+    append_readwise_buffet,
+    format_readwise_bullet,
+    get_today_journal_path,
+    insert_content_buffet_bullet,
+    journal_filename,
+)
+
+client = TestClient(app)
+LA = pytz.timezone("America/Los_Angeles")
+
+SAMPLE_JOURNAL = """---
+date: 2026-08-22
+---
+
+### Content Buffet:
+- 
+
+### Content Planning
+- plan something
+"""
+
+JOURNAL_WITHOUT_BUFFET = """---
+date: 2026-08-22
+---
+
+### Morning Pages
+
+### Content Planning
+- plan something
+"""
+
+
+def _reader_payload(**overrides):
+    data = {
+        "id": "01kb5cap1wy21zp37bc2rjj",
+        "url": "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj",
+        "title": "Our Black Friday sale ends soon",
+        "author": "The Verge",
+        "source_url": "https://www.theverge.com/black-friday",
+        "category": "article",
+        "summary": "A sale.",
+        "notes": "",
+        "event_type": "reader.any_document.created",
+        "secret": "test-readwise-secret",
+    }
+    data.update(overrides)
+    return data
+
+
+def _highlight_payload(**overrides):
+    data = {
+        "id": 954480,
+        "text": "Most Amazing Highlight Ever",
+        "note": "",
+        "url": "https://readwise.io/bookreview/8237",
+        "book_id": 8237,
+        "highlighted_at": "2025-11-27T18:55:56.719036Z",
+        "event_type": "readwise.highlight.created",
+        "secret": "test-readwise-secret",
+    }
+    data.update(overrides)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Webhook auth / ping
+# ---------------------------------------------------------------------------
+
+
+def test_readwise_webhook_rejects_missing_secret():
+    response = client.post("/readwise/webhook", json=_reader_payload(secret=None))
+    assert response.status_code == 401
+
+
+def test_readwise_webhook_rejects_wrong_secret():
+    response = client.post("/readwise/webhook", json=_reader_payload(secret="nope"))
+    assert response.status_code == 401
+
+
+def test_readwise_webhook_empty_test_ping():
+    """Readwise 'Test Webhook' empty body is a 200 no-op (no Dropbox write)."""
+    with patch("main.append_readwise_buffet") as mock_append:
+        response = client.post("/readwise/webhook", content=b"")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    mock_append.assert_not_called()
+
+
+def test_readwise_webhook_whitespace_ping_is_noop():
+    with patch("main.append_readwise_buffet") as mock_append:
+        response = client.post("/readwise/webhook", content=b"  \n")
+    assert response.status_code == 200
+    mock_append.assert_not_called()
+
+
+@patch("main.append_readwise_buffet", return_value={"success": True, "action": "inserted"})
+def test_readwise_webhook_accepts_reader_event(mock_append):
+    response = client.post("/readwise/webhook", json=_reader_payload())
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_append.assert_called_once()
+
+
+@patch("main.append_readwise_buffet", side_effect=RuntimeError("dropbox down"))
+def test_readwise_webhook_acks_even_if_dropbox_fails(mock_append):
+    response = client.post("/readwise/webhook", json=_highlight_payload())
+    assert response.status_code == 202
+    mock_append.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Filename + 3am rollover
+# ---------------------------------------------------------------------------
+
+
+def test_journal_filename_title_case_unpadded_day():
+    assert journal_filename(datetime(2026, 8, 22)) == "Aug 22, 2026.md"
+    assert journal_filename(datetime(2026, 8, 1)) == "Aug 1, 2026.md"
+    assert journal_filename(datetime(2026, 8, 1)) != "Aug 01, 2026.md"
+    assert journal_filename(datetime(2026, 8, 22)) != "aug 22, 2026.md"
+
+
+def test_journal_path_rollover_before_3am_uses_previous_day():
+    now = LA.localize(datetime(2026, 8, 22, 2, 59))
+    path = get_today_journal_path("/obsidian/personal/01_Daily/_Journal", now)
+    assert path == "/obsidian/personal/01_Daily/_Journal/Aug 21, 2026.md"
+
+
+def test_journal_path_rollover_at_3am_uses_today():
+    now = LA.localize(datetime(2026, 8, 22, 3, 0))
+    path = get_today_journal_path("/obsidian/personal/01_Daily/_Journal", now)
+    assert path == "/obsidian/personal/01_Daily/_Journal/Aug 22, 2026.md"
+
+
+# ---------------------------------------------------------------------------
+# Heading insert + empty placeholder
+# ---------------------------------------------------------------------------
+
+
+def test_insert_heading_before_content_planning():
+    updated, action = insert_content_buffet_bullet(
+        JOURNAL_WITHOUT_BUFFET,
+        "- [Title](https://example.com) — Author",
+    )
+    assert action == "inserted"
+    assert "### Content Buffet:" in updated
+    buffet_idx = updated.index("### Content Buffet:")
+    planning_idx = updated.index("### Content Planning")
+    bullet_idx = updated.index("- [Title](https://example.com) — Author")
+    assert buffet_idx < bullet_idx < planning_idx
+
+
+def test_replace_lone_empty_placeholder():
+    updated, action = insert_content_buffet_bullet(
+        SAMPLE_JOURNAL,
+        "- [Title](https://example.com) — Author",
+    )
+    assert action == "replaced"
+    assert updated.count("- [Title](https://example.com) — Author") == 1
+    section = updated.split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert "-" not in section.replace("- [Title](https://example.com) — Author", "")
+
+
+def test_replace_lone_dash_placeholder():
+    content = "### Content Buffet:\n-\n\n### Content Planning\n"
+    updated, action = insert_content_buffet_bullet(content, "- item")
+    assert action == "replaced"
+    assert "- item" in updated
+    assert updated.split("### Content Buffet:")[1].split("### Content Planning")[0].count("\n-") == 1
+
+
+def test_append_after_existing_items():
+    content = """### Content Buffet:
+- [Existing](https://example.com/one) — One
+
+### Content Planning
+"""
+    updated, action = insert_content_buffet_bullet(
+        content,
+        "- [New](https://example.com/two) — Two",
+    )
+    assert action == "inserted"
+    section = updated.split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert "- [Existing](https://example.com/one) — One" in section
+    assert "- [New](https://example.com/two) — Two" in section
+    assert section.index("Existing") < section.index("New")
+
+
+def test_dedup_skips_existing_url():
+    content = """### Content Buffet:
+- [Existing](https://example.com/one) — One
+
+### Content Planning
+"""
+    updated, action = insert_content_buffet_bullet(
+        content,
+        "- [Dup](https://example.com/one) — One",
+        keys=["https://example.com/one"],
+    )
+    assert action == "skipped"
+    assert updated == content
+
+
+# ---------------------------------------------------------------------------
+# Bullet formatting
+# ---------------------------------------------------------------------------
+
+
+def test_format_reader_prefers_source_url():
+    line = format_readwise_bullet(_reader_payload())
+    assert line == (
+        "- [Our Black Friday sale ends soon](https://www.theverge.com/black-friday) — The Verge"
+    )
+
+
+def test_format_reader_falls_back_to_url():
+    line = format_readwise_bullet(_reader_payload(source_url=""))
+    assert line == (
+        "- [Our Black Friday sale ends soon](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) — The Verge"
+    )
+
+
+def test_format_highlight_includes_note():
+    line = format_readwise_bullet(_highlight_payload(note="worth revisiting", title="Deep Work"))
+    assert line == (
+        '- "Most Amazing Highlight Ever" — [Deep Work](https://readwise.io/bookreview/8237) — worth revisiting'
+    )
+
+
+def test_format_skips_missing_fields():
+    line = format_readwise_bullet(
+        {"event_type": "reader.any_document.created", "title": "Just a title"}
+    )
+    assert line == "- Just a title"
+
+
+# ---------------------------------------------------------------------------
+# Dropbox client + writer I/O
+# ---------------------------------------------------------------------------
+
+
+@patch("services.obsidian.add_readwise_buffet.dropbox.Dropbox")
+def test_dropbox_client_uses_refresh_token(mock_dropbox):
+    _get_dropbox_client()
+    mock_dropbox.assert_called_once_with(
+        oauth2_refresh_token="test-refresh",
+        app_key="test-key",
+        app_secret="test-secret",
+    )
+
+
+def test_append_replaces_placeholder_on_effective_journal_path():
+    uploaded = {}
+    mock_dbx = MagicMock()
+    response = MagicMock()
+    response.content = SAMPLE_JOURNAL.encode("utf-8")
+    mock_dbx.files_download.return_value = (None, response)
+
+    def capture_upload(data, path, mode=None):
+        uploaded["content"] = data.decode("utf-8")
+        uploaded["path"] = path
+
+    mock_dbx.files_upload.side_effect = capture_upload
+    now = LA.localize(datetime(2026, 8, 22, 2, 30))
+
+    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
+         patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
+             "/obsidian/personal/01_daily",
+             "/obsidian/personal/01_daily/_journal",
+         ]):
+        result = append_readwise_buffet(_reader_payload(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Aug 21, 2026.md"
+    assert "Our Black Friday sale ends soon" in uploaded["content"]
+    assert uploaded["content"].index("### Content Buffet:") < uploaded["content"].index("### Content Planning")
