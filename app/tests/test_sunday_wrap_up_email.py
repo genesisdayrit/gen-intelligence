@@ -3,7 +3,7 @@
 import os
 import sys
 from datetime import date, datetime, timedelta, timezone
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytz
 
@@ -16,8 +16,10 @@ from scripts.send_sunday_wrap_up_email import (
     build_html_email,
     classify_kh_kind,
     collect_section,
+    collect_spotify_section,
     filter_documents_in_window,
     filter_highlights_in_window,
+    filter_saved_tracks_in_window,
     group_linear_completed,
     highlight_source_label,
     journal_dates_from_frontmatter,
@@ -30,6 +32,10 @@ from scripts.send_sunday_wrap_up_email import (
     split_readwise_items,
     sunday_wrap_up_subject,
     window_journal_dates,
+)
+from services.spotify.saved_tracks import (
+    SPOTIFY_SAVED_TRACKS_URL,
+    SPOTIFY_TOKEN_URL,
 )
 
 LA = pytz.timezone("America/Los_Angeles")
@@ -370,6 +376,130 @@ def test_git_empty_repos_stay_empty():
 
 
 # ---------------------------------------------------------------------------
+# Spotify
+# ---------------------------------------------------------------------------
+
+
+def _saved_track(name, artists, added_at, url=None):
+    artist_payload = [{"name": artist} for artist in artists]
+    return {
+        "added_at": added_at,
+        "track": {
+            "name": name,
+            "artists": artist_payload,
+            "external_urls": {"spotify": url or f"https://open.spotify.com/track/{name.lower()}"},
+        },
+    }
+
+
+def test_filter_saved_tracks_in_window_uses_added_at():
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    in_window = _saved_track(
+        "New Song",
+        ["Artist A", "Artist B"],
+        _iso(now - timedelta(days=2)),
+        "https://open.spotify.com/track/new",
+    )
+    too_old = _saved_track(
+        "Old Song",
+        ["Someone"],
+        _iso(now - timedelta(days=10)),
+        "https://open.spotify.com/track/old",
+    )
+    too_new = _saved_track(
+        "Future Song",
+        ["Later"],
+        _iso(now + timedelta(days=1)),
+        "https://open.spotify.com/track/future",
+    )
+    older_in_window = _saved_track(
+        "Mid Song",
+        ["Artist C"],
+        _iso(now - timedelta(days=5)),
+        "https://open.spotify.com/track/mid",
+    )
+    selected = filter_saved_tracks_in_window(
+        [older_in_window, too_old, in_window, too_new],
+        start,
+        end,
+    )
+    assert [track["name"] for track in selected] == ["New Song", "Mid Song"]
+    assert selected[0]["artists"] == "Artist A, Artist B"
+    assert selected[0]["url"] == "https://open.spotify.com/track/new"
+
+
+def test_spotify_empty_likes():
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    assert filter_saved_tracks_in_window([], start, end) == []
+
+
+def test_spotify_missing_env_marks_section_failed(monkeypatch):
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("SPOTIFY_REFRESH_TOKEN", raising=False)
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    result = collect_section("spotify", lambda: collect_spotify_section(start, end))
+    assert result["ok"] is False
+    assert "SPOTIFY_" in result["error"]
+    assert result["count"] == 0
+
+
+def test_collect_spotify_section_filters_via_mocked_http(monkeypatch):
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.setenv("SPOTIFY_REFRESH_TOKEN", "test-refresh-token")
+
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    page_one = {
+        "items": [
+            _saved_track("Newest", ["A"], _iso(now - timedelta(days=1)), "https://open.spotify.com/track/newest"),
+            _saved_track("Mid", ["B"], _iso(now - timedelta(days=3)), "https://open.spotify.com/track/mid"),
+        ],
+        "next": "https://api.spotify.com/v1/me/tracks?offset=2&limit=2",
+    }
+    page_two = {
+        "items": [
+            _saved_track("Too old", ["C"], _iso(now - timedelta(days=12)), "https://open.spotify.com/track/old"),
+        ],
+        "next": "https://api.spotify.com/v1/me/tracks?offset=4&limit=2",
+    }
+    token_calls = []
+    track_offsets = []
+
+    def fake_post(url, **kwargs):
+        token_calls.append(url)
+        assert url == SPOTIFY_TOKEN_URL
+        assert kwargs["data"]["grant_type"] == "refresh_token"
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"access_token": "test-access-token"}
+        return response
+
+    def fake_get(url, **kwargs):
+        assert url == SPOTIFY_SAVED_TRACKS_URL
+        offset = kwargs["params"]["offset"]
+        track_offsets.append(offset)
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = page_one if offset == 0 else page_two
+        return response
+
+    with patch("services.spotify.saved_tracks.requests.post", side_effect=fake_post), patch(
+        "services.spotify.saved_tracks.requests.get", side_effect=fake_get
+    ):
+        section = collect_spotify_section(start, end)
+
+    assert token_calls == [SPOTIFY_TOKEN_URL]
+    assert track_offsets == [0, 2]
+    assert [track["name"] for track in section["tracks"]] == ["Newest", "Mid"]
+    assert section["count"] == 2
+
+
+# ---------------------------------------------------------------------------
 # HTML / dry-run / failures
 # ---------------------------------------------------------------------------
 
@@ -391,12 +521,17 @@ def test_build_html_email_has_pulse_and_empty_section_copy():
         _empty_ok_section(notes=[]),
         _empty_ok_section(issues=[], groups=[]),
         _empty_ok_section(repos=[], commits=[]),
+        _empty_ok_section(tracks=[]),
     )
     assert "Sunday wrap-up" in html_body
-    assert "0 highlights · 0 documents · 0 Knowledge Hub notes · 0 Linear issues · 0 commits" in html_body
+    assert (
+        "0 highlights · 0 documents · 0 Knowledge Hub notes · 0 Spotify likes · "
+        "0 Linear issues · 0 commits"
+    ) in html_body
     assert "No highlights this week." in html_body
     assert "No Reader documents this week." in html_body
     assert "No Knowledge Hub notes this week." in html_body
+    assert "No liked tracks this week." in html_body
     assert "No completed Linear issues this week." in html_body
     assert "No git commits this week." in html_body
 
@@ -412,6 +547,7 @@ def test_failed_section_is_marked_and_other_sections_render():
         _empty_ok_section(notes=[{"title": "Saved Essay", "kind": "article"}]),
         _empty_ok_section(issues=[], groups=[]),
         _empty_ok_section(repos=[], commits=[]),
+        _empty_ok_section(tracks=[]),
     )
     assert "Readwise failed" in html_body
     assert "This section failed: Readwise down" in html_body
@@ -458,6 +594,7 @@ def test_html_includes_readwise_highlight_vs_document_groups():
         _empty_ok_section(notes=[]),
         _empty_ok_section(issues=[], groups=[]),
         _empty_ok_section(repos=[], commits=[]),
+        _empty_ok_section(tracks=[]),
     )
     assert "Highlights (1)" in html_body
     assert "Documents (1)" in html_body
@@ -492,6 +629,7 @@ def test_html_includes_git_repos_in_commit_count_order():
         _empty_ok_section(notes=[]),
         _empty_ok_section(issues=[], groups=[]),
         {"ok": True, "repos": repos, "count": 3, "events_capped": True, "events_cap": 300},
+        _empty_ok_section(tracks=[]),
     )
     assert html_body.index("me/big") < html_body.index("me/small")
     assert "first" in html_body
@@ -499,7 +637,152 @@ def test_html_includes_git_repos_in_commit_count_order():
     assert "GitHub Events API cap reached (300 events)" in html_body
 
 
+def test_html_includes_spotify_likes_and_pulse_count():
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    html_body = build_html_email(
+        now,
+        start,
+        end,
+        _empty_ok_section(highlights=[], documents=[]),
+        _empty_ok_section(notes=[]),
+        _empty_ok_section(issues=[], groups=[]),
+        _empty_ok_section(repos=[], commits=[]),
+        {
+            "ok": True,
+            "count": 2,
+            "tracks": [
+                {
+                    "name": "New Song",
+                    "artists": "Artist A, Artist B",
+                    "url": "https://open.spotify.com/track/new",
+                },
+                {
+                    "name": "Mid Song",
+                    "artists": "Artist C",
+                    "url": "https://open.spotify.com/track/mid",
+                },
+            ],
+        },
+    )
+    assert "2 Spotify likes" in html_body
+    assert "Spotify likes" in html_body
+    assert "New Song" in html_body
+    assert "Artist A, Artist B" in html_body
+    assert "https://open.spotify.com/track/new" in html_body
+    assert "Mid Song" in html_body
+    kh_at = html_body.index("Knowledge Hub consumption")
+    spotify_at = html_body.index("<h2>Spotify likes</h2>")
+    linear_at = html_body.index("Linear completed")
+    assert kh_at < spotify_at < linear_at
+
+
+def test_spotify_failed_section_is_marked():
+    now = _local(2026, 8, 23, 6, 0)
+    start, end = rolling_window(now)
+    html_body = build_html_email(
+        now,
+        start,
+        end,
+        _empty_ok_section(highlights=[], documents=[]),
+        _empty_ok_section(notes=[]),
+        _empty_ok_section(issues=[], groups=[]),
+        _empty_ok_section(repos=[], commits=[]),
+        {"ok": False, "error": "SPOTIFY_REFRESH_TOKEN not set", "count": 0},
+    )
+    assert "Spotify failed" in html_body
+    assert "This section failed: SPOTIFY_REFRESH_TOKEN not set" in html_body
+    assert "test-refresh-token" not in html_body
+
+
 def test_run_sunday_wrap_up_email_dry_run_does_not_send():
+    now = _local(2026, 8, 23, 6, 0)
+    empty = {
+        "highlights": [],
+        "documents": [],
+        "notes": [],
+        "issues": [],
+        "groups": [],
+        "repos": [],
+        "commits": [],
+        "tracks": [],
+        "count": 0,
+    }
+    with patch(
+        "scripts.send_sunday_wrap_up_email.collect_readwise_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_knowledge_hub_notes",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_linear_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_git_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_spotify_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.send_html_email"
+    ) as mock_send:
+        success = run_sunday_wrap_up_email(dry_run=True, now=now)
+
+    assert success is True
+    mock_send.assert_not_called()
+
+
+def test_run_sunday_wrap_up_email_sends_even_when_sections_empty():
+    now = _local(2026, 8, 23, 6, 0)
+    empty = {
+        "highlights": [],
+        "documents": [],
+        "notes": [],
+        "issues": [],
+        "groups": [],
+        "repos": [],
+        "commits": [],
+        "tracks": [],
+        "count": 0,
+    }
+    with patch(
+        "scripts.send_sunday_wrap_up_email.collect_readwise_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_knowledge_hub_notes",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_linear_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_git_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.collect_spotify_section",
+        return_value={**empty},
+    ), patch(
+        "scripts.send_sunday_wrap_up_email.send_html_email",
+        return_value=True,
+    ) as mock_send:
+        success = run_sunday_wrap_up_email(dry_run=False, now=now)
+
+    assert success is True
+    mock_send.assert_called_once()
+    subject, html_body = mock_send.call_args.args
+    assert subject == "Sunday wrap-up — Aug 23"
+    assert "Sunday wrap-up" in html_body
+    assert "Readwise" in html_body
+    assert "Knowledge Hub consumption" in html_body
+    assert "Spotify likes" in html_body
+    assert "Linear completed" in html_body
+    assert "Git commits" in html_body
+    assert "0 Spotify likes" in html_body
+
+
+def test_dry_run_does_not_send_when_spotify_env_missing(monkeypatch):
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("SPOTIFY_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("SPOTIFY_REFRESH_TOKEN", raising=False)
     now = _local(2026, 8, 23, 6, 0)
     empty = {
         "highlights": [],
@@ -530,40 +813,3 @@ def test_run_sunday_wrap_up_email_dry_run_does_not_send():
 
     assert success is True
     mock_send.assert_not_called()
-
-
-def test_run_sunday_wrap_up_email_sends_even_when_sections_empty():
-    now = _local(2026, 8, 23, 6, 0)
-    empty = {
-        "highlights": [],
-        "documents": [],
-        "notes": [],
-        "issues": [],
-        "groups": [],
-        "repos": [],
-        "commits": [],
-        "count": 0,
-    }
-    with patch(
-        "scripts.send_sunday_wrap_up_email.collect_readwise_section",
-        return_value={**empty},
-    ), patch(
-        "scripts.send_sunday_wrap_up_email.collect_knowledge_hub_notes",
-        return_value={**empty},
-    ), patch(
-        "scripts.send_sunday_wrap_up_email.collect_linear_section",
-        return_value={**empty},
-    ), patch(
-        "scripts.send_sunday_wrap_up_email.collect_git_section",
-        return_value={**empty},
-    ), patch(
-        "scripts.send_sunday_wrap_up_email.send_html_email",
-        return_value=True,
-    ) as mock_send:
-        success = run_sunday_wrap_up_email(dry_run=False, now=now)
-
-    assert success is True
-    mock_send.assert_called_once()
-    subject, html_body = mock_send.call_args.args
-    assert subject == "Sunday wrap-up — Aug 23"
-    assert "Sunday wrap-up" in html_body
