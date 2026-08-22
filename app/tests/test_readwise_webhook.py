@@ -118,6 +118,7 @@ def _reader_payload(**overrides):
         "site_name": "The Verge",
         "source_url": "https://www.theverge.com/black-friday",
         "category": "article",
+        "parent_id": None,
         "summary": "A sale.",
         "content": "Long article body that must not be written.",
         "notes": "",
@@ -204,6 +205,23 @@ def test_readwise_webhook_accepts_document_created_types(mock_append, event_type
 @patch("main.append_readwise_buffet")
 def test_readwise_webhook_ignores_non_created_reader_events(mock_append, event_type):
     response = client.post("/readwise/webhook", json=_reader_payload(event_type=event_type))
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_append.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"category": "highlight"},
+        {"category": "note"},
+        {"parent_id": "01kb5parentdocumentid001"},
+    ],
+)
+@patch("main.append_readwise_buffet")
+def test_readwise_webhook_ignores_reader_highlight_and_note_documents(mock_append, overrides):
+    """Reader models highlights/notes as Documents; do not write them as document bullets."""
+    response = client.post("/readwise/webhook", json=_reader_payload(**overrides))
     assert response.status_code == 202
     assert response.json() == {"status": "accepted"}
     mock_append.assert_not_called()
@@ -720,6 +738,38 @@ def test_is_document_event_accepts_and_ignores_types(event_type, expected):
     else:
         payload = _reader_payload(event_type=event_type)
     assert is_document_event(payload) is expected
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"category": "highlight"},
+        {"category": "note"},
+        {"category": "Highlight"},
+        {"parent_id": "01kb5parentdocumentid001"},
+        {"category": "article", "parent_id": "01kb5parentdocumentid001"},
+    ],
+)
+def test_reader_highlight_and_note_documents_are_not_written(overrides):
+    """Skip Reader child docs so they do not duplicate readwise.highlight.created lines."""
+    payload = _reader_payload(**overrides)
+    assert is_document_event(payload) is False
+    assert format_document_bullet(payload) is None
+    assert format_readwise_bullet(payload) is None
+    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client") as mock_client:
+        result = append_readwise_buffet(payload)
+    assert result["action"] == "ignored"
+    mock_client.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "category",
+    ["article", "pdf", "epub", "email", "rss", "tweet", "video"],
+)
+def test_parent_document_categories_still_count_as_documents(category):
+    payload = _reader_payload(category=category, parent_id=None)
+    assert is_document_event(payload) is True
+    assert format_document_bullet(payload) is not None
 
 
 # ---------------------------------------------------------------------------

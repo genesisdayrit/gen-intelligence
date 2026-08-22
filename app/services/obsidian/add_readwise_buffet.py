@@ -29,6 +29,7 @@ DOCUMENT_CREATED_EVENTS = {
     "reader.non_feed_document.created",
     "reader.feed_document.created",
 }
+READER_ANNOTATION_CATEGORIES = {"highlight", "note"}
 _IGNORED_READER_SUFFIXES = (
     ".tags_updated",
     ".finished",
@@ -206,8 +207,23 @@ def is_highlight_event(payload: dict) -> bool:
     return _nonempty(payload.get("text")) is not None and payload.get("book_id") is not None
 
 
+def is_reader_annotation_document(payload: dict) -> bool:
+    """True for Reader child docs (highlights/notes) that duplicate highlight webhooks.
+
+    Reader models highlights and notes as Documents (``category=highlight|note``,
+    ``parent_id`` set). Those may fire ``reader.any_document.created`` but must
+    not be written as document bullets.
+    """
+    category = str(payload.get("category") or "").strip().lower()
+    if category in READER_ANNOTATION_CATEGORIES:
+        return True
+    return _nonempty(payload.get("parent_id")) is not None
+
+
 def is_document_event(payload: dict) -> bool:
-    """True for Reader ``*_document.created`` events (and document-shaped reader payloads)."""
+    """True for persistable Reader ``*_document.created`` parent documents."""
+    if is_reader_annotation_document(payload):
+        return False
     event_type = str(payload.get("event_type") or "")
     if event_type in DOCUMENT_CREATED_EVENTS:
         return True
@@ -615,6 +631,12 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     write_kwargs: dict = {}
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)
+    elif is_reader_annotation_document(payload):
+        logger.info(
+            "Readwise document skipped (highlight/note or parent_id set): %s",
+            payload.get("event_type", "unknown"),
+        )
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
     elif is_document_event(payload):
         bullet = format_document_bullet(payload)
         write_kwargs = {
