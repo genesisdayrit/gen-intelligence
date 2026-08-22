@@ -34,6 +34,7 @@ from services.obsidian.add_readwise_buffet import (
     append_readwise_buffet,
     clear_book_cache,
     document_dedup_keys,
+    fetch_book,
     format_document_bullet,
     format_readwise_bullet,
     get_document_journal_path,
@@ -770,6 +771,150 @@ def test_parent_document_categories_still_count_as_documents(category):
     payload = _reader_payload(category=category, parent_id=None)
     assert is_document_event(payload) is True
     assert format_document_bullet(payload) is not None
+
+
+def test_format_tweet_uses_handle_from_author():
+    """Tweet books wikilink as Tweets from @handle, not Title - Author."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Tweets From Georgie Dorothea 🫩",
+            author="@georgiedorothea on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/georgiedorothea",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "Tweets From Georgie" not in line
+    assert "on Twitter" not in line
+    assert "bookreview" not in line
+
+
+def test_format_tweet_falls_back_to_twitter_url_handle():
+    """When author has no @handle, use the last path segment of source_url."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Tweets From Klaas",
+            author="Klaas",
+            source_url="https://twitter.com/forgebitz",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @forgebitz]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_format_tweet_falls_back_to_x_com_url_handle():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            category="tweets",
+            title="Tweets From Klaas",
+            author="Klaas",
+            source_url="https://x.com/forgebitz",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @forgebitz]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_format_tweet_missing_handle_falls_back_to_title_author():
+    """Tweet book with no extractable handle keeps the Title - Author rule."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Tweets From Klaas",
+            author="Klaas",
+            category="tweets",
+        )
+    )
+    assert line == (
+        '- [[Tweets From Klaas - Klaas]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_format_non_tweet_still_uses_title_author():
+    """Ordinary books are unchanged even if the author string looks unusual."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Deep Work",
+            author="Cal Newport",
+            category="books",
+            source="kindle",
+            source_url="https://www.amazon.com/dp/example",
+        )
+    )
+    assert line == (
+        '- [[Deep Work - Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "Tweets from" not in line
+
+
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+@patch("services.obsidian.add_readwise_buffet.requests.get")
+def test_format_tweet_from_fetched_book_fields(mock_get):
+    """Book DETAIL cache must retain category/source/source_url/author/title."""
+    clear_book_cache()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "id": 8237,
+        "title": "Tweets From Georgie Dorothea 🫩",
+        "author": "@georgiedorothea on Twitter",
+        "category": "tweets",
+        "source": "twitter",
+        "highlights_url": "https://readwise.io/bookreview/8237",
+        "source_url": "https://twitter.com/georgiedorothea",
+    }
+    mock_get.return_value = mock_response
+
+    line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "bookreview" not in line
+    cached = fetch_book(8237)
+    assert cached == {
+        "title": "Tweets From Georgie Dorothea 🫩",
+        "author": "@georgiedorothea on Twitter",
+        "category": "tweets",
+        "source": "twitter",
+        "highlights_url": "https://readwise.io/bookreview/8237",
+        "source_url": "https://twitter.com/georgiedorothea",
+    }
+    mock_get.assert_called_once()
+
+
+def test_format_document_stays_markdown_link_even_for_twitter_source():
+    """Reader documents never become tweet wikilinks."""
+    line = format_document_bullet(
+        _reader_payload(
+            title="Tweets From Georgie Dorothea",
+            author="@georgiedorothea on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/georgiedorothea",
+        )
+    )
+    assert line == (
+        "- [Tweets From Georgie Dorothea]"
+        "(https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) "
+        "— @georgiedorothea on Twitter"
+    )
+    assert "[[" not in line
+    assert "Tweets from @" not in line
 
 
 # ---------------------------------------------------------------------------

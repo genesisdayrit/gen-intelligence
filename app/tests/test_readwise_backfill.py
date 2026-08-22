@@ -401,6 +401,54 @@ def test_export_carries_author_onto_payload():
     assert payload["author"] == "Cal Newport"
 
 
+def test_export_threads_tweet_book_fields():
+    """Export books already have category/source/source_url — keep them."""
+    payload = highlight_from_export(
+        _book(
+            title="Tweets From Georgie Dorothea 🫩",
+            author="@georgiedorothea on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/georgiedorothea",
+        ),
+        _hl(),
+    )
+    assert payload["title"] == "Tweets From Georgie Dorothea 🫩"
+    assert payload["author"] == "@georgiedorothea on Twitter"
+    assert payload["category"] == "tweets"
+    assert payload["source"] == "twitter"
+    assert payload["source_url"] == "https://twitter.com/georgiedorothea"
+
+
+def test_export_tweet_highlight_uses_handle_wikilink():
+    pages = [
+        _export_page([
+            _book(
+                title="Tweets From Georgie Dorothea 🫩",
+                author="@georgiedorothea on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/georgiedorothea",
+                highlights=[_hl()],
+            ),
+        ]),
+    ]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    with patch("services.obsidian.add_readwise_buffet.fetch_book") as mock_fetch:
+        result, uploaded, _, _ = _run_backfill(
+            pages,
+            contents_by_path={nov_path: SAMPLE_JOURNAL},
+        )
+    assert result["files_written"] == 1
+    mock_fetch.assert_not_called()
+    line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "bookreview" not in uploaded[0]["content"]
+
+
 # ---------------------------------------------------------------------------
 # Export pagination
 # ---------------------------------------------------------------------------

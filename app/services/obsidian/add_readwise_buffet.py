@@ -40,8 +40,13 @@ _IGNORED_READER_SUFFIXES = (
 )
 _SHORT_ATTR_MAX = 80
 
-# book_id → {"title", "highlights_url", "source_url"} (or None after a failed lookup)
+# book_id → title/author/category/source/source_url/highlights_url (or None after a failed lookup)
 _book_cache: dict[str, dict | None] = {}
+
+_AUTHOR_TWITTER_SUFFIX = re.compile(r"\s+on twitter\s*$", re.I)
+_AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
+_TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
+_TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
 
 
 def _system_tz() -> pytz.BaseTzInfo:
@@ -277,6 +282,8 @@ def fetch_book(book_id: object) -> dict | None:
     book = {
         "title": _nonempty(data.get("title")),
         "author": _nonempty(data.get("author")),
+        "category": _nonempty(data.get("category")),
+        "source": _nonempty(data.get("source")),
         "highlights_url": _nonempty(data.get("highlights_url")),
         "source_url": _nonempty(data.get("source_url")),
     }
@@ -295,6 +302,77 @@ def _wikilink_target(text: str) -> str | None:
     return _collapse(cleaned) or None
 
 
+def _book_from_payload(payload: dict) -> dict:
+    """Book fields already present on a webhook/export payload."""
+    return {
+        "title": _nonempty(payload.get("title")),
+        "author": _nonempty(payload.get("author")),
+        "category": _nonempty(payload.get("category")),
+        "source": _nonempty(payload.get("source")),
+        "source_url": _nonempty(payload.get("source_url")),
+    }
+
+
+def _has_book_identity(book: dict | None) -> bool:
+    if not book:
+        return False
+    return any(book.get(key) for key in ("title", "author", "category", "source", "source_url"))
+
+
+def _twitter_handle_from_url(url: object) -> str | None:
+    text = _nonempty(url)
+    if not text:
+        return None
+    parsed = urlparse(text)
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host not in _TWITTER_HOSTS:
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    return parts[-1] if parts else None
+
+
+def _tweet_handle(book: dict | None) -> str | None:
+    """Extract @handle from author, else twitter.com/x.com source_url."""
+    if not book:
+        return None
+    author = _nonempty(book.get("author"))
+    if author:
+        stripped = _AUTHOR_TWITTER_SUFFIX.sub("", author)
+        match = _AUTHOR_HANDLE.search(stripped) or _AUTHOR_HANDLE.search(author)
+        if match:
+            return match.group(1)
+    return _twitter_handle_from_url(book.get("source_url"))
+
+
+def _is_tweet_book(book: dict | None) -> bool:
+    """True for Readwise tweet sources (category/source/title/author/url)."""
+    if not book:
+        return False
+    category = (_nonempty(book.get("category")) or "").lower()
+    source = (_nonempty(book.get("source")) or "").lower()
+    if category == "tweets" or source == "twitter":
+        return True
+    title = _nonempty(book.get("title"))
+    if title and _TWEETS_FROM_TITLE.search(title):
+        return True
+    author = _nonempty(book.get("author"))
+    if author and _AUTHOR_HANDLE.search(author) and re.search(r"\bon twitter\b", author, re.I):
+        return True
+    return _twitter_handle_from_url(book.get("source_url")) is not None
+
+
+def _tweet_wikilink_target(book: dict | None) -> str | None:
+    """``Tweets from @{handle}`` when this is a tweet book with a handle."""
+    if not _is_tweet_book(book):
+        return None
+    handle = _tweet_handle(book)
+    if not handle:
+        return None
+    return _wikilink_target(f"Tweets from @{handle}")
+
+
 def _highlight_permalink(payload: dict) -> str | None:
     """``https://readwise.io/open/{id}``. Prefer this over payload.url (often null)."""
     highlight_id = payload.get("id")
@@ -306,17 +384,14 @@ def _highlight_permalink(payload: dict) -> str | None:
 def format_readwise_bullet(payload: dict) -> str | None:
     """Build a compact highlight bullet. Looks up book title/author when possible.
 
-    Export payloads include ``title`` and ``author``; use those and skip the
-    books API. Webhook payloads typically omit them, so fall back to
-    GET /api/v2/books/{id}/.
+    Export payloads include ``title``, ``author``, and tweet-detection fields;
+    use those and skip the books API. Webhook payloads typically omit them,
+    so fall back to GET /api/v2/books/{id}/.
     """
     if not is_highlight_event(payload):
         return None
-    title = _nonempty(payload.get("title"))
-    author = _nonempty(payload.get("author"))
-    if title or author:
-        book = {"title": title, "author": author}
-    else:
+    book = _book_from_payload(payload)
+    if not _has_book_identity(book):
         book = fetch_book(payload.get("book_id"))
     return _format_highlight(payload, book)
 
@@ -400,7 +475,10 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if highlight_url:
         quote = f"[{quote}]({highlight_url})"
 
-    if title and author:
+    tweet_target = _tweet_wikilink_target(book)
+    if tweet_target:
+        line = f"- [[{tweet_target}]]: {quote}"
+    elif title and author:
         target = _wikilink_target(f"{title} - {author}")
         line = f"- [[{target}]]: {quote}" if target else f"- {quote}"
     elif title:
