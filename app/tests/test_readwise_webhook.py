@@ -313,12 +313,13 @@ def test_format_official_sample_without_title():
     clear_book_cache()
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert "[[" not in line
 
 
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
 @patch("services.obsidian.add_readwise_buffet.requests.get")
 def test_format_official_sample_attaches_book_title(mock_get):
-    """Book DETAIL lookup supplies the title; permalinks win over payload.url."""
+    """Book DETAIL lookup supplies title + author; quote keeps the open permalink."""
     clear_book_cache()
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -333,9 +334,11 @@ def test_format_official_sample_attaches_book_title(mock_get):
 
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '- [[Deep Work - Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert "bookreview" not in line
+    assert "(Book)" not in line
     mock_get.assert_called_once_with(
         "https://readwise.io/api/v2/books/8237/",
         headers={"Authorization": "Token test-readwise-token"},
@@ -352,21 +355,127 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
     mock_response.json.return_value = {
         "id": 8237,
         "title": "Deep Work",
+        "author": "Cal Newport",
         "highlights_url": "https://readwise.io/bookreview/8237",
     }
     mock_get.return_value = mock_response
 
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '- [[Deep Work - Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
+
+
+def test_format_uses_payload_title_and_author():
+    """Export payloads include title and author; both go inside the wikilink."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(title="Deep Work", author="Cal Newport")
+    )
+    assert line == (
+        '- [[Deep Work - Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "bookreview" not in line
+    assert "(Book)" not in line
+    assert "]] by " not in line
+
+
+def test_format_keeps_readwise_author_string_verbatim():
+    """Do not sort, rewrite First/Last, or split/rejoin the author field."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Zero to One",
+            author="Peter Thiel, Blake Masters",
+        )
+    )
+    assert line == (
+        '- [[Zero to One - Peter Thiel, Blake Masters]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Surely You're Joking, Mr. Feynman!",
+            author="Richard P. Feynman, Ralph Leighton, Edward Hutchings, and Albert R. Hibbs",
+        )
+    )
+    assert line == (
+        "- [[Surely You're Joking, Mr. Feynman! - Richard P. Feynman, "
+        "Ralph Leighton, Edward Hutchings, and Albert R. Hibbs]]: "
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Zero to One",
+            author="  Peter Thiel,   Blake Masters  ",
+        )
+    )
+    assert line == (
+        '- [[Zero to One - Peter Thiel, Blake Masters]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_format_omits_author_from_wikilink_when_missing():
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(title="Deep Work"))
+    assert line == (
+        '- [[Deep Work]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert " - " not in line
+
+
+def test_format_author_only_when_title_missing():
+    """Author without a title is a plain prefix; do not invent a wikilink."""
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(author="Cal Newport"))
+    assert line == (
+        '- Cal Newport: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "[[" not in line
+
+
+def test_format_wikilink_strips_breaking_characters():
+    """Strip |, #, ^, and ]] from the wikilink target only."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(title="Foo|Bar #1 ^block]] extra", author="Cal | Newport")
+    )
+    assert line == (
+        '- [[FooBar 1 block extra - Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_format_skips_empty_wikilink_after_sanitize():
+    """A title that sanitizes to nothing must not write empty [[]]."""
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(title="|#^]]"))
+    assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert "[[" not in line
 
 
 def test_format_plain_quote_when_id_missing():
     clear_book_cache()
     line = format_readwise_bullet(_highlight_payload(id=None))
     assert line == '- "Most Amazing Highlight Ever"'
+    assert "[[" not in line
+
+
+def test_format_wikilink_title_and_unlinked_quote_when_id_missing():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(id=None, title="Deep Work", author="Cal Newport")
+    )
+    assert line == '- [[Deep Work - Cal Newport]]: "Most Amazing Highlight Ever"'
+    assert "bookreview" not in line
+    assert "readwise.io/open" not in line
 
 
 def test_format_ignores_reader_payload():

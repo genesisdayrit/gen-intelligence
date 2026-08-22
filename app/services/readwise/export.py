@@ -34,8 +34,9 @@ def _headers() -> dict[str, str]:
 def highlight_from_export(book: dict, highlight: dict) -> dict:
     """Flatten an export book + highlight into a webhook-shaped payload.
 
-    Carries the book title so ``format_readwise_bullet`` can skip the books API.
-    Maps ``updated_at`` to ``updated`` for journal dating fallback.
+    Carries the book title and author so ``format_readwise_bullet`` can skip
+    the books API. Maps ``updated_at`` to ``updated`` for journal dating
+    fallback.
     """
     book_id = highlight.get("book_id")
     if book_id is None or book_id == "":
@@ -45,6 +46,7 @@ def highlight_from_export(book: dict, highlight: dict) -> dict:
         **highlight,
         "book_id": book_id,
         "title": title,
+        "author": _nonempty(book.get("author")),
         "updated": highlight.get("updated") or highlight.get("updated_at"),
     }
     return payload

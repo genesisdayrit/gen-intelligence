@@ -22,7 +22,6 @@ EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
 BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
 HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
-BOOKREVIEW_URL = "https://readwise.io/bookreview/{book_id}"
 
 # book_id → {"title", "highlights_url", "source_url"} (or None after a failed lookup)
 _book_cache: dict[str, dict | None] = {}
@@ -216,12 +215,15 @@ def fetch_book(book_id: object) -> dict | None:
     return book
 
 
-def _book_permalink(payload: dict, book: dict | None) -> str | None:
-    """``https://readwise.io/bookreview/{book_id}`` (same as highlights_url)."""
-    book_id = payload.get("book_id")
-    if book_id is not None and book_id != "":
-        return BOOKREVIEW_URL.format(book_id=book_id)
-    return _http_url((book or {}).get("highlights_url"))
+def _wikilink_target(text: str) -> str | None:
+    """Sanitize a string for use inside ``[[...]]``.
+
+    Only characters that would break a wikilink are removed: ``|``, ``#``,
+    ``^``, and ``]]``. Returns None if nothing usable remains.
+    """
+    cleaned = _collapse(text).replace("]]", "")
+    cleaned = re.sub(r"[|#^]", "", cleaned)
+    return _collapse(cleaned) or None
 
 
 def _highlight_permalink(payload: dict) -> str | None:
@@ -233,16 +235,18 @@ def _highlight_permalink(payload: dict) -> str | None:
 
 
 def format_readwise_bullet(payload: dict) -> str | None:
-    """Build a compact highlight bullet. Looks up book title when possible.
+    """Build a compact highlight bullet. Looks up book title/author when possible.
 
-    Export payloads include ``title``; use that and skip the books API. Webhook
-    payloads typically omit it, so fall back to GET /api/v2/books/{id}/.
+    Export payloads include ``title`` and ``author``; use those and skip the
+    books API. Webhook payloads typically omit them, so fall back to
+    GET /api/v2/books/{id}/.
     """
     if not is_highlight_event(payload):
         return None
     title = _nonempty(payload.get("title"))
-    if title:
-        book = {"title": title}
+    author = _nonempty(payload.get("author"))
+    if title or author:
+        book = {"title": title, "author": author}
     else:
         book = fetch_book(payload.get("book_id"))
     return _format_highlight(payload, book)
@@ -253,17 +257,24 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if not text:
         return None
     note = _nonempty(payload.get("note"))
-    title = _nonempty((book or {}).get("title"))
-    book_url = _book_permalink(payload, book)
+    raw_title = _nonempty((book or {}).get("title"))
+    raw_author = _nonempty((book or {}).get("author"))
+    title = _wikilink_target(raw_title) if raw_title else None
+    author = _collapse(raw_author) if raw_author else None
+    if author and not _wikilink_target(author):
+        author = None
     highlight_url = _highlight_permalink(payload)
     quote = f'"{_collapse(text)}"'
     if highlight_url:
         quote = f"[{quote}]({highlight_url})"
 
-    if title and book_url:
-        line = f"- [{_collapse(title)}]({book_url}): {quote}"
+    if title and author:
+        target = _wikilink_target(f"{title} - {author}")
+        line = f"- [[{target}]]: {quote}" if target else f"- {quote}"
     elif title:
-        line = f"- {_collapse(title)}: {quote}"
+        line = f"- [[{title}]]: {quote}"
+    elif author:
+        line = f"- {author}: {quote}"
     else:
         line = f"- {quote}"
     if note:

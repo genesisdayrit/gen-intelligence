@@ -1,6 +1,12 @@
 # Readwise Webhook Setup
 
-Point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` and set the shared secret as `READWISE_WEBHOOK_SECRET` (Readwise sends it in the JSON body as `secret`). Set `READWISE_TOKEN` from https://readwise.io/access_token so highlight book titles can be resolved. Only `readwise.highlight.created` events are written to the Obsidian daily journal for `highlighted_at` (3am local rollover) under `### Content Buffet:`. Missing journal files are skipped, not created.
+Point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` and set the shared secret as `READWISE_WEBHOOK_SECRET` (Readwise sends it in the JSON body as `secret`). Set `READWISE_TOKEN` from https://readwise.io/access_token so highlight book titles can be resolved. Only `readwise.highlight.created` events are written to the Obsidian daily journal for `highlighted_at` (3am local rollover) under `### Content Buffet:` as:
+
+```
+- [[Title - Author]]: ["quote"](https://readwise.io/open/{id})
+```
+
+The wikilink target is `Title - Author` using the Readwise book title and `author` string as-is (no `bookreview` URL, no `(Book)` suffix, no name reordering). Multiple authors stay in Readwise order, e.g. `[[Zero to One - Peter Thiel, Blake Masters]]`. Author is omitted when missing (`[[Title]]`). The highlight permalink stays on the quote. Missing journal files are skipped, not created.
 
 ## Backfill historical highlights
 
