@@ -22,7 +22,6 @@ EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
 BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
 HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
-BOOKREVIEW_URL = "https://readwise.io/bookreview/{book_id}"
 
 # book_id → {"title", "highlights_url", "source_url"} (or None after a failed lookup)
 _book_cache: dict[str, dict | None] = {}
@@ -216,14 +215,6 @@ def fetch_book(book_id: object) -> dict | None:
     return book
 
 
-def _book_permalink(payload: dict, book: dict | None) -> str | None:
-    """``https://readwise.io/bookreview/{book_id}`` (same as highlights_url)."""
-    book_id = payload.get("book_id")
-    if book_id is not None and book_id != "":
-        return BOOKREVIEW_URL.format(book_id=book_id)
-    return _http_url((book or {}).get("highlights_url"))
-
-
 def _highlight_permalink(payload: dict) -> str | None:
     """``https://readwise.io/open/{id}``. Prefer this over payload.url (often null)."""
     highlight_id = payload.get("id")
@@ -254,15 +245,12 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
         return None
     note = _nonempty(payload.get("note"))
     title = _nonempty((book or {}).get("title"))
-    book_url = _book_permalink(payload, book)
     highlight_url = _highlight_permalink(payload)
     quote = f'"{_collapse(text)}"'
     if highlight_url:
         quote = f"[{quote}]({highlight_url})"
 
-    if title and book_url:
-        line = f"- [{_collapse(title)}]({book_url}): {quote}"
-    elif title:
+    if title:
         line = f"- {_collapse(title)}: {quote}"
     else:
         line = f"- {quote}"

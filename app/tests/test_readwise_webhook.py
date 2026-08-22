@@ -318,7 +318,7 @@ def test_format_official_sample_without_title():
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
 @patch("services.obsidian.add_readwise_buffet.requests.get")
 def test_format_official_sample_attaches_book_title(mock_get):
-    """Book DETAIL lookup supplies the title; permalinks win over payload.url."""
+    """Book DETAIL lookup supplies a plain title; quote keeps the open permalink."""
     clear_book_cache()
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -333,9 +333,10 @@ def test_format_official_sample_attaches_book_title(mock_get):
 
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '- Deep Work: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert "bookreview" not in line
     mock_get.assert_called_once_with(
         "https://readwise.io/api/v2/books/8237/",
         headers={"Authorization": "Token test-readwise-token"},
@@ -358,15 +359,34 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
 
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '- Deep Work: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
+
+
+def test_format_uses_payload_title_as_plain_text():
+    """Export payloads include title; do not wrap it in a bookreview link."""
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(title="Deep Work"))
+    assert line == (
+        '- Deep Work: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "bookreview" not in line
 
 
 def test_format_plain_quote_when_id_missing():
     clear_book_cache()
     line = format_readwise_bullet(_highlight_payload(id=None))
     assert line == '- "Most Amazing Highlight Ever"'
+
+
+def test_format_plain_title_and_unlinked_quote_when_id_missing():
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(id=None, title="Deep Work"))
+    assert line == '- Deep Work: "Most Amazing Highlight Ever"'
+    assert "bookreview" not in line
+    assert "readwise.io/open" not in line
 
 
 def test_format_ignores_reader_payload():

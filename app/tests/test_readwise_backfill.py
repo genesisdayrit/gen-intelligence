@@ -287,7 +287,8 @@ def test_dedup_on_second_run():
     assert first["replaced"] == 1
     assert first["files_written"] == 1
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded_first[0]["content"]
-    assert "[Deep Work](https://readwise.io/bookreview/8237)" in uploaded_first[0]["content"]
+    assert "Deep Work: " in uploaded_first[0]["content"]
+    assert "bookreview" not in uploaded_first[0]["content"]
 
     second, uploaded_second, _, _ = _run_backfill(
         [_export_page([_book(highlights=[_hl()])])],
@@ -302,7 +303,7 @@ def test_dedup_on_second_run():
 
 
 def test_short_highlight_ids_do_not_collide_with_dates():
-    """Bare id '2' must not match the '2' in 2026-08-22 or bookreview/8237."""
+    """Bare id '2' must not match the '2' in 2026-08-22."""
     pages = [
         _export_page([
             _book(highlights=[
@@ -357,7 +358,9 @@ def test_export_title_used_without_books_api():
     assert result["files_written"] == 1
     mock_fetch.assert_not_called()
     assert "book 8237" not in uploaded[0]["content"]
-    assert "[Deep Work](https://readwise.io/bookreview/8237)" in uploaded[0]["content"]
+    assert "Deep Work: " in uploaded[0]["content"]
+    assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded[0]["content"]
+    assert "bookreview" not in uploaded[0]["content"]
 
 
 def test_missing_title_writes_quote_only():
