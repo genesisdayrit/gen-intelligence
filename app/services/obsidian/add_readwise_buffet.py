@@ -7,6 +7,7 @@ from datetime import datetime
 
 import dropbox
 import pytz
+import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
@@ -19,6 +20,12 @@ CONTENT_BUFFET_HEADER = "### Content Buffet:"
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
 EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
+BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
+HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
+BOOKREVIEW_URL = "https://readwise.io/bookreview/{book_id}"
+
+# book_id → {"title", "highlights_url", "source_url"} (or None after a failed lookup)
+_book_cache: dict[str, dict | None] = {}
 
 
 def _system_tz() -> pytz.BaseTzInfo:
@@ -105,107 +112,121 @@ def _http_url(*candidates: object) -> str | None:
     return None
 
 
-def _link_url(payload: dict) -> str | None:
-    """Prefer source_url, then url; keep a non-http value if that is all we have."""
-    return (
-        _http_url(payload.get("source_url"), payload.get("url"))
-        or _nonempty(payload.get("source_url"))
-        or _nonempty(payload.get("url"))
-    )
+def is_highlight_event(payload: dict) -> bool:
+    """True for ``readwise.highlight.created`` and highlight-shaped payloads."""
+    event_type = str(payload.get("event_type") or "")
+    if event_type == "readwise.highlight.created" or event_type.startswith("readwise.highlight"):
+        return True
+    if event_type.startswith("reader."):
+        return False
+    return _nonempty(payload.get("text")) is not None and payload.get("book_id") is not None
 
 
-def _event_suffix(event_type: str | None) -> str:
-    """Mention event_type only when it is not an obvious *.created event."""
-    if not event_type or event_type.endswith(".created"):
-        return ""
-    short = event_type.rsplit(".", 1)[-1].replace("_", " ")
-    return f" ({short})" if short else ""
+def clear_book_cache() -> None:
+    _book_cache.clear()
 
 
-def _is_highlight(payload: dict) -> bool:
-    event_type = payload.get("event_type") or ""
-    return event_type.startswith("readwise.highlight") or (
-        _nonempty(payload.get("text")) is not None
-        and payload.get("title") is None
-        and payload.get("book_id") is not None
-    )
+def fetch_book(book_id: object) -> dict | None:
+    """GET /api/v2/books/{book_id}/. Cached in-process. Never raises."""
+    if book_id is None or book_id == "":
+        return None
+    key = str(book_id)
+    if key in _book_cache:
+        return _book_cache[key]
+
+    token = os.getenv("READWISE_TOKEN")
+    if not token:
+        return None
+
+    try:
+        response = requests.get(
+            BOOK_DETAIL_URL.format(book_id=key),
+            headers={"Authorization": f"Token {token}"},
+            timeout=10,
+        )
+    except Exception:
+        logger.exception("Readwise book lookup failed for %s", key)
+        return None
+
+    if response.status_code != 200:
+        logger.info("Readwise book lookup %s returned %s", key, response.status_code)
+        _book_cache[key] = None
+        return None
+
+    try:
+        data = response.json()
+    except Exception:
+        logger.exception("Readwise book lookup returned invalid JSON for %s", key)
+        _book_cache[key] = None
+        return None
+
+    book = {
+        "title": _nonempty(data.get("title")),
+        "author": _nonempty(data.get("author")),
+        "highlights_url": _nonempty(data.get("highlights_url")),
+        "source_url": _nonempty(data.get("source_url")),
+    }
+    _book_cache[key] = book
+    return book
+
+
+def _book_permalink(payload: dict, book: dict | None) -> str | None:
+    """``https://readwise.io/bookreview/{book_id}`` (same as highlights_url)."""
+    book_id = payload.get("book_id")
+    if book_id is not None and book_id != "":
+        return BOOKREVIEW_URL.format(book_id=book_id)
+    return _http_url((book or {}).get("highlights_url"))
+
+
+def _highlight_permalink(payload: dict) -> str | None:
+    """``https://readwise.io/open/{id}``. Prefer this over payload.url (often null)."""
+    highlight_id = payload.get("id")
+    if highlight_id is not None and highlight_id != "":
+        return HIGHLIGHT_OPEN_URL.format(highlight_id=highlight_id)
+    return _http_url(payload.get("readwise_url"))
 
 
 def format_readwise_bullet(payload: dict) -> str | None:
-    """Build a compact markdown bullet from a Reader or highlight payload."""
-    if _is_highlight(payload):
-        return _format_highlight(payload)
-    return _format_reader(payload)
-
-
-def _format_reader(payload: dict) -> str | None:
-    title = _nonempty(payload.get("title"))
-    author = _nonempty(payload.get("author"))
-    url = _link_url(payload)
-    fallback = (
-        _nonempty(payload.get("summary"))
-        or _nonempty(payload.get("notes"))
-        or _nonempty(payload.get("id"))
-    )
-    if title and url:
-        line = f"- [{_collapse(title)}]({url})"
-    elif title:
-        line = f"- {_collapse(title)}"
-    elif url:
-        line = f"- [{url}]({url})"
-    elif fallback:
-        line = f"- {_collapse(fallback)}"
-    else:
+    """Build a compact highlight bullet. Looks up book title when possible."""
+    if not is_highlight_event(payload):
         return None
-    if author:
-        line += f" — {_collapse(author)}"
-    line += _event_suffix(payload.get("event_type"))
-    return line
+    book = fetch_book(payload.get("book_id"))
+    return _format_highlight(payload, book)
 
 
-def _format_highlight(payload: dict) -> str | None:
+def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     text = _nonempty(payload.get("text"))
+    if not text:
+        return None
     note = _nonempty(payload.get("note"))
-    url = _link_url(payload)
-    book_id = _nonempty(payload.get("book_id"))
-    title = (
-        _nonempty(payload.get("title"))
-        or _nonempty(payload.get("book_title"))
-        or (f"book {book_id}" if book_id else None)
-    )
-    parts: list[str] = []
-    if text:
-        parts.append(f'"{_collapse(text)}"')
-    if title and url:
-        parts.append(f"[{_collapse(title)}]({url})")
+    title = _nonempty((book or {}).get("title"))
+    book_url = _book_permalink(payload, book)
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{_collapse(text)}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+
+    if title and book_url:
+        line = f"- [{_collapse(title)}]({book_url}): {quote}"
     elif title:
-        parts.append(_collapse(title))
-    elif url:
-        parts.append(f"[highlight]({url})")
+        line = f"- {_collapse(title)}: {quote}"
+    else:
+        line = f"- {quote}"
     if note:
-        parts.append(_collapse(note))
-    if not parts:
-        fallback = _nonempty(payload.get("id"))
-        if not fallback:
-            return None
-        parts.append(fallback)
-    line = "- " + " — ".join(parts)
-    line += _event_suffix(payload.get("event_type"))
+        line += f" — {_collapse(note)}"
     return line
 
 
 def dedup_keys(payload: dict) -> list[str]:
-    """Stable identifiers already present in Content Buffet should skip a rewrite."""
+    """Per-highlight identifiers. Do not include book_id (shared across highlights)."""
     keys: list[str] = []
-    for candidate in (
-        payload.get("id"),
-        payload.get("source_url"),
-        payload.get("url"),
-        payload.get("book_id"),
-    ):
-        text = _nonempty(candidate)
-        if text and text not in keys:
-            keys.append(text)
+    highlight_id = payload.get("id")
+    if highlight_id is not None:
+        keys.append(str(highlight_id))
+        keys.append(HIGHLIGHT_OPEN_URL.format(highlight_id=highlight_id))
+    url = _nonempty(payload.get("url"))
+    if url and url not in keys:
+        keys.append(url)
     return keys
 
 
@@ -282,7 +303,14 @@ def insert_content_buffet_bullet(
 
 
 def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
-    """Append a Readwise event to today's journal Content Buffet section."""
+    """Append a Readwise highlight to today's journal Content Buffet section."""
+    if not is_highlight_event(payload):
+        logger.info(
+            "Readwise event ignored (not a highlight): %s",
+            payload.get("event_type", "unknown"),
+        )
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+
     bullet = format_readwise_bullet(payload)
     if not bullet:
         logger.info("Readwise event had no usable fields; skipping write")

@@ -25,6 +25,7 @@ from main import app
 from services.obsidian.add_readwise_buffet import (
     _get_dropbox_client,
     append_readwise_buffet,
+    clear_book_cache,
     format_readwise_bullet,
     get_today_journal_path,
     insert_content_buffet_bullet,
@@ -56,6 +57,24 @@ date: 2026-08-22
 """
 
 
+# Official highlight payload from https://docs.readwise.io/readwise/docs/webhooks#highlight
+OFFICIAL_HIGHLIGHT = {
+    "id": 954480,
+    "text": "Most Amazing Highlight Ever",
+    "note": "",
+    "location": None,
+    "location_type": "page",
+    "highlighted_at": "2025-11-27T18:55:56.719036Z",
+    "url": None,
+    "color": "",
+    "updated": "2025-11-27T18:55:56.867572Z",
+    "book_id": 8237,
+    "tags": [],
+    "event_type": "readwise.highlight.created",
+    "secret": "8mFG0SsX8Xe199sRG2A3",
+}
+
+
 def _reader_payload(**overrides):
     data = {
         "id": "01kb5cap1wy21zp37bc2rjj",
@@ -74,16 +93,7 @@ def _reader_payload(**overrides):
 
 
 def _highlight_payload(**overrides):
-    data = {
-        "id": 954480,
-        "text": "Most Amazing Highlight Ever",
-        "note": "",
-        "url": "https://readwise.io/bookreview/8237",
-        "book_id": 8237,
-        "highlighted_at": "2025-11-27T18:55:56.719036Z",
-        "event_type": "readwise.highlight.created",
-        "secret": "test-readwise-secret",
-    }
+    data = {**OFFICIAL_HIGHLIGHT, "secret": "test-readwise-secret"}
     data.update(overrides)
     return data
 
@@ -119,9 +129,18 @@ def test_readwise_webhook_whitespace_ping_is_noop():
     mock_append.assert_not_called()
 
 
-@patch("main.append_readwise_buffet", return_value={"success": True, "action": "inserted"})
-def test_readwise_webhook_accepts_reader_event(mock_append):
+@patch("main.append_readwise_buffet")
+def test_readwise_webhook_ignores_reader_event(mock_append):
+    """Reader document events are acked and not written."""
     response = client.post("/readwise/webhook", json=_reader_payload())
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_append.assert_not_called()
+
+
+@patch("main.append_readwise_buffet", return_value={"success": True, "action": "inserted"})
+def test_readwise_webhook_accepts_highlight_event(mock_append):
+    response = client.post("/readwise/webhook", json=_highlight_payload())
     assert response.status_code == 202
     assert response.json() == {"status": "accepted"}
     mock_append.assert_called_once()
@@ -232,32 +251,69 @@ def test_dedup_skips_existing_url():
 # ---------------------------------------------------------------------------
 
 
-def test_format_reader_prefers_source_url():
-    line = format_readwise_bullet(_reader_payload())
+def test_format_official_sample_without_title():
+    """Official webhook sample has no title; write the linked highlight only."""
+    clear_book_cache()
+    line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
+    assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+
+
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+@patch("services.obsidian.add_readwise_buffet.requests.get")
+def test_format_official_sample_attaches_book_title(mock_get):
+    """Book DETAIL lookup supplies the title; permalinks win over payload.url."""
+    clear_book_cache()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "id": 8237,
+        "title": "Deep Work",
+        "author": "Cal Newport",
+        "highlights_url": "https://readwise.io/bookreview/8237",
+        "source_url": None,
+    }
+    mock_get.return_value = mock_response
+
+    line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        "- [Our Black Friday sale ends soon](https://www.theverge.com/black-friday) — The Verge"
+        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    mock_get.assert_called_once_with(
+        "https://readwise.io/api/v2/books/8237/",
+        headers={"Authorization": "Token test-readwise-token"},
+        timeout=10,
     )
 
 
-def test_format_reader_falls_back_to_url():
-    line = format_readwise_bullet(_reader_payload(source_url=""))
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+@patch("services.obsidian.add_readwise_buffet.requests.get")
+def test_format_highlight_includes_note_after_linked_quote(mock_get):
+    clear_book_cache()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "id": 8237,
+        "title": "Deep Work",
+        "highlights_url": "https://readwise.io/bookreview/8237",
+    }
+    mock_get.return_value = mock_response
+
+    line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        "- [Our Black Friday sale ends soon](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) — The Verge"
+        '- [Deep Work](https://readwise.io/bookreview/8237): '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
 
 
-def test_format_highlight_includes_note():
-    line = format_readwise_bullet(_highlight_payload(note="worth revisiting", title="Deep Work"))
-    assert line == (
-        '- "Most Amazing Highlight Ever" — [Deep Work](https://readwise.io/bookreview/8237) — worth revisiting'
-    )
+def test_format_plain_quote_when_id_missing():
+    clear_book_cache()
+    line = format_readwise_bullet(_highlight_payload(id=None))
+    assert line == '- "Most Amazing Highlight Ever"'
 
 
-def test_format_skips_missing_fields():
-    line = format_readwise_bullet(
-        {"event_type": "reader.any_document.created", "title": "Just a title"}
-    )
-    assert line == "- Just a title"
+def test_format_ignores_reader_payload():
+    assert format_readwise_bullet(_reader_payload()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +331,15 @@ def test_dropbox_client_uses_refresh_token(mock_dropbox):
     )
 
 
+def test_append_ignores_reader_payload_without_dropbox():
+    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client") as mock_client:
+        result = append_readwise_buffet(_reader_payload())
+    assert result["action"] == "ignored"
+    mock_client.assert_not_called()
+
+
 def test_append_replaces_placeholder_on_effective_journal_path():
+    clear_book_cache()
     uploaded = {}
     mock_dbx = MagicMock()
     response = MagicMock()
@@ -294,10 +358,10 @@ def test_append_replaces_placeholder_on_effective_journal_path():
              "/obsidian/personal/01_daily",
              "/obsidian/personal/01_daily/_journal",
          ]):
-        result = append_readwise_buffet(_reader_payload(), now=now)
+        result = append_readwise_buffet(_highlight_payload(), now=now)
 
     assert result["success"] is True
     assert result["action"] == "replaced"
     assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Aug 21, 2026.md"
-    assert "Our Black Friday sale ends soon" in uploaded["content"]
+    assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded["content"]
     assert uploaded["content"].index("### Content Buffet:") < uploaded["content"].index("### Content Planning")
