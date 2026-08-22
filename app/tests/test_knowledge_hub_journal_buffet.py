@@ -343,7 +343,10 @@ def test_youtube_link_create_appends_buffet_wikilink():
     kh_date = _journal_date_from_kh(kh["content"])
     assert kh_date == JOURNAL_DATE
     assert journal["path"] == f"{JOURNAL_FOLDER}/{kh_date}.md"
-    assert "- [[Cool Video]]" in journal["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert "- [[Cool Video]]" in section
+    assert "](http" not in section
+    assert "youtube.com" not in section
 
 
 def test_youtube_link_update_appends_buffet_wikilink():
@@ -358,7 +361,9 @@ def test_youtube_link_update_appends_buffet_wikilink():
     assert result["action"] == "updated"
     journal = _journal_upload(uploads)
     assert journal is not None
-    assert "- [[Cool Video]]" in journal["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert "- [[Cool Video]]" in section
+    assert "](http" not in section
 
 
 def test_youtube_link_already_linked_today_does_not_double():
@@ -372,6 +377,22 @@ def test_youtube_link_already_linked_today_does_not_double():
     assert result["success"] is True
     assert result["action"] == "skipped"
     assert uploads == []
+
+
+def test_youtube_link_wikilink_uses_sanitized_filename_stem():
+    title = 'Watch this: "AI" / part 1?'
+    expected_stem = shared_mod._sanitize_filename(title)
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(_youtube_patches(mock_dbx, title=title), "services.obsidian.add_youtube_link.datetime"):
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert f"- [[{expected_stem}]]" in section
+    assert "](http" not in section
+    assert title not in section
 
 
 def test_youtube_link_missing_journal_does_not_fail_kh_write():
