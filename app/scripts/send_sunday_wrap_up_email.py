@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Send Sunday wrap-up email (rolling 7-day consumption + completions).
 
-Four sections, no journal-prose summary:
+Five sections, no journal-prose summary:
 1. Readwise highlights + Reader documents created in the window
 2. Knowledge Hub notes whose YAML Journal date falls in the window
-3. Linear issues the viewer completed in the window
-4. Git commits by GITHUB_USERNAME in the window
+3. Spotify tracks liked (Saved Tracks added) in the window
+4. Linear issues the viewer completed in the window
+5. Git commits by GITHUB_USERNAME in the window
 
 Usage:
     python -m scripts.send_sunday_wrap_up_email
@@ -48,6 +49,11 @@ from services.obsidian.add_shared_link import (
 )
 from services.readwise.export import iter_export_highlights
 from services.readwise.reader import iter_reader_documents
+from services.spotify.saved_tracks import (
+    iter_saved_track_items,
+    refresh_spotify_access_token,
+    require_spotify_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -521,6 +527,53 @@ def sort_repos_by_commit_count(repos: list[dict[str, Any]]) -> list[dict[str, An
     )
 
 
+def saved_track_added_time(item: dict[str, Any]) -> datetime | None:
+    return _parse_iso_datetime(item.get("added_at"))
+
+
+def normalize_saved_track(item: dict[str, Any]) -> dict[str, Any]:
+    track = item.get("track") or {}
+    if not isinstance(track, dict):
+        track = {}
+    artists = track.get("artists") or []
+    artist_names: list[str] = []
+    if isinstance(artists, list):
+        for artist in artists:
+            if not isinstance(artist, dict):
+                continue
+            name = _nonempty(artist.get("name"))
+            if name:
+                artist_names.append(name)
+    urls = track.get("external_urls") or {}
+    url = ""
+    if isinstance(urls, dict):
+        url = _nonempty(urls.get("spotify")) or ""
+    return {
+        "name": _nonempty(track.get("name")) or "Untitled",
+        "artists": ", ".join(artist_names) or "Unknown artist",
+        "url": url,
+        "added_at": saved_track_added_time(item),
+    }
+
+
+def filter_saved_tracks_in_window(
+    items: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _in_window(saved_track_added_time(item), window_start, window_end):
+            selected.append(normalize_saved_track(item))
+    selected.sort(
+        key=lambda track: track.get("added_at") or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return selected
+
+
 def flatten_repo_commits(repos: list[dict[str, Any]]) -> list[dict[str, str]]:
     commits: list[dict[str, str]] = []
     for repo in repos:
@@ -803,6 +856,28 @@ def _clip_repo_commits_to_window(
     return summarize_events(in_window, threshold)
 
 
+def collect_spotify_section(
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[str, Any]:
+    client_id, client_secret, refresh_token = require_spotify_credentials()
+    access_token = refresh_spotify_access_token(client_id, client_secret, refresh_token)
+
+    raw_items: list[dict[str, Any]] = []
+    start = window_start if window_start.tzinfo else SYSTEM_TZ.localize(window_start)
+    for item in iter_saved_track_items(access_token):
+        added_at = saved_track_added_time(item)
+        if added_at is not None:
+            ts = added_at if added_at.tzinfo else added_at.replace(tzinfo=timezone.utc)
+            if ts < start:
+                # Saved Tracks are newest-first; older pages are out of window.
+                break
+        raw_items.append(item)
+
+    tracks = filter_saved_tracks_in_window(raw_items, window_start, window_end)
+    return {"tracks": tracks, "count": len(tracks)}
+
+
 def collect_section(name: str, collector) -> dict[str, Any]:
     try:
         data = collector()
@@ -830,6 +905,7 @@ def _pulse_line(
     knowledge_hub: dict[str, Any],
     linear: dict[str, Any],
     git: dict[str, Any],
+    spotify: dict[str, Any],
 ) -> str:
     parts: list[str] = []
     if readwise.get("ok"):
@@ -843,6 +919,10 @@ def _pulse_line(
         parts.append(f"{knowledge_hub.get('count', 0)} Knowledge Hub notes")
     else:
         parts.append("Knowledge Hub failed")
+    if spotify.get("ok"):
+        parts.append(f"{spotify.get('count', 0)} Spotify likes")
+    else:
+        parts.append("Spotify failed")
     if linear.get("ok"):
         parts.append(f"{linear.get('count', 0)} Linear issues")
     else:
@@ -927,6 +1007,29 @@ def _render_knowledge_hub_section(section: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _render_spotify_section(section: dict[str, Any]) -> str:
+    parts = ["<h2>Spotify likes</h2>"]
+    tracks = section.get("tracks") or []
+    if not section.get("ok") or not tracks:
+        parts.append(_empty_or_failed(section, "No liked tracks this week."))
+        return "\n".join(parts)
+
+    parts.append("<ul>")
+    for track in tracks:
+        name = html.escape(track.get("name") or "Untitled")
+        artists = html.escape(track.get("artists") or "Unknown artist")
+        url = track.get("url") or ""
+        if url:
+            parts.append(
+                f"<li><strong>{name}</strong> — {artists} "
+                f"<a href='{html.escape(url)}'>open</a></li>"
+            )
+        else:
+            parts.append(f"<li><strong>{name}</strong> — {artists}</li>")
+    parts.append("</ul>")
+    return "\n".join(parts)
+
+
 def _render_linear_section(section: dict[str, Any]) -> str:
     parts = ["<h2>Linear completed</h2>"]
     issues = section.get("issues") or []
@@ -989,11 +1092,12 @@ def build_html_email(
     knowledge_hub: dict[str, Any],
     linear: dict[str, Any],
     git: dict[str, Any],
+    spotify: dict[str, Any],
 ) -> str:
     now_local = _ensure_system_timezone(now_local)
     window_start = _ensure_system_timezone(window_start)
     window_end = _ensure_system_timezone(window_end)
-    pulse = _pulse_line(readwise, knowledge_hub, linear, git)
+    pulse = _pulse_line(readwise, knowledge_hub, linear, git, spotify)
     start_label = f"{window_start.strftime('%b')} {window_start.day}"
     end_label = f"{window_end.strftime('%b')} {window_end.day}"
 
@@ -1025,6 +1129,7 @@ def build_html_email(
             f"<p class='pulse'>{html.escape(pulse)}</p>",
             _render_readwise_section(readwise),
             _render_knowledge_hub_section(knowledge_hub),
+            _render_spotify_section(spotify),
             _render_linear_section(linear),
             _render_git_section(git),
             "</body>",
@@ -1070,6 +1175,10 @@ def run_sunday_wrap_up_email(
         "git",
         lambda: collect_git_section(window_start, window_end),
     )
+    spotify = collect_section(
+        "spotify",
+        lambda: collect_spotify_section(window_start, window_end),
+    )
 
     html_body = build_html_email(
         now_local,
@@ -1079,6 +1188,7 @@ def run_sunday_wrap_up_email(
         knowledge_hub,
         linear,
         git,
+        spotify,
     )
 
     if output:
