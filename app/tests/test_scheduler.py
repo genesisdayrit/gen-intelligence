@@ -68,6 +68,12 @@ def test_sunday_wrap_up_job_in_registry():
     assert "send_sunday_wrap_up_email" in job_ids
 
 
+def test_knowledge_hub_buffet_backfill_job_in_registry():
+    """The Knowledge Hub buffet backfill job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "backfill_knowledge_hub_buffet" in job_ids
+
+
 def test_job_definitions_have_required_fields():
     """Every job definition has the required fields."""
     required = {"id", "name", "func", "trigger"}
@@ -202,6 +208,13 @@ def test_list_jobs_contains_sunday_wrap_up_job(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "send_sunday_wrap_up_email" in job_ids
+
+
+def test_list_jobs_contains_knowledge_hub_buffet_backfill_job(client):
+    """GET /scheduler/jobs includes the Knowledge Hub buffet backfill job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "backfill_knowledge_hub_buffet" in job_ids
 
 
 def test_run_job_now_triggers_existing_job_without_executing_workflow():
