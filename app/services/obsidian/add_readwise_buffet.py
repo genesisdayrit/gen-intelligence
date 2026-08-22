@@ -1,9 +1,10 @@
-"""Append Readwise webhook events to the Obsidian journal for the highlight date."""
+"""Append Readwise webhook events to the Obsidian journal Content Buffet."""
 
 import logging
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 
 import dropbox
 import pytz
@@ -22,6 +23,22 @@ EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
 BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
 HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
+READER_DOC_URL = "https://read.readwise.io/read/{document_id}"
+DOCUMENT_CREATED_EVENTS = {
+    "reader.any_document.created",
+    "reader.non_feed_document.created",
+    "reader.feed_document.created",
+}
+READER_ANNOTATION_CATEGORIES = {"highlight", "note"}
+_IGNORED_READER_SUFFIXES = (
+    ".tags_updated",
+    ".finished",
+    ".archived",
+    ".moved_to_later",
+    ".moved_to_inbox",
+    ".shortlisted",
+)
+_SHORT_ATTR_MAX = 80
 
 # book_id → {"title", "highlights_url", "source_url"} (or None after a failed lookup)
 _book_cache: dict[str, dict | None] = {}
@@ -59,22 +76,35 @@ def parse_highlight_datetime(value: object) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(text)
     except ValueError:
-        logger.info("Readwise highlight timestamp not parseable: %s", value)
+        logger.info("Readwise timestamp not parseable: %s", value)
         return None
     if parsed.tzinfo is None:
         parsed = pytz.UTC.localize(parsed)
     return parsed.astimezone(_system_tz())
 
 
-def highlight_local_datetime(payload: dict, now: datetime | None = None) -> datetime:
-    """Local time for journal dating: highlighted_at, created_at, updated, else now."""
-    for key in ("highlighted_at", "created_at", "updated"):
+def _local_datetime_from_keys(
+    payload: dict,
+    keys: tuple[str, ...],
+    now: datetime | None = None,
+) -> datetime:
+    for key in keys:
         parsed = parse_highlight_datetime(payload.get(key))
         if parsed is not None:
             return parsed
     if now is None:
         return datetime.now(_system_tz())
     return _as_system_tz(now)
+
+
+def highlight_local_datetime(payload: dict, now: datetime | None = None) -> datetime:
+    """Local time for journal dating: highlighted_at, created_at, updated, else now."""
+    return _local_datetime_from_keys(payload, ("highlighted_at", "created_at", "updated"), now)
+
+
+def document_local_datetime(payload: dict, now: datetime | None = None) -> datetime:
+    """Local time for journal dating: created_at, saved_at, updated_at, else now."""
+    return _local_datetime_from_keys(payload, ("created_at", "saved_at", "updated_at"), now)
 
 
 def get_today_journal_path(journal_folder_path: str, now: datetime | None = None) -> str:
@@ -93,6 +123,16 @@ def get_highlight_journal_path(
 ) -> str:
     """Journal path for a highlight's created time (3am local rollover)."""
     local = highlight_local_datetime(payload, now=now)
+    return f"{journal_folder_path}/{journal_filename(get_effective_date(local))}"
+
+
+def get_document_journal_path(
+    journal_folder_path: str,
+    payload: dict,
+    now: datetime | None = None,
+) -> str:
+    """Journal path for a Reader document's created time (3am local rollover)."""
+    local = document_local_datetime(payload, now=now)
     return f"{journal_folder_path}/{journal_filename(get_effective_date(local))}"
 
 
@@ -165,6 +205,35 @@ def is_highlight_event(payload: dict) -> bool:
     if event_type.startswith("reader."):
         return False
     return _nonempty(payload.get("text")) is not None and payload.get("book_id") is not None
+
+
+def is_reader_annotation_document(payload: dict) -> bool:
+    """True for Reader child docs (highlights/notes) that duplicate highlight webhooks.
+
+    Reader models highlights and notes as Documents (``category=highlight|note``,
+    ``parent_id`` set). Those may fire ``reader.any_document.created`` but must
+    not be written as document bullets.
+    """
+    category = str(payload.get("category") or "").strip().lower()
+    if category in READER_ANNOTATION_CATEGORIES:
+        return True
+    return _nonempty(payload.get("parent_id")) is not None
+
+
+def is_document_event(payload: dict) -> bool:
+    """True for persistable Reader ``*_document.created`` parent documents."""
+    if is_reader_annotation_document(payload):
+        return False
+    event_type = str(payload.get("event_type") or "")
+    if event_type in DOCUMENT_CREATED_EVENTS:
+        return True
+    if event_type.startswith("reader.") and event_type.endswith("document.created"):
+        return True
+    if not event_type.startswith("reader."):
+        return False
+    if any(event_type.endswith(suffix) for suffix in _IGNORED_READER_SUFFIXES):
+        return False
+    return _nonempty(payload.get("title")) is not None or _http_url(payload.get("url")) is not None
 
 
 def clear_book_cache() -> None:
@@ -252,6 +321,69 @@ def format_readwise_bullet(payload: dict) -> str | None:
     return _format_highlight(payload, book)
 
 
+def _host_from_url(value: object) -> str | None:
+    text = _nonempty(value)
+    if not text:
+        return None
+    parsed = urlparse(text)
+    host = parsed.netloc
+    if not host or "@" in host:
+        return None
+    if host.lower().startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def _short_attr(value: object) -> str | None:
+    text = _nonempty(value)
+    if not text:
+        return None
+    collapsed = _collapse(text)
+    if len(collapsed) > _SHORT_ATTR_MAX:
+        return None
+    if collapsed.startswith(("http://", "https://")):
+        return None
+    return collapsed
+
+
+def _document_permalink(payload: dict) -> str | None:
+    """Prefer the official Reader URL; never invent a bookreview link."""
+    url = _http_url(payload.get("url"))
+    if url:
+        return url
+    doc_id = payload.get("id")
+    if doc_id is not None and doc_id != "":
+        return READER_DOC_URL.format(document_id=doc_id)
+    return None
+
+
+def format_document_bullet(payload: dict) -> str | None:
+    """Build a Reader document bullet: ``- [Title](https://read.readwise.io/read/{id})``."""
+    if not is_document_event(payload):
+        return None
+    url = _document_permalink(payload)
+    title = _nonempty(payload.get("title"))
+    site_name = _nonempty(payload.get("site_name"))
+    display = title or site_name or _host_from_url(payload.get("source_url"))
+    if not display and url:
+        display = _host_from_url(url)
+    if not display:
+        return None
+
+    collapsed = _collapse(display)
+    if url:
+        line = f"- [{collapsed}]({url})"
+    else:
+        line = f"- {collapsed}"
+
+    extra = _short_attr(payload.get("author"))
+    if extra is None or extra == collapsed:
+        extra = _short_attr(payload.get("site_name"))
+    if extra and extra != collapsed:
+        line += f" — {extra}"
+    return line
+
+
 def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     text = _nonempty(payload.get("text"))
     if not text:
@@ -292,6 +424,19 @@ def dedup_keys(payload: dict) -> list[str]:
     highlight_id = payload.get("id")
     if highlight_id is not None and highlight_id != "":
         keys.append(HIGHLIGHT_OPEN_URL.format(highlight_id=highlight_id))
+    url = _nonempty(payload.get("url"))
+    if url and url not in keys:
+        keys.append(url)
+    return keys
+
+
+def document_dedup_keys(payload: dict) -> list[str]:
+    """Per-document identifiers: Reader id and ``read.readwise.io`` permalink."""
+    keys: list[str] = []
+    doc_id = payload.get("id")
+    if doc_id is not None and doc_id != "":
+        keys.append(str(doc_id))
+        keys.append(READER_DOC_URL.format(document_id=doc_id))
     url = _nonempty(payload.get("url"))
     if url and url not in keys:
         keys.append(url)
@@ -395,12 +540,24 @@ def write_highlights_by_journal(
     payloads: list[dict],
     now: datetime | None = None,
     raise_errors: bool = False,
+    *,
+    journal_path_fn=None,
+    format_fn=None,
+    keys_fn=None,
 ) -> dict:
-    """Write highlights grouped by journal file (one download/upload per day).
+    """Write events grouped by journal file (one download/upload per day).
 
-    Reuses ``format_readwise_bullet``, ``insert_content_buffet_bullet``, and
-    ``dedup_keys``. Missing journal files are skipped — never written to today.
+    Defaults are the highlight formatter, highlight journal path, and
+    highlight dedup keys. Missing journal files are skipped — never written
+    to today.
     """
+    if journal_path_fn is None:
+        journal_path_fn = get_highlight_journal_path
+    if format_fn is None:
+        format_fn = format_readwise_bullet
+    if keys_fn is None:
+        keys_fn = dedup_keys
+
     summary = _empty_write_summary(selected=len(payloads))
     if not payloads:
         return summary
@@ -410,7 +567,7 @@ def write_highlights_by_journal(
 
     by_path: dict[str, list[dict]] = {}
     for payload in payloads:
-        path = get_highlight_journal_path(journal_folder, payload, now=now)
+        path = journal_path_fn(journal_folder, payload, now=now)
         by_path.setdefault(path, []).append(payload)
 
     for file_path, group in by_path.items():
@@ -430,11 +587,11 @@ def write_highlights_by_journal(
             file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
             last_action = None
             for payload in group:
-                bullet = format_readwise_bullet(payload)
+                bullet = format_fn(payload)
                 if not bullet:
                     continue
                 content, action = insert_content_buffet_bullet(
-                    content, bullet, dedup_keys(payload)
+                    content, bullet, keys_fn(payload)
                 )
                 last_action = action
                 if action in file_counts:
@@ -470,20 +627,37 @@ def write_highlights_by_journal(
 
 
 def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
-    """Append a Readwise highlight to the journal for its highlighted_at date."""
-    if not is_highlight_event(payload):
+    """Append a Readwise highlight or Reader document to the journal for its date."""
+    write_kwargs: dict = {}
+    if is_highlight_event(payload):
+        bullet = format_readwise_bullet(payload)
+    elif is_reader_annotation_document(payload):
         logger.info(
-            "Readwise event ignored (not a highlight): %s",
+            "Readwise document skipped (highlight/note or parent_id set): %s",
+            payload.get("event_type", "unknown"),
+        )
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+    elif is_document_event(payload):
+        bullet = format_document_bullet(payload)
+        write_kwargs = {
+            "journal_path_fn": get_document_journal_path,
+            "format_fn": format_document_bullet,
+            "keys_fn": document_dedup_keys,
+        }
+    else:
+        logger.info(
+            "Readwise event ignored (not a highlight or document): %s",
             payload.get("event_type", "unknown"),
         )
         return {"success": True, "action": "ignored", "error": None, "file_path": None}
 
-    bullet = format_readwise_bullet(payload)
     if not bullet:
         logger.info("Readwise event had no usable fields; skipping write")
         return {"success": True, "action": "ignored", "error": None, "file_path": None}
 
-    result = write_highlights_by_journal([payload], now=now, raise_errors=True)
+    result = write_highlights_by_journal(
+        [payload], now=now, raise_errors=True, **write_kwargs
+    )
     file_path = result["paths"][0] if result["paths"] else None
     if result["skipped_missing_journal"]:
         action = "skipped_missing_journal"

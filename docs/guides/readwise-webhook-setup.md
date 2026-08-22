@@ -1,12 +1,25 @@
 # Readwise Webhook Setup
 
-Point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` and set the shared secret as `READWISE_WEBHOOK_SECRET` (Readwise sends it in the JSON body as `secret`). Set `READWISE_TOKEN` from https://readwise.io/access_token so highlight book titles can be resolved. Only `readwise.highlight.created` events are written to the Obsidian daily journal for `highlighted_at` (3am local rollover) under `### Content Buffet:` as:
+Point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` and set the shared secret as `READWISE_WEBHOOK_SECRET` (Readwise sends it in the JSON body as `secret`). Set `READWISE_TOKEN` from https://readwise.io/access_token so highlight book titles can be resolved.
+
+Subscribe to both:
+
+- `readwise.highlight.created` — highlight quotes under `### Content Buffet:`
+- `reader.any_document.created` — Reader documents as `- [Title](https://read.readwise.io/read/{id})`
+
+Highlights are written as:
 
 ```
 - [[Title - Author]]: ["quote"](https://readwise.io/open/{id})
 ```
 
-The wikilink target is `Title - Author` using the Readwise book title and `author` string as-is (no `bookreview` URL, no `(Book)` suffix, no name reordering). Multiple authors stay in Readwise order, e.g. `[[Zero to One - Peter Thiel, Blake Masters]]`. Author is omitted when missing (`[[Title]]`). The highlight permalink stays on the quote. Missing journal files are skipped, not created.
+The wikilink target is `Title - Author` using the Readwise book title and `author` string as-is (no `bookreview` URL, no `(Book)` suffix, no name reordering). Multiple authors stay in Readwise order, e.g. `[[Zero to One - Peter Thiel, Blake Masters]]`. Author is omitted when missing (`[[Title]]`). The highlight permalink stays on the quote.
+
+Reader documents stay markdown links (not wikilinks): `- [Title](https://read.readwise.io/read/{id})`, with an optional short ` — Author` in plain text.
+
+`reader.any_document.created` includes RSS and newsletter feed items as well as documents you save yourself. Those days will be logged too. If you only want manually saved documents, subscribe to `reader.non_feed_document.created` instead (this endpoint also accepts `reader.feed_document.created` and treats them the same). Reader also models highlights and notes as documents (`category=highlight|note`, or `parent_id` set); those are skipped so they do not duplicate `readwise.highlight.created` lines.
+
+Highlights are dated by `highlighted_at` (3am local rollover). Documents are dated by `created_at`, then `saved_at`, then `updated_at`. Missing journal files are skipped, not created.
 
 ## Backfill historical highlights
 
