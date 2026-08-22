@@ -272,11 +272,14 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
 
 
 def dedup_keys(payload: dict) -> list[str]:
-    """Per-highlight identifiers. Do not include book_id (shared across highlights)."""
+    """Per-highlight identifiers. Do not include book_id (shared across highlights).
+
+    Use the open URL (which embeds the highlight id) rather than the bare id.
+    A raw ``"2"`` would false-positive against dates like ``2026-08-22``.
+    """
     keys: list[str] = []
     highlight_id = payload.get("id")
-    if highlight_id is not None:
-        keys.append(str(highlight_id))
+    if highlight_id is not None and highlight_id != "":
         keys.append(HIGHLIGHT_OPEN_URL.format(highlight_id=highlight_id))
     url = _nonempty(payload.get("url"))
     if url and url not in keys:

@@ -301,12 +301,33 @@ def test_dedup_on_second_run():
     assert uploaded_second == []
 
 
-def test_batch_writes_one_upload_per_journal_file():
+def test_short_highlight_ids_do_not_collide_with_dates():
+    """Bare id '2' must not match the '2' in 2026-08-22 or bookreview/8237."""
     pages = [
         _export_page([
             _book(highlights=[
                 _hl(highlight_id=1, text="First quote"),
                 _hl(highlight_id=2, text="Second quote"),
+            ]),
+        ]),
+    ]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    result, uploaded, _, _ = _run_backfill(
+        pages,
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+    )
+    assert result["selected"] == 2
+    assert result["skipped"] == 0
+    assert "First quote" in uploaded[0]["content"]
+    assert "Second quote" in uploaded[0]["content"]
+
+
+def test_batch_writes_one_upload_per_journal_file():
+    pages = [
+        _export_page([
+            _book(highlights=[
+                _hl(highlight_id=111001, text="First quote"),
+                _hl(highlight_id=111002, text="Second quote"),
             ]),
         ]),
     ]
@@ -368,13 +389,13 @@ def test_export_pagination_follows_next_page_cursor():
         response.raise_for_status = MagicMock()
         if not params or "pageCursor" not in params:
             response.json.return_value = _export_page(
-                [_book(highlights=[_hl(highlight_id=1, text="Page one")])],
+                [_book(highlights=[_hl(highlight_id=111001, text="Page one")])],
                 next_page_cursor="cursor-2",
             )
         else:
             response.json.return_value = _export_page(
                 [_book(user_book_id=99, title="Other", highlights=[
-                    _hl(highlight_id=2, text="Page two", book_id=99),
+                    _hl(highlight_id=111002, text="Page two", book_id=99),
                 ])],
             )
         return response
@@ -382,7 +403,7 @@ def test_export_pagination_follows_next_page_cursor():
     with patch("services.readwise.export.requests.get", side_effect=fake_get):
         payloads = list(iter_export_highlights(updated_after="2025-01-01T00:00:00Z"))
 
-    assert [p["id"] for p in payloads] == [1, 2]
+    assert [p["id"] for p in payloads] == [111001, 111002]
     assert [p["text"] for p in payloads] == ["Page one", "Page two"]
     assert len(calls) == 2
     assert calls[0]["url"] == EXPORT_URL
@@ -397,12 +418,12 @@ def test_export_pagination_follows_next_page_cursor():
 def test_backfill_walks_paginated_export():
     pages = [
         _export_page(
-            [_book(highlights=[_hl(highlight_id=1, text="Page one")])],
+            [_book(highlights=[_hl(highlight_id=111001, text="Page one")])],
             next_page_cursor="cursor-2",
         ),
         _export_page(
             [_book(user_book_id=99, title="Other", highlights=[
-                _hl(highlight_id=2, text="Page two", book_id=99),
+                _hl(highlight_id=111002, text="Page two", book_id=99),
             ])],
         ),
     ]
