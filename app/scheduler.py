@@ -92,6 +92,12 @@ def _send_sunday_wrap_up_email():
     return run_sunday_wrap_up_email()
 
 
+def _backfill_knowledge_hub_buffet(since=None):
+    from services.obsidian.backfill_knowledge_hub_buffet import backfill_knowledge_hub_buffet
+
+    return backfill_knowledge_hub_buffet(since=since)
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -216,6 +222,22 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "backfill_knowledge_hub_buffet",
+        "name": "Backfill Knowledge Hub Content Buffet (manual)",
+        "func": _backfill_knowledge_hub_buffet,
+        # Not on a cadence. Year 2099 keeps the job registered so
+        # POST /scheduler/jobs/backfill_knowledge_hub_buffet/run can fire it
+        # without a DateTrigger disappearing after one run.
+        "trigger": CronTrigger(
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -289,7 +311,8 @@ def run_job_now(job_id, **kwargs):
     """Trigger a scheduled job to run immediately. Returns True if found.
 
     Optional kwargs are stored on the job (used by parameterized one-shots
-    such as ``backfill_readwise_highlights``).
+    such as ``backfill_readwise_highlights`` and
+    ``backfill_knowledge_hub_buffet``).
     """
     job = scheduler.get_job(job_id)
     if job is None:

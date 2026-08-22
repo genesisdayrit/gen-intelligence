@@ -1090,7 +1090,9 @@ async def trigger_job(
 
     ``backfill_readwise_highlights`` accepts optional ``since`` (ISO date,
     default 2024-08-13) and ``updated_after`` (ISO8601, passed to the
-    Readwise export API). Other jobs ignore these query params.
+    Readwise export API). ``backfill_knowledge_hub_buffet`` accepts optional
+    ``since`` (ISO date, default 2018-01-01). Other jobs ignore these query
+    params.
     """
     from scheduler import run_job_now
 
@@ -1098,11 +1100,14 @@ async def trigger_job(
     if job_id == "backfill_readwise_highlights":
         # Always set kwargs so a previous parameterized run cannot leak.
         kwargs = {"since": since, "updated_after": updated_after}
+    elif job_id == "backfill_knowledge_hub_buffet":
+        kwargs = {"since": since}
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:
             payload["since"] = since
-            payload["updated_after"] = updated_after
+            if "updated_after" in kwargs:
+                payload["updated_after"] = updated_after
         return payload
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
