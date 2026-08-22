@@ -24,7 +24,11 @@ from services.obsidian.append_completed_task import append_completed_task
 from services.obsidian.upsert_linear_update import upsert_linear_update
 from services.obsidian.upsert_issue_touched import upsert_issue_touched
 from services.obsidian.add_manus_task import upsert_manus_task
-from services.obsidian.add_readwise_buffet import append_readwise_buffet, is_highlight_event
+from services.obsidian.add_readwise_buffet import (
+    append_readwise_buffet,
+    is_document_event,
+    is_highlight_event,
+)
 from services.obsidian.remove_todoist_completed import remove_todoist_completed
 from services.obsidian.update_telegram_log import update_telegram_log
 from services.obsidian.add_shared_link import (
@@ -874,9 +878,9 @@ def _readwise_secrets_match(provided: object) -> bool:
 
 
 def _process_readwise_event(data: dict) -> None:
-    """Write a Readwise highlight to today's journal. Logs errors; never raises."""
+    """Write a Readwise highlight or Reader document to the journal. Logs errors; never raises."""
     event_type = data.get("event_type", "unknown")
-    title = data.get("text") or data.get("id") or "(no text)"
+    title = data.get("text") or data.get("title") or data.get("id") or "(no text)"
     logger.info("Readwise webhook | event=%s | %s", event_type, str(title)[:100])
     try:
         result = append_readwise_buffet(data)
@@ -890,12 +894,12 @@ async def readwise_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
 ):
-    """Receive Readwise highlight webhook events.
+    """Receive Readwise highlight and Reader document webhook events.
 
     Empty-body "Test Webhook" pings return 200 with no Dropbox write.
-    Authenticated highlight events return 202 and write in the background so
-    Readwise is not stuck retrying on a later Dropbox hiccup. Other event
-    types are acknowledged with 202 and ignored.
+    Authenticated highlight and document-created events return 202 and write
+    in the background so Readwise is not stuck retrying on a later Dropbox
+    hiccup. Other event types are acknowledged with 202 and ignored.
     """
     raw = await request.body()
     if not raw.strip():
@@ -914,9 +918,9 @@ async def readwise_webhook(
         logger.warning("Invalid or missing Readwise webhook secret")
         raise HTTPException(status_code=401, detail="Invalid secret")
 
-    if not is_highlight_event(data):
+    if not (is_highlight_event(data) or is_document_event(data)):
         logger.info(
-            "Readwise event ignored (not a highlight): %s",
+            "Readwise event ignored (not a highlight or document): %s",
             data.get("event_type", "unknown"),
         )
         return JSONResponse(status_code=202, content={"status": "accepted"})
