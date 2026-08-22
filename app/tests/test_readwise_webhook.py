@@ -33,6 +33,7 @@ from services.obsidian.add_readwise_buffet import (
     _get_dropbox_client,
     append_readwise_buffet,
     clear_book_cache,
+    dedup_keys,
     document_dedup_keys,
     fetch_book,
     format_document_bullet,
@@ -462,6 +463,42 @@ def test_append_after_tabbed_sub_bullets():
     assert section.index("Existing") < section.index("a nested note") < section.index("New")
 
 
+def test_highlight_dedup_skips_old_title_dash_author_via_open_url():
+    """Replay of the same highlight skips even when the journal still has Title - Author."""
+    content = """### Content Buffet:
+- [[Deep Work - Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)
+
+### Content Planning
+"""
+    payload = _highlight_payload(title="Deep Work", author="Cal Newport")
+    bullet = format_readwise_bullet(payload)
+    assert "[[Deep Work by Cal Newport]]" in bullet
+    keys = dedup_keys(payload)
+    assert "https://readwise.io/open/954480" in keys
+    assert not any(key in {"Deep Work", "Cal Newport"} for key in keys)
+    updated, action = insert_content_buffet_bullet(content, bullet, keys=keys)
+    assert action == "skipped"
+    assert updated == content
+    assert "[[Deep Work by Cal Newport]]" not in updated
+
+
+def test_highlight_dedup_does_not_match_bare_title_or_author():
+    """A different highlight must not skip just because title/author already appear."""
+    content = """### Content Buffet:
+- [[Deep Work by Cal Newport]]: ["Old quote"](https://readwise.io/open/111)
+
+### Content Planning
+"""
+    payload = _highlight_payload(
+        id=222, title="Deep Work", author="Cal Newport", text="New quote"
+    )
+    bullet = format_readwise_bullet(payload)
+    updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
+    assert action == "inserted"
+    assert "New quote" in updated
+    assert "Old quote" in updated
+
+
 def test_document_dedup_skips_id_and_reader_url():
     content = """### Content Buffet:
 - [Existing](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) — The Verge
@@ -511,7 +548,7 @@ def test_format_official_sample_attaches_book_title(mock_get):
 
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        '- [[Deep Work - Cal Newport]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "bookreview" not in line
@@ -539,7 +576,7 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
 
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        '- [[Deep Work - Cal Newport]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
 
@@ -551,12 +588,14 @@ def test_format_uses_payload_title_and_author():
         _highlight_payload(title="Deep Work", author="Cal Newport")
     )
     assert line == (
-        '- [[Deep Work - Cal Newport]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "bookreview" not in line
     assert "(Book)" not in line
     assert "]] by " not in line
+    assert "[[Deep Work by Cal Newport]]" in line
+    assert "[[Deep Work - Cal Newport]]" not in line
 
 
 def test_format_keeps_readwise_author_string_verbatim():
@@ -569,9 +608,11 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        '- [[Zero to One - Peter Thiel, Blake Masters]]: '
+        '- [[Zero to One by Peter Thiel, Blake Masters]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert line.count(" by ") == 1
+    assert "[[Zero to One - Peter Thiel, Blake Masters]]" not in line
 
     line = format_readwise_bullet(
         _highlight_payload(
@@ -580,7 +621,7 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        "- [[Surely You're Joking, Mr. Feynman! - Richard P. Feynman, "
+        "- [[Surely You're Joking, Mr. Feynman! by Richard P. Feynman, "
         "Ralph Leighton, Edward Hutchings, and Albert R. Hibbs]]: "
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
@@ -592,7 +633,7 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        '- [[Zero to One - Peter Thiel, Blake Masters]]: '
+        '- [[Zero to One by Peter Thiel, Blake Masters]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
 
@@ -605,6 +646,7 @@ def test_format_omits_author_from_wikilink_when_missing():
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert " - " not in line
+    assert " by " not in line
 
 
 def test_format_author_only_when_title_missing():
@@ -625,7 +667,7 @@ def test_format_wikilink_strips_breaking_characters():
         _highlight_payload(title="Foo|Bar #1 ^block]] extra", author="Cal | Newport")
     )
     assert line == (
-        '- [[FooBar 1 block extra - Cal Newport]]: '
+        '- [[FooBar 1 block extra by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
 
@@ -650,7 +692,7 @@ def test_format_wikilink_title_and_unlinked_quote_when_id_missing():
     line = format_readwise_bullet(
         _highlight_payload(id=None, title="Deep Work", author="Cal Newport")
     )
-    assert line == '- [[Deep Work - Cal Newport]]: "Most Amazing Highlight Ever"'
+    assert line == '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever"'
     assert "bookreview" not in line
     assert "readwise.io/open" not in line
 
@@ -774,7 +816,7 @@ def test_parent_document_categories_still_count_as_documents(category):
 
 
 def test_format_tweet_uses_handle_from_author():
-    """Tweet books wikilink as Tweets from @handle, not Title - Author."""
+    """Tweet books wikilink as Tweets from @handle, not Title by Author."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -792,6 +834,7 @@ def test_format_tweet_uses_handle_from_author():
     assert "Tweets From Georgie" not in line
     assert "on Twitter" not in line
     assert "bookreview" not in line
+    assert " by " not in line
 
 
 def test_format_tweet_falls_back_to_twitter_url_handle():
@@ -808,6 +851,7 @@ def test_format_tweet_falls_back_to_twitter_url_handle():
         '- [[Tweets from @forgebitz]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
 
 
 def test_format_tweet_falls_back_to_x_com_url_handle():
@@ -824,10 +868,11 @@ def test_format_tweet_falls_back_to_x_com_url_handle():
         '- [[Tweets from @forgebitz]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
 
 
 def test_format_tweet_missing_handle_falls_back_to_title_author():
-    """Tweet book with no extractable handle keeps the Title - Author rule."""
+    """Tweet book with no extractable handle keeps the Title by Author rule."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -837,7 +882,7 @@ def test_format_tweet_missing_handle_falls_back_to_title_author():
         )
     )
     assert line == (
-        '- [[Tweets From Klaas - Klaas]]: '
+        '- [[Tweets From Klaas by Klaas]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
 
@@ -855,10 +900,11 @@ def test_format_non_tweet_still_uses_title_author():
         )
     )
     assert line == (
-        '- [[Deep Work - Cal Newport]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "Tweets from" not in line
+    assert "[[Deep Work - Cal Newport]]" not in line
 
 
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
@@ -885,6 +931,7 @@ def test_format_tweet_from_fetched_book_fields(mock_get):
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "bookreview" not in line
+    assert " by " not in line
     cached = fetch_book(8237)
     assert cached == {
         "title": "Tweets From Georgie Dorothea 🫩",

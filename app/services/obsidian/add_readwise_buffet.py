@@ -479,7 +479,7 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if tweet_target:
         line = f"- [[{tweet_target}]]: {quote}"
     elif title and author:
-        target = _wikilink_target(f"{title} - {author}")
+        target = _wikilink_target(f"{title} by {author}")
         line = f"- [[{target}]]: {quote}" if target else f"- {quote}"
     elif title:
         line = f"- [[{title}]]: {quote}"

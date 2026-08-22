@@ -10,10 +10,10 @@ Subscribe to both:
 Highlights are written as:
 
 ```
-- [[Title - Author]]: ["quote"](https://readwise.io/open/{id})
+- [[Title by Author]]: ["quote"](https://readwise.io/open/{id})
 ```
 
-The wikilink target is `Title - Author` using the Readwise book title and `author` string as-is (no `bookreview` URL, no `(Book)` suffix, no name reordering). Multiple authors stay in Readwise order, e.g. `[[Zero to One - Peter Thiel, Blake Masters]]`. Author is omitted when missing (`[[Title]]`). Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) use `[[Tweets from @handle]]` instead, with the handle taken from the author or the last path segment of `source_url`. If no handle is found, the `Title - Author` rule still applies. The highlight permalink stays on the quote.
+The wikilink target is `Title by Author` using the Readwise book title and `author` string as-is (no `bookreview` URL, no `(Book)` suffix, no name reordering). Multiple authors stay in Readwise order, e.g. `[[Zero to One by Peter Thiel, Blake Masters]]`. Author is omitted when missing (`[[Title]]`, no trailing ` by `). Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) use `[[Tweets from @handle]]` instead, with the handle taken from the author or the last path segment of `source_url`. Do not put `by` on tweets. If no handle is found, the `Title by Author` rule still applies. The highlight permalink stays on the quote.
 
 Reader documents stay markdown links (not wikilinks): `- [Title](https://read.readwise.io/read/{id})`, with an optional short ` — Author` in plain text.
 
