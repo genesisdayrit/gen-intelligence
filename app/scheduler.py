@@ -80,6 +80,12 @@ def _send_main_thread_rollup():
     return run_main_thread_rollup(hours=6)
 
 
+def _backfill_readwise_highlights(since=None, updated_after=None):
+    from services.readwise.backfill import backfill_readwise_highlights
+
+    return backfill_readwise_highlights(since=since, updated_after=updated_after)
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -177,6 +183,22 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "backfill_readwise_highlights",
+        "name": "Backfill Readwise Highlights (manual)",
+        "func": _backfill_readwise_highlights,
+        # Not on a cadence. Year 2099 keeps the job registered so
+        # POST /scheduler/jobs/backfill_readwise_highlights/run can fire it
+        # without a DateTrigger disappearing after one run.
+        "trigger": CronTrigger(
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -246,10 +268,17 @@ def get_jobs_status():
     return jobs
 
 
-def run_job_now(job_id):
-    """Trigger a scheduled job to run immediately. Returns True if found."""
+def run_job_now(job_id, **kwargs):
+    """Trigger a scheduled job to run immediately. Returns True if found.
+
+    Optional kwargs are stored on the job (used by parameterized one-shots
+    such as ``backfill_readwise_highlights``).
+    """
     job = scheduler.get_job(job_id)
     if job is None:
         return False
-    scheduler.modify_job(job_id, next_run_time=datetime.now(pytz.utc))
+    updates = {"next_run_time": datetime.now(pytz.utc)}
+    if kwargs:
+        updates["kwargs"] = kwargs
+    scheduler.modify_job(job_id, **updates)
     return True

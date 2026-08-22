@@ -233,10 +233,18 @@ def _highlight_permalink(payload: dict) -> str | None:
 
 
 def format_readwise_bullet(payload: dict) -> str | None:
-    """Build a compact highlight bullet. Looks up book title when possible."""
+    """Build a compact highlight bullet. Looks up book title when possible.
+
+    Export payloads include ``title``; use that and skip the books API. Webhook
+    payloads typically omit it, so fall back to GET /api/v2/books/{id}/.
+    """
     if not is_highlight_event(payload):
         return None
-    book = fetch_book(payload.get("book_id"))
+    title = _nonempty(payload.get("title"))
+    if title:
+        book = {"title": title}
+    else:
+        book = fetch_book(payload.get("book_id"))
     return _format_highlight(payload, book)
 
 
@@ -264,11 +272,14 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
 
 
 def dedup_keys(payload: dict) -> list[str]:
-    """Per-highlight identifiers. Do not include book_id (shared across highlights)."""
+    """Per-highlight identifiers. Do not include book_id (shared across highlights).
+
+    Use the open URL (which embeds the highlight id) rather than the bare id.
+    A raw ``"2"`` would false-positive against dates like ``2026-08-22``.
+    """
     keys: list[str] = []
     highlight_id = payload.get("id")
-    if highlight_id is not None:
-        keys.append(str(highlight_id))
+    if highlight_id is not None and highlight_id != "":
         keys.append(HIGHLIGHT_OPEN_URL.format(highlight_id=highlight_id))
     url = _nonempty(payload.get("url"))
     if url and url not in keys:
@@ -348,6 +359,105 @@ def insert_content_buffet_bullet(
     return "\n".join(updated), "inserted"
 
 
+def _resolve_journal_folder(dbx: dropbox.Dropbox) -> str:
+    vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
+    if not vault_path:
+        raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
+    daily_folder = _find_folder_by_suffix(dbx, vault_path, "_Daily")
+    return _find_folder_by_suffix(dbx, daily_folder, "_Journal")
+
+
+def _empty_write_summary(selected: int = 0) -> dict:
+    return {
+        "selected": selected,
+        "inserted": 0,
+        "replaced": 0,
+        "skipped": 0,
+        "skipped_missing_journal": 0,
+        "files_written": 0,
+        "errors": [],
+        "paths": [],
+    }
+
+
+def write_highlights_by_journal(
+    payloads: list[dict],
+    now: datetime | None = None,
+    raise_errors: bool = False,
+) -> dict:
+    """Write highlights grouped by journal file (one download/upload per day).
+
+    Reuses ``format_readwise_bullet``, ``insert_content_buffet_bullet``, and
+    ``dedup_keys``. Missing journal files are skipped — never written to today.
+    """
+    summary = _empty_write_summary(selected=len(payloads))
+    if not payloads:
+        return summary
+
+    dbx = _get_dropbox_client()
+    journal_folder = _resolve_journal_folder(dbx)
+
+    by_path: dict[str, list[dict]] = {}
+    for payload in payloads:
+        path = get_highlight_journal_path(journal_folder, payload, now=now)
+        by_path.setdefault(path, []).append(payload)
+
+    for file_path, group in by_path.items():
+        summary["paths"].append(file_path)
+        try:
+            try:
+                content = _get_file_content(dbx, file_path)
+            except FileNotFoundError:
+                logger.warning(
+                    "Readwise buffet skipped; journal not found (will not write today): %s",
+                    file_path,
+                )
+                summary["skipped_missing_journal"] += len(group)
+                continue
+
+            original = content
+            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
+            last_action = None
+            for payload in group:
+                bullet = format_readwise_bullet(payload)
+                if not bullet:
+                    continue
+                content, action = insert_content_buffet_bullet(
+                    content, bullet, dedup_keys(payload)
+                )
+                last_action = action
+                if action in file_counts:
+                    file_counts[action] += 1
+                    summary[action] += 1
+
+            if content != original:
+                dbx.files_upload(
+                    content.encode("utf-8"),
+                    file_path,
+                    mode=dropbox.files.WriteMode.overwrite,
+                )
+                summary["files_written"] += 1
+                if len(group) == 1 and last_action:
+                    logger.info("Readwise buffet %s path=%s", last_action, file_path)
+                else:
+                    logger.info(
+                        "Readwise buffet wrote path=%s inserted=%s replaced=%s skipped=%s",
+                        file_path,
+                        file_counts["inserted"],
+                        file_counts["replaced"],
+                        file_counts["skipped"],
+                    )
+            elif last_action == "skipped":
+                logger.info("Readwise buffet skipped (duplicate) path=%s", file_path)
+        except Exception as exc:
+            logger.exception("Readwise buffet failed for %s", file_path)
+            if raise_errors:
+                raise
+            summary["errors"].append(f"{file_path}: {exc}")
+
+    return summary
+
+
 def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     """Append a Readwise highlight to the journal for its highlighted_at date."""
     if not is_highlight_event(payload):
@@ -362,37 +472,16 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
         logger.info("Readwise event had no usable fields; skipping write")
         return {"success": True, "action": "ignored", "error": None, "file_path": None}
 
-    vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
-    if not vault_path:
-        raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
-
-    dbx = _get_dropbox_client()
-    daily_folder = _find_folder_by_suffix(dbx, vault_path, "_Daily")
-    journal_folder = _find_folder_by_suffix(dbx, daily_folder, "_Journal")
-    file_path = get_highlight_journal_path(journal_folder, payload, now=now)
-    try:
-        content = _get_file_content(dbx, file_path)
-    except FileNotFoundError:
-        logger.warning(
-            "Readwise buffet skipped; journal not found (will not write today): %s",
-            file_path,
-        )
-        return {
-            "success": True,
-            "action": "skipped_missing_journal",
-            "error": None,
-            "file_path": file_path,
-        }
-
-    updated, action = insert_content_buffet_bullet(content, bullet, dedup_keys(payload))
-    if action == "skipped":
-        logger.info("Readwise buffet skipped (duplicate) path=%s", file_path)
-        return {"success": True, "action": action, "error": None, "file_path": file_path}
-
-    dbx.files_upload(
-        updated.encode("utf-8"),
-        file_path,
-        mode=dropbox.files.WriteMode.overwrite,
-    )
-    logger.info("Readwise buffet %s path=%s", action, file_path)
+    result = write_highlights_by_journal([payload], now=now, raise_errors=True)
+    file_path = result["paths"][0] if result["paths"] else None
+    if result["skipped_missing_journal"]:
+        action = "skipped_missing_journal"
+    elif result["skipped"]:
+        action = "skipped"
+    elif result["replaced"]:
+        action = "replaced"
+    elif result["inserted"]:
+        action = "inserted"
+    else:
+        action = "ignored"
     return {"success": True, "action": action, "error": None, "file_path": file_path}

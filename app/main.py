@@ -1077,12 +1077,29 @@ async def list_scheduled_jobs():
 
 
 @app.post("/scheduler/jobs/{job_id}/run")
-async def trigger_job(job_id: str):
-    """Trigger a scheduled job to run immediately."""
+async def trigger_job(
+    job_id: str,
+    since: str | None = None,
+    updated_after: str | None = None,
+):
+    """Trigger a scheduled job to run immediately.
+
+    ``backfill_readwise_highlights`` accepts optional ``since`` (ISO date,
+    default 2024-08-13) and ``updated_after`` (ISO8601, passed to the
+    Readwise export API). Other jobs ignore these query params.
+    """
     from scheduler import run_job_now
 
-    if run_job_now(job_id):
-        return {"status": "triggered", "job_id": job_id}
+    kwargs = {}
+    if job_id == "backfill_readwise_highlights":
+        # Always set kwargs so a previous parameterized run cannot leak.
+        kwargs = {"since": since, "updated_after": updated_after}
+    if run_job_now(job_id, **kwargs):
+        payload = {"status": "triggered", "job_id": job_id}
+        if kwargs:
+            payload["since"] = since
+            payload["updated_after"] = updated_after
+        return payload
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
 
