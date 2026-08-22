@@ -61,12 +61,13 @@ date: 2026-08-22
 JOURNAL_FOLDER = "/obsidian/personal/01_daily/_journal"
 
 
-def _book(user_book_id=8237, title="Deep Work", highlights=None, **overrides):
+def _book(user_book_id=8237, title="Deep Work", author="Cal Newport", highlights=None, **overrides):
     book = {
         "user_book_id": user_book_id,
         "is_deleted": False,
         "title": title,
         "readable_title": title,
+        "author": author,
         "readwise_url": f"https://readwise.io/bookreview/{user_book_id}",
         "highlights": highlights or [],
     }
@@ -287,7 +288,7 @@ def test_dedup_on_second_run():
     assert first["replaced"] == 1
     assert first["files_written"] == 1
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded_first[0]["content"]
-    assert "[[Deep Work]]:" in uploaded_first[0]["content"]
+    assert "[[Deep Work - Cal Newport]]:" in uploaded_first[0]["content"]
     assert "bookreview" not in uploaded_first[0]["content"]
 
     second, uploaded_second, _, _ = _run_backfill(
@@ -358,14 +359,14 @@ def test_export_title_used_without_books_api():
     assert result["files_written"] == 1
     mock_fetch.assert_not_called()
     assert "book 8237" not in uploaded[0]["content"]
-    assert "[[Deep Work]]:" in uploaded[0]["content"]
+    assert "[[Deep Work - Cal Newport]]:" in uploaded[0]["content"]
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded[0]["content"]
     assert "bookreview" not in uploaded[0]["content"]
     assert "(Book)" not in uploaded[0]["content"]
 
 
 def test_missing_title_writes_quote_only():
-    pages = [_export_page([_book(title="", readable_title="", highlights=[_hl()])])]
+    pages = [_export_page([_book(title="", readable_title="", author="", highlights=[_hl()])])]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     with patch("services.obsidian.add_readwise_buffet.fetch_book", return_value=None):
         result, uploaded, _, _ = _run_backfill(
@@ -377,6 +378,27 @@ def test_missing_title_writes_quote_only():
     assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     assert "[[" not in line
     assert "book 8237" not in uploaded[0]["content"]
+
+
+def test_missing_title_with_author_writes_author_prefix():
+    pages = [_export_page([_book(title="", readable_title="", highlights=[_hl()])])]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    with patch("services.obsidian.add_readwise_buffet.fetch_book") as mock_fetch:
+        result, uploaded, _, _ = _run_backfill(
+            pages,
+            contents_by_path={nov_path: SAMPLE_JOURNAL},
+        )
+    assert result["files_written"] == 1
+    mock_fetch.assert_not_called()
+    line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
+    assert line == '- Cal Newport: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert "[[" not in line
+
+
+def test_export_carries_author_onto_payload():
+    payload = highlight_from_export(_book(), _hl())
+    assert payload["title"] == "Deep Work"
+    assert payload["author"] == "Cal Newport"
 
 
 # ---------------------------------------------------------------------------

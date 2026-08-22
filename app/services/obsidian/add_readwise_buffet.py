@@ -215,16 +215,15 @@ def fetch_book(book_id: object) -> dict | None:
     return book
 
 
-def _wikilink_title(title: str) -> str | None:
-    """Sanitize a Readwise title for use inside ``[[...]]``.
+def _wikilink_target(text: str) -> str | None:
+    """Sanitize a string for use inside ``[[...]]``.
 
     Only characters that would break a wikilink are removed: ``|``, ``#``,
-    ``^``, and ``]]``. The title is otherwise used as-is (no `` (Book)``
-    suffix, no vault fuzzy-match). Returns None if nothing usable remains.
+    ``^``, and ``]]``. Returns None if nothing usable remains.
     """
-    text = _collapse(title).replace("]]", "")
-    text = re.sub(r"[|#^]", "", text)
-    return _collapse(text) or None
+    cleaned = _collapse(text).replace("]]", "")
+    cleaned = re.sub(r"[|#^]", "", cleaned)
+    return _collapse(cleaned) or None
 
 
 def _highlight_permalink(payload: dict) -> str | None:
@@ -236,16 +235,18 @@ def _highlight_permalink(payload: dict) -> str | None:
 
 
 def format_readwise_bullet(payload: dict) -> str | None:
-    """Build a compact highlight bullet. Looks up book title when possible.
+    """Build a compact highlight bullet. Looks up book title/author when possible.
 
-    Export payloads include ``title``; use that and skip the books API. Webhook
-    payloads typically omit it, so fall back to GET /api/v2/books/{id}/.
+    Export payloads include ``title`` and ``author``; use those and skip the
+    books API. Webhook payloads typically omit them, so fall back to
+    GET /api/v2/books/{id}/.
     """
     if not is_highlight_event(payload):
         return None
     title = _nonempty(payload.get("title"))
-    if title:
-        book = {"title": title}
+    author = _nonempty(payload.get("author"))
+    if title or author:
+        book = {"title": title, "author": author}
     else:
         book = fetch_book(payload.get("book_id"))
     return _format_highlight(payload, book)
@@ -256,14 +257,24 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if not text:
         return None
     note = _nonempty(payload.get("note"))
-    title = _wikilink_title((book or {}).get("title") or "")
+    raw_title = _nonempty((book or {}).get("title"))
+    raw_author = _nonempty((book or {}).get("author"))
+    title = _wikilink_target(raw_title) if raw_title else None
+    author = _collapse(raw_author) if raw_author else None
+    if author and not _wikilink_target(author):
+        author = None
     highlight_url = _highlight_permalink(payload)
     quote = f'"{_collapse(text)}"'
     if highlight_url:
         quote = f"[{quote}]({highlight_url})"
 
-    if title:
+    if title and author:
+        target = _wikilink_target(f"{title} - {author}")
+        line = f"- [[{target}]]: {quote}" if target else f"- {quote}"
+    elif title:
         line = f"- [[{title}]]: {quote}"
+    elif author:
+        line = f"- {author}: {quote}"
     else:
         line = f"- {quote}"
     if note:
