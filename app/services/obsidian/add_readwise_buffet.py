@@ -700,7 +700,10 @@ def _format_tweet_page_bullet(payload: dict, book: dict | None = None) -> str | 
 
     Journal keeps ``- [[Tweets from @handle]]: ["quote"](open/id)``.
     The handle page is already that note, so this is ``- ["quote"](open/id)``.
+    Tweets only: requires ``_is_tweet_book`` and ``_tweet_handle``.
     """
+    if not _is_tweet_book(book) or not _tweet_handle(book):
+        return None
     target = _tweet_wikilink_target(book)
     if not target:
         return None
@@ -1102,10 +1105,13 @@ def _append_tweet_page(
 ) -> str | None:
     """Create or append one tweet bookmark on the handle's Knowledge Hub note.
 
-    Returns the Dropbox action (``created``, ``inserted``, ``replaced``,
-    ``skipped``) or None when this highlight is not a handle tweet.
+    Tweets only — gated on ``_is_tweet_book`` and ``_tweet_handle``. Returns
+    the Dropbox action (``created``, ``inserted``, ``replaced``, ``skipped``)
+    or None when this highlight is not a tweet with a handle.
     """
     book = _resolve_highlight_book(payload)
+    if not _is_tweet_book(book) or not _tweet_handle(book):
+        return None
     target = _tweet_wikilink_target(book)
     if not target:
         return None
@@ -1147,17 +1153,20 @@ def _append_tweet_pages_after_journal(
     """Best-effort handle-page writes after a successful highlight journal pass.
 
     ``readwise.highlight.created`` only (the same ``format_readwise_bullet``
-    writer the journal tweet line uses). Not used for Reader
-    ``*_document.created``, share-link, YouTube, or Raindrop. Resolves the
-    Knowledge Hub folder only when a payload is actually a tweet-with-handle.
-    Failures are logged and never raised — the journal write already happened.
+    writer the journal tweet line uses). Gated on ``_is_tweet_book`` and
+    ``_tweet_handle`` — articles, books, Reader docs, and other highlights
+    stay journal-only (no page create, no ``### Bookmarked Tweets``, no
+    append). Not used for Reader ``*_document.created``, share-link,
+    YouTube, or Raindrop. Resolves the Knowledge Hub folder only when the
+    payload is a tweet with a handle. Failures are logged and never raised
+    — the journal write already happened.
     """
     hub_path: str | None = None
     for payload in payloads:
         if not is_highlight_event(payload):
             continue
         book = _resolve_highlight_book(payload)
-        if not _tweet_wikilink_target(book):
+        if not _is_tweet_book(book) or not _tweet_handle(book):
             continue
         try:
             if hub_path is None:

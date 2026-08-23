@@ -34,8 +34,10 @@ from services.obsidian.add_readwise_buffet import (
     BOOKMARKED_TWEETS_HEADER,
     _format_tweet_page_bullet,
     _get_dropbox_client,
+    _is_tweet_book,
     _new_tweet_page_markdown,
     _resolve_highlight_book,
+    _tweet_handle,
     _tweet_wikilink_target,
     append_readwise_buffet,
     clear_book_cache,
@@ -1954,6 +1956,44 @@ def test_reader_document_created_does_not_write_tweet_page():
     assert result["success"] is True
     assert result["action"] == "created"
     mock_tweets.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"title": "Deep Work", "author": "Cal Newport", "category": "books", "source": "kindle"},
+        {"title": "A long essay", "author": "The Verge", "category": "articles", "source": "reader"},
+        {"title": "Weekly notes", "author": "Casey Newton", "category": "articles"},
+        {"title": "Invoice.pdf", "author": None, "category": "pdfs"},
+    ],
+)
+def test_non_tweet_highlights_never_touch_bookmarked_tweets_or_hub(overrides):
+    """Articles, books, and other highlights stay journal-only."""
+    clear_book_cache()
+    payload = _highlight_payload(**overrides)
+    book = _resolve_highlight_book(payload)
+    assert _is_tweet_book(book) is False
+    assert _tweet_handle(book) is None
+    assert _format_tweet_page_bullet(payload, book) is None
+
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder"
+    ) as mock_hub, patch(
+        "services.obsidian.add_readwise_buffet._append_tweet_page"
+    ) as mock_page:
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    mock_hub.assert_not_called()
+    mock_page.assert_not_called()
+    assert TWEET_PAGE_PATH not in store
+    assert not any("Tweets from" in item["path"] for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
+    assert "### Content Buffet:" in store[JOURNAL_NOV_PATH]
+    assert "Most Amazing Highlight Ever" in store[JOURNAL_NOV_PATH]
 
 
 def test_non_tweet_highlight_does_not_create_tweet_page_or_section():
