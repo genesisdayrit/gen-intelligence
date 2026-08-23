@@ -1925,6 +1925,37 @@ A paragraph that must survive.
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
 
 
+def test_reader_document_created_does_not_write_tweet_page():
+    """reader.*_document.created must not create Tweets from @handle pages."""
+    with patch(
+        "services.obsidian.add_readwise_buffet._append_tweet_pages_after_journal"
+    ) as mock_tweets, patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Tweets From Georgie.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": True, "bookmark_id": "rd-1", "error": None},
+    ):
+        result = append_readwise_buffet(
+            _reader_payload(
+                title="Tweets From Georgie Dorothea",
+                author="@georgiedorothea on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/georgiedorothea",
+            )
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_tweets.assert_not_called()
+
+
 def test_non_tweet_highlight_does_not_create_tweet_page_or_section():
     clear_book_cache()
     mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})

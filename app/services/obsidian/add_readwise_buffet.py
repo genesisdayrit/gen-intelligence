@@ -1144,11 +1144,13 @@ def _append_tweet_pages_after_journal(
     dbx: dropbox.Dropbox,
     payloads: list[dict],
 ) -> None:
-    """Best-effort handle-page writes after a successful journal pass.
+    """Best-effort handle-page writes after a successful highlight journal pass.
 
-    Resolves the Knowledge Hub folder only when a payload is actually a
-    tweet-with-handle. Failures are logged and never raised — the journal
-    write already happened.
+    ``readwise.highlight.created`` only (the same ``format_readwise_bullet``
+    writer the journal tweet line uses). Not used for Reader
+    ``*_document.created``, share-link, YouTube, or Raindrop. Resolves the
+    Knowledge Hub folder only when a payload is actually a tweet-with-handle.
+    Failures are logged and never raised — the journal write already happened.
     """
     hub_path: str | None = None
     for payload in payloads:
@@ -1181,9 +1183,12 @@ def write_highlights_by_journal(
 
     Defaults are the highlight formatter, highlight journal path, and
     highlight dedup keys. Missing journal files are skipped — never written
-    to today. After a successful journal pass, tweet highlights also
-    create or append the ``Tweets from @handle`` Knowledge Hub page.
-    Page failures are logged and never undo the journal write.
+    to today. After a successful journal pass, tweet *highlights* also
+    create or append the ``Tweets from @handle`` Knowledge Hub page when
+    ``format_fn`` is ``format_readwise_bullet`` (webhook
+    ``readwise.highlight.created`` and the existing highlight backfill,
+    which already calls this writer). Document fallback / other formatters
+    skip it. Page failures are logged and never undo the journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -1428,9 +1433,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     YAML extras when present) and write a standalone ``- [[Title by Author]]``
     (or ``- [[Title]]`` if no author) to that day's Content Buffet, then
     bookmark the document page URL in Raindrop Unsorted. Highlights wikilink
-    that same KH stem and are not bookmarked. Tweet highlights also create
-    or append ``Tweets from @handle`` under ``### Bookmarked Tweets`` after
-    the journal write. Child annotation documents are ignored.
+    that same KH stem and are not bookmarked. ``readwise.highlight.created``
+    tweet highlights also create or append ``Tweets from @handle`` under
+    ``### Bookmarked Tweets`` after the journal write. Reader document
+    events, share-link, YouTube, and Raindrop do not write that page.
+    Child annotation documents are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)
