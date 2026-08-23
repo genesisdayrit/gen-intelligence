@@ -17,7 +17,7 @@ from openai import OpenAI
 from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
 from .utils.author_yaml import (
     author_frontmatter_value,
-    author_yaml_literal,
+    author_yaml_field,
     is_plain_to_wikilink_author_upgrade,
     quote_yaml_scalar,
 )
@@ -262,15 +262,21 @@ def _frontmatter_empty(value: object) -> bool:
     return False
 
 
-def _prepare_author_frontmatter_value(value: object) -> str | None:
-    """Wikilink an author string for YAML. None when empty/junk."""
+def _prepare_author_frontmatter_value(value: object) -> str | list[str] | None:
+    """Wikilink an author string or list for YAML. None when empty/junk."""
     if value is None or (isinstance(value, str) and not str(value).strip()):
+        return None
+    if isinstance(value, list) and not value:
         return None
     return author_frontmatter_value(value)
 
 
-def _should_write_author(existing: object, new: str) -> bool:
-    """Fill empty author, or upgrade the same plain-text author(s) to wikilinks."""
+def _should_write_author(existing: object, new: str | list[str]) -> bool:
+    """Fill empty author, or upgrade the same author(s) to the new YAML form.
+
+    Accepts a plain-text scalar, the old comma-joined ``"[[A]], [[B]]"``
+    string, or the new list of wikilinks.
+    """
     if _frontmatter_empty(existing):
         return True
     return is_plain_to_wikilink_author_upgrade(existing, new)
@@ -279,14 +285,17 @@ def _should_write_author(existing: object, new: str) -> bool:
 def _merge_extra_frontmatter(frontmatter: dict, extra: dict | None) -> bool:
     """Set extra keys when missing or empty. Does not overwrite People or body.
 
-    ``author`` is stored as wikilink(s). A plain-text existing value is replaced
-    only when it is the same author(s) as the incoming wikilinked form.
+    ``author`` is a quoted wikilink string (one person) or a list of those
+    strings (several). A plain-text or comma-joined ``"[[A]], [[B]]"`` value
+    is replaced only when it is the same author(s) as the incoming form.
     """
     if not extra:
         return False
     changed = False
     for key, value in extra.items():
         if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        if isinstance(value, list) and not value:
             continue
         if key == "author":
             prepared = _prepare_author_frontmatter_value(value)
@@ -317,11 +326,13 @@ def _extra_frontmatter_yaml(
             continue
         if value is None or (isinstance(value, str) and not str(value).strip()):
             continue
+        if isinstance(value, list) and not value:
+            continue
         if key == "author":
             prepared = _prepare_author_frontmatter_value(value)
             if not prepared:
                 continue
-            lines.append(f"{key}: {author_yaml_literal(prepared)}")
+            lines.append(author_yaml_field(prepared, key=key))
             continue
         rendered = str(value)
         if "[[" in rendered:
@@ -634,7 +645,7 @@ def add_shared_link(
             if extra_author:
                 author_source = extra_author
 
-        author_value = author_yaml_literal(author_source)
+        author_field = author_yaml_field(author_source)
 
         extra_yaml = _extra_frontmatter_yaml(extra_frontmatter, skip_keys={"URL", "author"})
 
@@ -657,7 +668,7 @@ modified time: {now_utc.isoformat()}
 key words:
 People:{people_yaml}
 URL: {url_value}
-author: {author_value}{extra_yaml}
+{author_field}{extra_yaml}
 Notes+Ideas:
 Experiences:
 Tags:

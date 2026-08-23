@@ -3003,10 +3003,13 @@ def test_two_authors_become_two_distinct_people_and_author_links():
     assert result["success"] is True
     page = store[page_path]
     frontmatter, _body = _extract_frontmatter(page)
-    assert frontmatter["author"] == "[[Alice Smith]], [[Bob Jones]]"
+    assert frontmatter["author"] == ["[[Alice Smith]]", "[[Bob Jones]]"]
     assert frontmatter["People"] == ["[[Alice Smith]]", "[[Bob Jones]]"]
     assert page.count("[[Alice Smith]]") == 2  # author key + People
     assert page.count("[[Bob Jones]]") == 2
+    assert 'author: "[[Alice Smith]], [[Bob Jones]]"' not in page
+    assert '  - "[[Alice Smith]]"' in page
+    assert '  - "[[Bob Jones]]"' in page
     assert (
         '- [[Increasing Returns by Alice Smith, Alice Smith, Bob Jones]]: '
         '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
