@@ -302,6 +302,62 @@ def _wikilink_target(text: str) -> str | None:
     return _collapse(cleaned) or None
 
 
+def _sanitize_note_filename(title: str) -> str:
+    """Same filename sanitizer Knowledge Hub uses for share-link notes."""
+    from services.obsidian.add_shared_link import _sanitize_filename
+
+    return _sanitize_filename(title)
+
+
+def knowledge_hub_note_stem(title: str | None) -> str | None:
+    """Turn a document/book title into the Knowledge Hub filename stem.
+
+    Applies ``_sanitize_filename`` then ``_wikilink_from_note_stem`` so
+    highlight wikilinks resolve to the same note a share/document save created.
+    Returns None when the title is empty or sanitizes to junk.
+    """
+    text = _nonempty(title)
+    if not text:
+        return None
+    stem = _wikilink_from_note_stem(_sanitize_note_filename(text))
+    if not stem or not re.search(r"[^\W_]", stem, re.UNICODE):
+        return None
+    return stem
+
+
+def document_page_url(payload: dict) -> str | None:
+    """Prefer ``source_url`` when it is an http(s) page, else Reader permalink."""
+    return _http_url(payload.get("source_url")) or _document_permalink(payload)
+
+
+def document_journal_date(payload: dict, now: datetime | None = None) -> str:
+    """3am-aware journal date label for a Reader document (e.g. ``Aug 22, 2026``)."""
+    local = document_local_datetime(payload, now=now)
+    return journal_filename(get_effective_date(local)).removesuffix(".md")
+
+
+def _youtube_url_for_document(payload: dict, url: str | None) -> str | None:
+    """Return a YouTube URL from the document if source/url is YouTube."""
+    from services.obsidian.add_youtube_link import is_valid_youtube_url
+
+    for href in (url, _http_url(payload.get("source_url")), _http_url(payload.get("url"))):
+        if href and is_valid_youtube_url(href):
+            return href
+    return None
+
+
+def _create_shared_link(url: str, title: str | None, journal_date: str) -> dict:
+    from services.obsidian.add_shared_link import add_shared_link
+
+    return add_shared_link(url, title=title, journal_date=journal_date)
+
+
+def _create_youtube_link(url: str, journal_date: str) -> dict:
+    from services.obsidian.add_youtube_link import add_youtube_link
+
+    return add_youtube_link(url, journal_date=journal_date)
+
+
 def _book_from_payload(payload: dict) -> dict:
     """Book fields already present on a webhook/export payload."""
     return {
@@ -466,7 +522,6 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     note = _nonempty(payload.get("note"))
     raw_title = _nonempty((book or {}).get("title"))
     raw_author = _nonempty((book or {}).get("author"))
-    title = _wikilink_target(raw_title) if raw_title else None
     author = _collapse(raw_author) if raw_author else None
     if author and not _wikilink_target(author):
         author = None
@@ -476,13 +531,11 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
         quote = f"[{quote}]({highlight_url})"
 
     tweet_target = _tweet_wikilink_target(book)
+    stem = knowledge_hub_note_stem(raw_title)
     if tweet_target:
         line = f"- [[{tweet_target}]]: {quote}"
-    elif title and author:
-        target = _wikilink_target(f"{title} by {author}")
-        line = f"- [[{target}]]: {quote}" if target else f"- {quote}"
-    elif title:
-        line = f"- [[{title}]]: {quote}"
+    elif stem:
+        line = f"- [[{stem}]]: {quote}"
     elif author:
         line = f"- {author}: {quote}"
     else:
@@ -543,14 +596,35 @@ def _planning_index(lines: list[str]) -> int | None:
     return None
 
 
+def _section_has_dedup_key(
+    section_body: list[str],
+    keys: list[str] | None,
+    *,
+    exact_line: bool,
+) -> bool:
+    if not keys:
+        return False
+    if exact_line:
+        stripped = {line.strip() for line in section_body}
+        return any(key.strip() in stripped for key in keys if key)
+    section_text = "\n".join(section_body)
+    return any(key in section_text for key in keys if key)
+
+
 def insert_content_buffet_bullet(
     content: str,
     bullet: str,
     keys: list[str] | None = None,
+    *,
+    exact_line: bool = False,
 ) -> tuple[str, str]:
     """Insert ``bullet`` under Content Buffet. Returns (updated_content, action).
 
     Actions: ``inserted``, ``replaced`` (empty placeholder), ``skipped`` (dedup).
+
+    ``exact_line=True`` matches stripped lines only, so a standalone
+    ``- [[Note Title]]`` does not collapse into
+    ``- [[Note Title]]: ["quote"](https://readwise.io/open/{id})``.
     """
     lines = content.split("\n")
     header_idx, section_end = _section_bounds(lines)
@@ -568,10 +642,8 @@ def insert_content_buffet_bullet(
         return "\n".join(updated), "inserted"
 
     section_body = lines[header_idx + 1 : section_end]
-    section_text = "\n".join(section_body)
-    for key in keys or []:
-        if key and key in section_text:
-            return content, "skipped"
+    if _section_has_dedup_key(section_body, keys, exact_line=exact_line):
+        return content, "skipped"
 
     nonempty = [line for line in section_body if line.strip()]
     if len(nonempty) == 1 and EMPTY_PLACEHOLDER.match(nonempty[0].strip()):
@@ -605,6 +677,19 @@ def _wikilink_from_note_stem(note_title: str) -> str | None:
     return cleaned or None
 
 
+def standalone_wikilink_bullet(note_title: str) -> tuple[str, list[str]] | None:
+    """Standalone buffet line ``- [[stem]]`` with exact-line dedup keys.
+
+    Keys are the full bullet only. A later highlight line
+    ``- [[stem]]: ["quote"](https://readwise.io/open/{id})`` must not match.
+    """
+    target = _wikilink_from_note_stem(note_title)
+    if not target:
+        return None
+    bullet = f"- [[{target}]]"
+    return bullet, [bullet]
+
+
 def append_wikilink_to_journal_buffet(
     note_title: str,
     journal_date: str,
@@ -614,19 +699,18 @@ def append_wikilink_to_journal_buffet(
 
     ``journal_date`` must be the same string written to KH YAML ``Journal``
     (e.g. ``Aug 22, 2026``). Missing journal files are skipped — never created
-    and never raised to the caller.
+    and never raised to the caller. Dedup is exact-line on the standalone
+    wikilink so highlight quote lines are not treated as the same entry.
     """
     result: dict = {"success": True, "action": None, "error": None, "file_path": None}
-    target = _wikilink_from_note_stem(note_title)
-    if not target:
+    prepared = standalone_wikilink_bullet(note_title)
+    if not prepared:
         logger.info("KH journal buffet skipped; empty wikilink target from %r", note_title)
         result["action"] = "ignored"
         return result
 
-    bullet = f"- [[{target}]]"
-    keys = [bullet, f"[[{target}]]", target]
-    if note_title and note_title != target:
-        keys.append(note_title)
+    bullet, keys = prepared
+    target = _wikilink_from_note_stem(note_title) or note_title
 
     try:
         if dbx is None:
@@ -644,7 +728,9 @@ def append_wikilink_to_journal_buffet(
             result["action"] = "skipped_missing_journal"
             return result
 
-        updated, action = insert_content_buffet_bullet(content, bullet, keys)
+        updated, action = insert_content_buffet_bullet(
+            content, bullet, keys, exact_line=True
+        )
         result["action"] = action
         if action != "skipped" and updated != content:
             dbx.files_upload(
@@ -774,37 +860,14 @@ def write_highlights_by_journal(
     return summary
 
 
-def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
-    """Append a Readwise highlight or Reader document to the journal for its date."""
-    write_kwargs: dict = {}
-    if is_highlight_event(payload):
-        bullet = format_readwise_bullet(payload)
-    elif is_reader_annotation_document(payload):
-        logger.info(
-            "Readwise document skipped (highlight/note or parent_id set): %s",
-            payload.get("event_type", "unknown"),
-        )
-        return {"success": True, "action": "ignored", "error": None, "file_path": None}
-    elif is_document_event(payload):
-        bullet = format_document_bullet(payload)
-        write_kwargs = {
-            "journal_path_fn": get_document_journal_path,
-            "format_fn": format_document_bullet,
-            "keys_fn": document_dedup_keys,
-        }
-    else:
-        logger.info(
-            "Readwise event ignored (not a highlight or document): %s",
-            payload.get("event_type", "unknown"),
-        )
-        return {"success": True, "action": "ignored", "error": None, "file_path": None}
-
-    if not bullet:
-        logger.info("Readwise event had no usable fields; skipping write")
-        return {"success": True, "action": "ignored", "error": None, "file_path": None}
-
+def _write_buffet_bullet(
+    payload: dict,
+    now: datetime | None = None,
+    *,
+    write_kwargs: dict | None = None,
+) -> dict:
     result = write_highlights_by_journal(
-        [payload], now=now, raise_errors=True, **write_kwargs
+        [payload], now=now, raise_errors=True, **(write_kwargs or {})
     )
     file_path = result["paths"][0] if result["paths"] else None
     if result["skipped_missing_journal"]:
@@ -818,3 +881,108 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     else:
         action = "ignored"
     return {"success": True, "action": action, "error": None, "file_path": file_path}
+
+
+def _append_document_markdown_fallback(payload: dict, now: datetime | None = None) -> dict:
+    """Write the legacy Reader URL bullet when KH was skipped for a junk/empty title."""
+    bullet = format_document_bullet(payload)
+    if not bullet:
+        logger.info("Readwise document had no usable title or URL; skipping write")
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+    return _write_buffet_bullet(
+        payload,
+        now=now,
+        write_kwargs={
+            "journal_path_fn": get_document_journal_path,
+            "format_fn": format_document_bullet,
+            "keys_fn": document_dedup_keys,
+        },
+    )
+
+
+def _append_reader_document_knowledge_hub(
+    payload: dict,
+    now: datetime | None = None,
+) -> dict:
+    """Create/update a Knowledge Hub note and buffet wikilink for a parent document."""
+    url = document_page_url(payload)
+    title = _nonempty(payload.get("title"))
+    stem = knowledge_hub_note_stem(title)
+    journal_date = document_journal_date(payload, now=now)
+    youtube_url = _youtube_url_for_document(payload, url)
+
+    if not youtube_url and not stem:
+        logger.info(
+            "Readwise document KH skipped (empty/junk title); writing markdown fallback"
+        )
+        return _append_document_markdown_fallback(payload, now=now)
+
+    if not youtube_url and not url:
+        logger.info("Readwise document KH skipped (no http url)")
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+
+    try:
+        if youtube_url:
+            result = _create_youtube_link(youtube_url, journal_date=journal_date)
+        else:
+            result = _create_shared_link(url, title=title, journal_date=journal_date)
+    except Exception as exc:
+        logger.exception(
+            "Knowledge Hub save failed for Reader document %s", payload.get("id")
+        )
+        return {"success": True, "action": "kh_error", "error": str(exc), "file_path": None}
+
+    if not result.get("success"):
+        logger.error(
+            "Knowledge Hub save failed for Reader document %s: %s",
+            payload.get("id"),
+            result.get("error"),
+        )
+        return {
+            "success": True,
+            "action": result.get("action") or "kh_error",
+            "error": result.get("error"),
+            "file_path": result.get("file_path"),
+        }
+
+    logger.info(
+        "Readwise document KH %s title=%s date=%s",
+        result.get("action"),
+        title or result.get("title"),
+        journal_date,
+    )
+    return {
+        "success": True,
+        "action": result.get("action"),
+        "error": None,
+        "file_path": result.get("file_path"),
+    }
+
+
+def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
+    """Append a Readwise highlight or Reader document to the journal for its date.
+
+    Parent Reader documents create/update a Knowledge Hub note and write
+    ``- [[Note Title]]`` to that day's Content Buffet (same as share-link).
+    Highlights wikilink that KH stem. Child annotation documents are ignored.
+    """
+    if is_highlight_event(payload):
+        bullet = format_readwise_bullet(payload)
+        if not bullet:
+            logger.info("Readwise event had no usable fields; skipping write")
+            return {"success": True, "action": "ignored", "error": None, "file_path": None}
+        return _write_buffet_bullet(payload, now=now)
+    if is_reader_annotation_document(payload):
+        logger.info(
+            "Readwise document skipped (highlight/note or parent_id set): %s",
+            payload.get("event_type", "unknown"),
+        )
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+    if is_document_event(payload):
+        return _append_reader_document_knowledge_hub(payload, now=now)
+
+    logger.info(
+        "Readwise event ignored (not a highlight or document): %s",
+        payload.get("event_type", "unknown"),
+    )
+    return {"success": True, "action": "ignored", "error": None, "file_path": None}

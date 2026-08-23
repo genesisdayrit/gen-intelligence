@@ -31,8 +31,10 @@ def _force_la_timezone(monkeypatch):
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
     _wikilink_from_note_stem,
+    append_readwise_buffet,
     append_wikilink_to_journal_buffet,
     journal_filename,
+    knowledge_hub_note_stem,
 )
 from services.obsidian.add_shared_link import add_shared_link  # noqa: E402
 from services.obsidian.add_youtube_link import add_youtube_link  # noqa: E402
@@ -230,6 +232,31 @@ def test_append_wikilink_dedups_existing_title():
     assert uploads == []
 
 
+def test_append_wikilink_does_not_collapse_into_highlight_quote_line():
+    """Standalone - [[Title]] is a different line from a highlight quote."""
+    journal = """---
+date: 2026-08-22
+---
+
+### Content Buffet:
+- [[My Article]]: ["a quote"](https://readwise.io/open/954480)
+
+### Content Planning
+- plan something
+"""
+    mock_dbx, uploads = _mock_dbx(journal_content=journal)
+    with patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER):
+        result = append_wikilink_to_journal_buffet("My Article", JOURNAL_DATE, dbx=mock_dbx)
+
+    assert result["action"] == "inserted"
+    section = uploads[0]["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == [
+        '- [[My Article]]: ["a quote"](https://readwise.io/open/954480)',
+        "- [[My Article]]",
+    ]
+
+
 def test_append_wikilink_missing_journal_does_not_create():
     mock_dbx, uploads = _mock_dbx(journal_missing=True)
     with patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER):
@@ -405,3 +432,117 @@ def test_youtube_link_missing_journal_does_not_fail_kh_write():
     assert result["error"] is None
     assert _kh_upload(uploads) is not None
     assert _journal_upload(uploads) is None
+
+
+def test_shared_link_explicit_journal_date_not_today():
+    """Passing journal_date writes that day even when 'now' is a different date."""
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(_shared_patches(mock_dbx, title="My Article"), "services.obsidian.add_shared_link.datetime"):
+        result = add_shared_link(
+            "https://example.com/article",
+            title="My Article",
+            journal_date="Nov 28, 2025",
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
+    assert journal is not None
+    assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
+    assert "- [[My Article]]" in journal["content"]
+    assert f"[[{JOURNAL_DATE}]]" not in kh["content"]
+
+
+def test_youtube_link_explicit_journal_date_not_today():
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(_youtube_patches(mock_dbx, title="Cool Video"), "services.obsidian.add_youtube_link.datetime"):
+        result = add_youtube_link(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            journal_date="Nov 28, 2025",
+        )
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
+    assert journal is not None
+    assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
+    assert "- [[Cool Video]]" in journal["content"]
+
+
+def _reader_document_payload(**overrides):
+    data = {
+        "id": "01kb5cap1wy21zp37bc2rjj",
+        "url": "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj",
+        "title": "Our Black Friday sale ends soon",
+        "author": "The Verge",
+        "source_url": "https://www.theverge.com/black-friday",
+        "category": "article",
+        "parent_id": None,
+        "created_at": "2025-11-28T14:02:02.213618+00:00",
+        "saved_at": "2025-11-28T14:02:02.173000+00:00",
+        "event_type": "reader.any_document.created",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_reader_document_writes_kh_note_and_buffet_wikilink():
+    """Real share helper: KH file + - [[stem]], no markdown Reader URL bullet."""
+    payload = _reader_document_payload()
+    stem = knowledge_hub_note_stem(payload["title"])
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert kh["path"].endswith(f"{stem}.md")
+    assert "URL: https://www.theverge.com/black-friday" in kh["content"]
+    assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
+    assert journal is not None
+    assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert f"- [[{stem}]]" in section
+    assert "read.readwise.io" not in section
+    assert "](http" not in section
+
+
+def test_reader_document_missing_journal_does_not_fail_kh_save():
+    payload = _reader_document_payload()
+    mock_dbx, uploads = _mock_dbx(kh_exists=False, journal_missing=True)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["error"] is None
+    assert _kh_upload(uploads) is not None
+    assert _journal_upload(uploads) is None
+
+
+def test_reader_document_same_day_does_not_double_buffet_wikilink():
+    payload = _reader_document_payload()
+    stem = knowledge_hub_note_stem(payload["title"])
+    mock_dbx, uploads = _mock_dbx(
+        kh_exists=True,
+        kh_content=_existing_kh(journal_dates=["Nov 28, 2025"], title=payload["title"]),
+        journal_content=JOURNAL_WITH_ITEM.replace("Already There", stem),
+    )
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    assert uploads == []
+    mock_dbx.files_upload.assert_not_called()
