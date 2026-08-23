@@ -15,6 +15,12 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
+from .utils.author_yaml import (
+    author_frontmatter_value,
+    author_yaml_literal,
+    is_plain_to_wikilink_author_upgrade,
+    quote_yaml_scalar,
+)
 from .utils.date_helpers import get_effective_date
 from .web_content_extractor import fetch_web_content
 
@@ -256,13 +262,39 @@ def _frontmatter_empty(value: object) -> bool:
     return False
 
 
+def _prepare_author_frontmatter_value(value: object) -> str | None:
+    """Wikilink an author string for YAML. None when empty/junk."""
+    if value is None or (isinstance(value, str) and not str(value).strip()):
+        return None
+    return author_frontmatter_value(value)
+
+
+def _should_write_author(existing: object, new: str) -> bool:
+    """Fill empty author, or upgrade the same plain-text author(s) to wikilinks."""
+    if _frontmatter_empty(existing):
+        return True
+    return is_plain_to_wikilink_author_upgrade(existing, new)
+
+
 def _merge_extra_frontmatter(frontmatter: dict, extra: dict | None) -> bool:
-    """Set extra keys when missing or empty. Does not overwrite People or body."""
+    """Set extra keys when missing or empty. Does not overwrite People or body.
+
+    ``author`` is stored as wikilink(s). A plain-text existing value is replaced
+    only when it is the same author(s) as the incoming wikilinked form.
+    """
     if not extra:
         return False
     changed = False
     for key, value in extra.items():
         if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        if key == "author":
+            prepared = _prepare_author_frontmatter_value(value)
+            if not prepared:
+                continue
+            if _should_write_author(frontmatter.get(key), prepared):
+                frontmatter[key] = prepared
+                changed = True
             continue
         if _frontmatter_empty(frontmatter.get(key)):
             frontmatter[key] = value
@@ -285,7 +317,16 @@ def _extra_frontmatter_yaml(
             continue
         if value is None or (isinstance(value, str) and not str(value).strip()):
             continue
-        lines.append(f"{key}: {value}")
+        if key == "author":
+            prepared = _prepare_author_frontmatter_value(value)
+            if not prepared:
+                continue
+            lines.append(f"{key}: {author_yaml_literal(prepared)}")
+            continue
+        rendered = str(value)
+        if "[[" in rendered:
+            rendered = quote_yaml_scalar(rendered)
+        lines.append(f"{key}: {rendered}")
     if not lines:
         return ""
     return "\n" + "\n".join(lines)
@@ -481,7 +522,8 @@ def add_shared_link(
         else:
             link_title = _generate_title_from_url(url)
 
-        # Sanitize filename
+        # Sanitize filename. Title-only (never interpolate wikilinked author;
+        # a "Title by Author" stem must stay plain text with no ``[[``).
         filename = _sanitize_filename(link_title) + '.md'
         file_path = f"{knowledge_hub_path}/{filename}"
 
@@ -547,10 +589,11 @@ def add_shared_link(
                     backfill_performed = True
                     logger.info("Backfilled People field for existing file: %s", file_path)
 
-            # Check if author is missing or empty
+            # Check if author is missing/empty, or the same name as plain text (upgrade to wikilink)
             existing_author = frontmatter.get("author", "")
-            if not existing_author and author:
-                frontmatter["author"] = author
+            prepared_author = _prepare_author_frontmatter_value(author)
+            if prepared_author and _should_write_author(existing_author, prepared_author):
+                frontmatter["author"] = prepared_author
                 backfill_performed = True
                 logger.info("Backfilled author field for existing file: %s", file_path)
 
@@ -580,8 +623,8 @@ def add_shared_link(
         if body_text:
             body_section = f"\n{body_text}\n"
 
-        # Build author field (empty string if not available)
-        author_value = author if author else ""
+        # Build author field (wikilinked when present; empty string if not available)
+        author_source = author
         url_value = url
         if extra_frontmatter:
             extra_url = extra_frontmatter.get("URL")
@@ -589,7 +632,9 @@ def add_shared_link(
                 url_value = extra_url
             extra_author = extra_frontmatter.get("author")
             if extra_author:
-                author_value = extra_author
+                author_source = extra_author
+
+        author_value = author_yaml_literal(author_source)
 
         extra_yaml = _extra_frontmatter_yaml(extra_frontmatter, skip_keys={"URL", "author"})
 

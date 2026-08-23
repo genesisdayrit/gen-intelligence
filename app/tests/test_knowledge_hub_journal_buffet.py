@@ -518,7 +518,7 @@ def test_reader_document_writes_kh_note_and_buffet_wikilink():
     assert journal is not None
     assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
     assert "URL: https://www.theverge.com/black-friday" in kh["content"]
-    assert "author: The Verge" in kh["content"]
+    assert 'author: "[[The Verge]]"' in kh["content"]
     assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "saved_at: 2025-11-28T14:02:02.213618+00:00" in kh["content"]
@@ -591,7 +591,7 @@ def test_reader_document_uses_creator_for_title_by_author_stem():
     kh = _kh_upload(uploads)
     journal = _journal_upload(uploads)
     assert kh["path"].endswith(f"{stem}.md")
-    assert "author: Casey Newton" in kh["content"]
+    assert 'author: "[[Casey Newton]]"' in kh["content"]
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
     assert lines == [f"- [[{stem}]]"]
@@ -632,7 +632,7 @@ Keep this body
     kh = _kh_upload(uploads)
     assert "[[Casey Newton]]" in kh["content"]
     assert "Keep this body" in kh["content"]
-    assert "The Verge" in kh["content"]
+    assert "[[The Verge]]" in kh["content"]
     assert "01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
 
