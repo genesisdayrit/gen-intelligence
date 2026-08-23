@@ -49,6 +49,19 @@ def test_document_title_author_prefers_author_then_creator():
         "A Channel",
     )
     assert document_title_author({"title": "", "author": ""}) == (None, None)
+    assert document_title_author(
+        {"title": "Cool Video", "author": "youtube.com"}
+    ) == ("Cool Video", None)
+    assert document_title_author(
+        {"title": "Cool Video", "author": "www.youtube.com", "creator": "A Channel"}
+    ) == ("Cool Video", None)
+    assert document_title_author({"title": "A podcast", "author": "Goalhanger"}) == (
+        "A podcast",
+        "Goalhanger",
+    )
+    assert document_title_author(
+        {"title": "Increasing Returns", "author": "W. Brian Arthur"}
+    ) == ("Increasing Returns", "W. Brian Arthur")
 
 
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
@@ -225,6 +238,23 @@ def test_process_youtube_link_uses_reader_list_title_author_for_stem():
     assert kwargs["extra_frontmatter"]["readwise_url"] == (
         "https://read.readwise.io/read/01readerdoc"
     )
+
+
+def test_process_youtube_link_host_author_does_not_pass_youtube_com():
+    from main import _process_youtube_link
+
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document", return_value=_save_ok()
+    ), patch(
+        "main.get_document",
+        return_value={"title": "Cool Video", "author": "youtube.com"},
+    ), patch(
+        "main.fetch_youtube_transcript", return_value="auto captions from a talk"
+    ), patch("main._mirror_to_raindrop"):
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert mock_kh.call_args.kwargs["note_title"] == "Cool Video"
+    assert mock_kh.call_args.kwargs["note_author"] is None
 
 
 def test_process_youtube_link_200_still_writes_yaml():

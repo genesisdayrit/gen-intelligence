@@ -30,12 +30,14 @@ def _force_la_timezone(monkeypatch):
 
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
+    _book_author_people,
     append_readwise_buffet,
     format_readwise_bullet,
     journal_filename,
     knowledge_hub_note_stem,
     reader_document_extra_frontmatter,
     reader_knowledge_hub_note_stem,
+    youtube_knowledge_hub_note_stem,
 )
 from services.obsidian.add_shared_link import (  # noqa: E402
     _merge_extra_frontmatter,
@@ -48,8 +50,10 @@ from services.obsidian.utils.author_yaml import (  # noqa: E402
     author_yaml_field,
     author_yaml_literal,
     is_plain_to_wikilink_author_upgrade,
+    is_site_host_author,
     plain_author_label,
     split_author_names,
+    usable_author,
 )
 from services.obsidian.utils.date_helpers import get_effective_date  # noqa: E402
 
@@ -286,6 +290,84 @@ def test_junk_and_empty_author_skipped():
     assert author_frontmatter_value("   ") is None
     assert author_frontmatter_value("|||") is None
     assert author_yaml_literal(None) == ""
+
+
+def test_site_host_author_is_unusable():
+    for host in ("youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"):
+        assert is_site_host_author(host)
+        assert usable_author(host) is None
+        assert plain_author_label(host) is None
+        assert author_frontmatter_value(host) is None
+        assert author_yaml_literal(host) == ""
+    assert is_site_host_author("example.com")
+    assert is_site_host_author("[[youtube.com]]")
+    assert not is_site_host_author("W. Brian Arthur")
+    assert not is_site_host_author("Goalhanger")
+    assert not is_site_host_author("3Blue1Brown")
+    assert usable_author("W. Brian Arthur") == "W. Brian Arthur"
+    assert usable_author("Goalhanger") == "Goalhanger"
+    assert author_frontmatter_value("W. Brian Arthur") == "[[W. Brian Arthur]]"
+    assert author_frontmatter_value("Goalhanger") == "[[Goalhanger]]"
+
+
+def test_tweet_author_unchanged_by_host_filter():
+    raw = "@georgiedorothea on Twitter"
+    assert not is_site_host_author(raw)
+    assert author_frontmatter_value(raw) == raw
+    assert plain_author_label(raw) == raw
+
+
+def test_youtube_stem_host_author_falls_back_to_channel():
+    title = "3Blue1Brown Talks Machine Learning with Jane Street"
+    assert youtube_knowledge_hub_note_stem(
+        title,
+        "youtube.com",
+        fallback_title=title,
+        fallback_author="3Blue1Brown",
+    ) == f"{title} by 3Blue1Brown"
+    assert youtube_knowledge_hub_note_stem(
+        title,
+        "Goalhanger",
+        fallback_title=title,
+        fallback_author="A Channel",
+    ) == f"{title} by Goalhanger"
+    assert youtube_knowledge_hub_note_stem(
+        "Increasing Returns",
+        "W. Brian Arthur",
+        fallback_author="A Channel",
+    ) == "Increasing Returns by W. Brian Arthur"
+    assert "youtube.com" not in (
+        youtube_knowledge_hub_note_stem(title, "youtube.com") or ""
+    )
+
+
+def test_reader_extras_omit_host_author():
+    extras = reader_document_extra_frontmatter(
+        {
+            "id": "01doc",
+            "url": "https://read.readwise.io/read/01doc",
+            "title": "Cool Video",
+            "author": "youtube.com",
+            "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+        }
+    )
+    assert "author" not in extras
+    extras_ok = reader_document_extra_frontmatter(
+        {
+            "id": "01doc",
+            "url": "https://read.readwise.io/read/01doc",
+            "title": "A podcast",
+            "author": "Goalhanger",
+            "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+        }
+    )
+    assert extras_ok["author"] == "[[Goalhanger]]"
+    host_author, host_people = _book_author_people({"author": "youtube.com"}, {})
+    assert host_author is None
+    assert host_people == []
+    real_author, real_people = _book_author_people({"author": "Goalhanger"}, {})
+    assert real_author == "[[Goalhanger]]"
+    assert real_people == ["[[Goalhanger]]"]
 
 
 def test_idempotent_when_already_wikilinked():
@@ -537,6 +619,46 @@ def test_youtube_extra_author_is_quoted_wikilink():
     assert 'author: "[[Jane Doe]], [[John Smith]]"' not in kh["content"]
     assert kh["path"].endswith("Cool Video by A Channel.md")
     assert "[[" not in kh["path"]
+
+
+def test_youtube_host_author_does_not_write_yaml_or_stem():
+    mock_dbx, uploads = _mock_dbx()
+    with _patched(
+        _youtube_patches(mock_dbx, title="Cool Video"),
+        "services.obsidian.add_youtube_link.datetime",
+    ):
+        result = add_youtube_link(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            note_title="Cool Video",
+            note_author="youtube.com",
+            extra_frontmatter={"author": "youtube.com"},
+        )
+
+    assert result["success"] is True
+    assert result["stem"] == "Cool Video by A Channel"
+    assert "youtube.com" not in (result["stem"] or "")
+    kh = _kh_upload(uploads)
+    assert kh["path"].endswith("Cool Video by A Channel.md")
+    assert "[[youtube.com]]" not in kh["content"]
+    assert "author: youtube.com" not in kh["content"]
+    assert 'author: "[[youtube.com]]"' not in kh["content"]
+
+
+def test_youtube_goalhanger_author_used_in_stem():
+    mock_dbx, uploads = _mock_dbx()
+    with _patched(
+        _youtube_patches(mock_dbx, title="A podcast"),
+        "services.obsidian.add_youtube_link.datetime",
+    ):
+        result = add_youtube_link(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            note_title="A podcast",
+            note_author="Goalhanger",
+        )
+
+    assert result["stem"] == "A podcast by Goalhanger"
+    kh = _kh_upload(uploads)
+    assert kh["path"].endswith("A podcast by Goalhanger.md")
 
 
 def test_ios_share_link_filename_stays_title_only():

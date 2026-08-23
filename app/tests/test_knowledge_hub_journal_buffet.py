@@ -517,6 +517,45 @@ def test_youtube_link_wikilink_uses_reader_stem_helper():
     assert title not in section
 
 
+def test_youtube_link_reader_host_author_uses_channel_in_stem():
+    title = "3Blue1Brown Talks Machine Learning with Jane Street"
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(
+        _youtube_patches(mock_dbx, title=title),
+        "services.obsidian.add_youtube_link.datetime",
+    ):
+        result = add_youtube_link(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            note_title=title,
+            note_author="youtube.com",
+        )
+
+    assert result["stem"] == f"{title} by A Channel"
+    assert "youtube.com" not in (result["stem"] or "")
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert f"- [[{title} by A Channel]]" in journal["content"]
+    assert "by youtube.com" not in journal["content"]
+
+
+def test_youtube_link_reader_goalhanger_author_used_in_stem():
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(
+        _youtube_patches(mock_dbx, title="A podcast"),
+        "services.obsidian.add_youtube_link.datetime",
+    ):
+        result = add_youtube_link(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            note_title="A podcast",
+            note_author="Goalhanger",
+        )
+
+    assert result["stem"] == "A podcast by Goalhanger"
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert "- [[A podcast by Goalhanger]]" in journal["content"]
+
+
 def test_youtube_link_missing_journal_does_not_fail_kh_write():
     mock_dbx, uploads = _mock_dbx(kh_exists=False, journal_missing=True)
     with _patched(_youtube_patches(mock_dbx, title="Cool Video"), "services.obsidian.add_youtube_link.datetime"):
@@ -961,6 +1000,30 @@ def test_process_youtube_share_saves_video_and_writes_readwise_url():
     journal = _journal_upload(uploads)
     assert journal is not None
     assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
+
+
+def test_process_youtube_share_host_author_uses_channel_in_stem():
+    from main import _process_youtube_link
+
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    listed = {"id": "01readerdoc", "title": "Cool Video", "author": "youtube.com"}
+    with _patched(
+        _youtube_patches(mock_dbx, title="Cool Video", transcript="auto captions from a talk"),
+        "services.obsidian.add_youtube_link.datetime",
+    ), patch(
+        "main.save_document",
+        return_value=_save_result(status_code=201),
+    ), patch("main.get_document", return_value=listed), patch("main._mirror_to_raindrop"):
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    kh = _kh_upload(uploads)
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
+    assert "by youtube.com" not in kh["path"]
+    assert "[[youtube.com]]" not in kh["content"]
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
+    assert "by youtube.com" not in journal["content"]
 
 
 def test_process_youtube_share_200_still_writes_readwise_url():

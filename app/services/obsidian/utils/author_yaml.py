@@ -34,6 +34,25 @@ _ON_TWITTER = re.compile(r"\bon twitter\b", re.I)
 _WIKILINK_LIST = re.compile(
     r"^(?:\s*\[\[.*?\]\]\s*,)*\s*\[\[.*?\]\]\s*$"
 )
+
+# Reader sometimes copies site_name / host into ``author`` (youtube.com).
+_KNOWN_HOST_AUTHORS = frozenset(
+    {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+    }
+)
+_DOMAIN_LIKE_AUTHOR = re.compile(
+    r"""
+    \A
+    (?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+
+    [A-Za-z]{2,}
+    \Z
+    """,
+    re.VERBOSE,
+)
 _SINGLE_WIKILINK = re.compile(r"^\[\[[^\]]+\]\]$")
 _WIKILINK_FIND = re.compile(r"\[\[.*?\]\]")
 
@@ -146,17 +165,52 @@ def _author_text_from_raw(raw: object) -> str | None:
     return _nonempty(raw)
 
 
+def is_site_host_author(raw: object) -> bool:
+    """True when ``author`` is a site/host, not a person or channel name.
+
+    ``youtube.com``, ``www.youtube.com``, and ``youtu.be`` are always hosts.
+    More generally, a no-space token with a dot that looks like a domain is
+    unusable. Names with spaces (``W. Brian Arthur``) are not hosts.
+    """
+    text = _author_text_from_raw(raw)
+    if not text:
+        return False
+    text = _unwrap_wikilinks(text).strip()
+    if not text or any(char.isspace() for char in text):
+        return False
+    if text.casefold() in _KNOWN_HOST_AUTHORS:
+        return True
+    if not _DOMAIN_LIKE_AUTHOR.fullmatch(text):
+        return False
+    # ``J.K.Rowling`` (no spaces) is initials, not a hostname.
+    return len(text.split(".", 1)[0]) > 1
+
+
+def usable_author(raw: object) -> str | None:
+    """Author text, or None when empty or a site/host (``youtube.com``)."""
+    text = _author_text_from_raw(raw)
+    if not text:
+        return None
+    text = _unwrap_wikilinks(text).strip()
+    if not text or is_site_host_author(text):
+        return None
+    return text
+
+
 def plain_author_label(raw: object) -> str | None:
     """Author text for a ``Title by Author`` stem or other non-YAML uses.
 
     Never includes ``[[`` / ``]]``. Wikilink brackets belong only on Knowledge
     Hub YAML ``author``. Does not collapse internal whitespace so the stem
-    matches the existing filename sanitizer.
+    matches the existing filename sanitizer. Site/host authors are omitted.
     """
     text = _author_text_from_raw(raw)
     if not text:
         return None
-    return _unwrap_wikilinks(text).strip() or None
+    unwrapped = _unwrap_wikilinks(text).strip()
+    if not unwrapped or is_site_host_author(unwrapped):
+        return None
+    return unwrapped
 
 
 def _wikilink_author_links(raw: object) -> list[str]:
@@ -166,6 +220,8 @@ def _wikilink_author_links(raw: object) -> list[str]:
         return []
     links: list[str] = []
     for part in split_author_names(_collapse(text)):
+        if is_site_host_author(part):
+            continue
         target = _wikilink_target(part)
         if not target:
             continue
