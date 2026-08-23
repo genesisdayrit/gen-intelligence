@@ -36,7 +36,7 @@ from services.obsidian.add_readwise_buffet import (  # noqa: E402
     format_readwise_bullet,
     insert_content_buffet_bullet,
     journal_filename,
-    knowledge_hub_note_stem,
+    reader_knowledge_hub_note_stem,
 )
 from services.obsidian.add_shared_link import add_shared_link  # noqa: E402
 from services.obsidian.add_youtube_link import add_youtube_link  # noqa: E402
@@ -498,9 +498,10 @@ def _reader_document_payload(**overrides):
 
 
 def test_reader_document_writes_kh_note_and_buffet_wikilink():
-    """Real share helper: KH file + - [[stem]], no markdown Reader URL bullet."""
+    """Real share helper: KH file + - [[Title by Author]], no nested buffet metadata."""
     payload = _reader_document_payload()
-    stem = knowledge_hub_note_stem(payload["title"])
+    stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
+    assert stem == "Our Black Friday sale ends soon by The Verge"
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
 
@@ -511,6 +512,7 @@ def test_reader_document_writes_kh_note_and_buffet_wikilink():
     assert result["action"] == "created"
     kh = _kh_upload(uploads)
     journal = _journal_upload(uploads)
+    assert kh["path"].endswith("Our Black Friday sale ends soon by The Verge.md")
     assert kh["path"].endswith(f"{stem}.md")
     assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
     assert journal is not None
@@ -550,7 +552,9 @@ def test_reader_document_missing_journal_does_not_fail_kh_save():
 def test_reader_document_omits_missing_published_and_author():
     payload = _reader_document_payload(author=None)
     del payload["author"]
-    stem = knowledge_hub_note_stem(payload["title"])
+    stem = reader_knowledge_hub_note_stem(payload["title"], None)
+    assert stem == payload["title"]
+    assert " by " not in stem
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
 
@@ -570,6 +574,30 @@ def test_reader_document_omits_missing_published_and_author():
     assert "published:" not in section
     assert "saved:" not in section
     assert "  - The Verge" not in lines
+
+
+def test_reader_document_uses_creator_for_title_by_author_stem():
+    payload = _reader_document_payload(author=None, creator="Casey Newton")
+    del payload["author"]
+    stem = reader_knowledge_hub_note_stem(payload["title"], payload["creator"])
+    assert stem == "Our Black Friday sale ends soon by Casey Newton"
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert kh["path"].endswith(f"{stem}.md")
+    assert "author: Casey Newton" in kh["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == [f"- [[{stem}]]"]
+    assert "readwise.io" not in section
+    assert "published:" not in section
+    assert "saved:" not in section
 
 
 def test_reader_document_update_fills_empty_extras_keeps_people_body():
@@ -611,7 +639,7 @@ Keep this body
 
 def test_reader_highlight_append_does_not_add_another_metadata_block():
     payload = _reader_document_payload()
-    stem = knowledge_hub_note_stem(payload["title"])
+    stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
     journal = f"""---
 date: 2025-11-28
 ---
@@ -660,11 +688,14 @@ def test_shared_link_without_extras_does_not_get_readwise_id():
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
     assert lines == ["- [[My Article]]"]
+    assert kh["path"].endswith("My Article.md")
+    assert " by " not in kh["path"]
+    assert " by " not in section
 
 
 def test_reader_document_same_day_does_not_double_buffet_wikilink():
     payload = _reader_document_payload()
-    stem = knowledge_hub_note_stem(payload["title"])
+    stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
     mock_dbx, uploads = _mock_dbx(
         kh_exists=True,
         kh_content=_existing_kh(journal_dates=["Nov 28, 2025"], title=payload["title"]),

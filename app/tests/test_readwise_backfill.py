@@ -288,8 +288,7 @@ def test_dedup_on_second_run():
     assert first["replaced"] == 1
     assert first["files_written"] == 1
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded_first[0]["content"]
-    assert "[[Deep Work]]:" in uploaded_first[0]["content"]
-    assert " by " not in uploaded_first[0]["content"]
+    assert "[[Deep Work by Cal Newport]]:" in uploaded_first[0]["content"]
     assert "bookreview" not in uploaded_first[0]["content"]
 
     second, uploaded_second, _, _ = _run_backfill(
@@ -360,8 +359,7 @@ def test_export_title_used_without_books_api():
     assert result["files_written"] == 1
     mock_fetch.assert_not_called()
     assert "book 8237" not in uploaded[0]["content"]
-    assert "[[Deep Work]]:" in uploaded[0]["content"]
-    assert " by " not in uploaded[0]["content"]
+    assert "[[Deep Work by Cal Newport]]:" in uploaded[0]["content"]
     assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded[0]["content"]
     assert "bookreview" not in uploaded[0]["content"]
     assert "(Book)" not in uploaded[0]["content"]

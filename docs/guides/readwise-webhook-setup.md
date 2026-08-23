@@ -5,22 +5,22 @@ Point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` and set the shared 
 Subscribe to both:
 
 - `readwise.highlight.created` — highlight quotes under `### Content Buffet:`
-- `reader.any_document.created` — parent Reader documents as a Knowledge Hub note plus `- [[Note Title]]`
+- `reader.any_document.created` — parent Reader documents as a Knowledge Hub note plus `- [[Title by Author]]`
 
-When a parent Reader document is created, the webhook creates or updates a Knowledge Hub note the same way as a share-link (YouTube URLs use the YouTube helper). The journal date on the note and buffet is the document's 3am-aware date (`created_at` / `saved_at` / `updated_at`), not "now". The buffet line is **only** the standalone wikilink `- [[Note Title]]` (the KH filename stem) — no quote and no nested source / readwise / author / published / saved bullets. Later `highlight.created` events **append** a separate line and do not replace or remove the standalone wikilink. Child annotation documents (`category=highlight|note` or `parent_id` set) are still skipped. If KH create fails, the webhook logs it and does not crash; it does not fall back to a markdown Reader URL unless KH was skipped for a junk/empty title.
+When a parent Reader document is created, the webhook creates or updates a Knowledge Hub note the same way as a share-link (YouTube URLs use the YouTube helper). The journal date on the note and buffet is the document's 3am-aware date (`created_at` / `saved_at` / `updated_at`), not "now". The buffet line is **only** the standalone wikilink (the KH filename stem) — no quote and no nested source / readwise / author / published / saved bullets. Reader notes use `- [[Title by Author]]` when the document has an `author` or `creator`; otherwise `- [[Title]]`. Later `highlight.created` events **append** a separate line with that same stem and do not replace or remove the standalone wikilink. Child annotation documents (`category=highlight|note` or `parent_id` set) are still skipped. If KH create fails, the webhook logs it and does not crash; it does not fall back to a markdown Reader URL unless KH was skipped for a junk/empty title.
 
-Reader-created Knowledge Hub notes also write `URL`, `author`, `readwise_id`, `readwise_url`, `published`, and `saved_at` when those fields exist on the document payload. Regular iOS share-link / YouTube saves omit the Readwise keys.
+Reader-created Knowledge Hub notes also write `URL`, `author`, `readwise_id`, `readwise_url`, `published`, and `saved_at` when those fields exist on the document payload. Regular iOS share-link / YouTube saves omit the Readwise keys and stay title-only (`My Article.md` / `- [[My Article]]`) — no ` by ` in the filename.
 
 Locked Content Buffet shape:
 
 ```
-- [[Note Title]]
-- [[Note Title]]: ["quote"](https://readwise.io/open/{id})
+- [[Title by Author]]
+- [[Title by Author]]: ["quote"](https://readwise.io/open/{id})
 ```
 
-Standalone lines dedup on the exact wikilink bullet (`- [[Note Title]]`). Highlight lines dedup on `readwise.io/open/{id}`. The two never collapse into each other. Same-day skip does not duplicate the wikilink.
+Standalone lines dedup on the exact wikilink bullet (`- [[Title by Author]]`). Highlight lines dedup on `readwise.io/open/{id}`. The two never collapse into each other. Same-day skip does not duplicate the wikilink.
 
-The wikilink target is the same Knowledge Hub stem as the document save (`_sanitize_filename` then wikilink sanitize). Do not use `[[Title by Author]]` or a `readwise.io/bookreview` / `read.readwise.io` title link when a stem exists. If there is no title/stem, keep the quote-only or author-only fallback. Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) still use `[[Tweets from @handle]]`, with the handle taken from the author or the last path segment of `source_url`. Do not put `by` on tweets. The highlight permalink stays on the quote. Dedup remains `readwise.io/open/{id}`.
+The wikilink target is the same Knowledge Hub stem as the document save (`_sanitize_filename` then wikilink sanitize). Reader/book highlights use that `Title by Author` stem — not a different string, and not a `readwise.io/bookreview` / `read.readwise.io` title link. If there is no title/stem, keep the quote-only or author-only fallback. Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) still use `[[Tweets from @handle]]`, with the handle taken from the author or the last path segment of `source_url`. Do not put `by` on tweets. The highlight permalink stays on the quote. Dedup remains `readwise.io/open/{id}`.
 
 `reader.any_document.created` includes RSS and newsletter feed items as well as documents you save yourself. Those days will be logged too. If you only want manually saved documents, subscribe to `reader.non_feed_document.created` instead (this endpoint also accepts `reader.feed_document.created` and treats them the same). Reader also models highlights and notes as documents (`category=highlight|note`, or `parent_id` set); those are skipped so they do not duplicate `readwise.highlight.created` lines.
 
