@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.raindrop.client import create_bookmark
 
 load_dotenv()
 
@@ -883,6 +884,46 @@ def _write_buffet_bullet(
     return {"success": True, "action": action, "error": None, "file_path": file_path}
 
 
+def _reader_document_excerpt(payload: dict) -> str | None:
+    """Optional Raindrop excerpt: payload ``excerpt``, else ``summary``."""
+    return _nonempty(payload.get("excerpt")) or _nonempty(payload.get("summary"))
+
+
+def _mirror_reader_document_to_raindrop(
+    payload: dict,
+    url: str | None,
+    title: str | None,
+) -> None:
+    """Bookmark a parent Reader document via ``create_bookmark`` (Unsorted).
+
+    Same outbound helper as ``/share/link``. Never raises — missing token
+    and duplicate-URL rejections are logged and skipped.
+    """
+    if not url:
+        logger.info("Readwise document Raindrop skip (no http url)")
+        return
+    try:
+        raindrop_result = create_bookmark(url, title, _reader_document_excerpt(payload))
+        if raindrop_result["success"]:
+            logger.info(
+                "Mirrored Reader document to Raindrop.io: %s (id=%s)",
+                url[:100],
+                raindrop_result["bookmark_id"],
+            )
+        else:
+            logger.error(
+                "Failed to mirror Reader document to Raindrop.io: %s - %s",
+                url[:100],
+                raindrop_result["error"],
+            )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error mirroring Reader document to Raindrop.io: %s - %s",
+            url[:100],
+            exc,
+        )
+
+
 def _append_document_markdown_fallback(payload: dict, now: datetime | None = None) -> dict:
     """Write the legacy Reader URL bullet when KH was skipped for a junk/empty title."""
     bullet = format_document_bullet(payload)
@@ -904,7 +945,12 @@ def _append_reader_document_knowledge_hub(
     payload: dict,
     now: datetime | None = None,
 ) -> dict:
-    """Create/update a Knowledge Hub note and buffet wikilink for a parent document."""
+    """Create/update a Knowledge Hub note and buffet wikilink for a parent document.
+
+    After a successful KH create or update (including same-day skip), also
+    bookmark the document page URL in Raindrop Unsorted. Raindrop errors
+    never fail the webhook or undo the KH write.
+    """
     url = document_page_url(payload)
     title = _nonempty(payload.get("title"))
     stem = knowledge_hub_note_stem(title)
@@ -951,6 +997,8 @@ def _append_reader_document_knowledge_hub(
         title or result.get("title"),
         journal_date,
     )
+    bookmark_title = title or _nonempty(result.get("title"))
+    _mirror_reader_document_to_raindrop(payload, url=url or youtube_url, title=bookmark_title)
     return {
         "success": True,
         "action": result.get("action"),
@@ -963,8 +1011,10 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     """Append a Readwise highlight or Reader document to the journal for its date.
 
     Parent Reader documents create/update a Knowledge Hub note and write
-    ``- [[Note Title]]`` to that day's Content Buffet (same as share-link).
-    Highlights wikilink that KH stem. Child annotation documents are ignored.
+    ``- [[Note Title]]`` to that day's Content Buffet (same as share-link),
+    then bookmark the document page URL in Raindrop Unsorted. Highlights
+    wikilink that KH stem and are not bookmarked. Child annotation documents
+    are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)

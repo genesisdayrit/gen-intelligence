@@ -1258,6 +1258,126 @@ def test_junk_title_skips_kh_and_writes_markdown_fallback():
     assert "[[" not in uploaded["content"]
 
 
+def test_parent_document_create_mirrors_page_url_to_raindrop():
+    """Successful KH create bookmarks document_page_url + title (not a highlight URL)."""
+    payload = _reader_payload()
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Our Black Friday sale ends soon.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": True, "bookmark_id": "rd-1", "error": None},
+    ) as mock_bookmark:
+        result = append_readwise_buffet(payload)
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_bookmark.assert_called_once_with(
+        "https://www.theverge.com/black-friday",
+        payload["title"],
+        "A sale.",
+    )
+    assert mock_bookmark.call_args.args[0] != "https://readwise.io/open/954480"
+    assert "readwise.io/open" not in mock_bookmark.call_args.args[0]
+
+
+def test_same_day_document_skip_still_attempts_raindrop():
+    payload = _reader_payload()
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "skipped",
+            "error": None,
+            "file_path": "_Knowledge-Hub/x.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": False, "bookmark_id": None, "error": "duplicate url"},
+    ) as mock_bookmark:
+        result = append_readwise_buffet(payload)
+
+    assert result["success"] is True
+    assert result["action"] == "skipped"
+    mock_bookmark.assert_called_once_with(
+        "https://www.theverge.com/black-friday",
+        payload["title"],
+        "A sale.",
+    )
+
+
+def test_highlight_does_not_mirror_to_raindrop():
+    mock_dbx, _uploaded = _mock_journal_dbx()
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark"
+    ) as mock_bookmark, patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=[
+            "/obsidian/personal/01_daily",
+            "/obsidian/personal/01_daily/_journal",
+        ],
+    ):
+        result = append_readwise_buffet(_highlight_payload(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] in {"inserted", "replaced"}
+    mock_bookmark.assert_not_called()
+
+
+def test_child_document_does_not_mirror_to_raindrop():
+    with patch("services.obsidian.add_readwise_buffet.create_bookmark") as mock_bookmark, \
+         patch("services.obsidian.add_readwise_buffet._create_shared_link") as mock_share:
+        result = append_readwise_buffet(_reader_payload(category="highlight"))
+
+    assert result["action"] == "ignored"
+    mock_bookmark.assert_not_called()
+    mock_share.assert_not_called()
+
+
+def test_raindrop_error_does_not_fail_or_undo_kh_write():
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Our Black Friday sale ends soon.md",
+        },
+    ) as mock_share, patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        side_effect=RuntimeError("raindrop down"),
+    ):
+        result = append_readwise_buffet(_reader_payload())
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["error"] is None
+    assert result["file_path"] == "_Knowledge-Hub/Our Black Friday sale ends soon.md"
+    mock_share.assert_called_once()
+
+
+def test_kh_failure_does_not_mirror_to_raindrop():
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={"success": False, "action": None, "error": "dropbox down"},
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark"
+    ) as mock_bookmark:
+        result = append_readwise_buffet(_reader_payload())
+
+    assert result["success"] is True
+    assert result["error"] == "dropbox down"
+    mock_bookmark.assert_not_called()
+
+
 def test_document_page_url_prefers_http_source_url():
     assert document_page_url(_reader_payload()) == "https://www.theverge.com/black-friday"
     official = document_page_url(OFFICIAL_DOCUMENT)

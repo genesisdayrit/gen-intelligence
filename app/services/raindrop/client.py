@@ -106,3 +106,24 @@ def create_bookmark(url: str, title: str | None = None, excerpt: str | None = No
             bookmark_id=None,
             error=f"Failed to connect to Raindrop.io: {e}",
         )
+
+
+def mirror_to_raindrop(url: str, title: str | None, excerpt: str | None = None) -> None:
+    """Save a bookmark to Raindrop.io unsorted. Logs errors but never raises.
+
+    Used by ``/share/link``, ``/share/youtube``, and Reader document KH writes.
+    Missing ``RAINDROP_IO_TEST_TOKEN`` and duplicate-URL rejections are logged
+    and skipped.
+    """
+    try:
+        raindrop_result = create_bookmark(url, title, excerpt)
+        if raindrop_result["success"]:
+            logger.info(
+                "Mirrored to Raindrop.io: %s (id=%s)", url[:100], raindrop_result["bookmark_id"]
+            )
+        else:
+            logger.error(
+                "Failed to mirror to Raindrop.io: %s - %s", url[:100], raindrop_result["error"]
+            )
+    except Exception as e:
+        logger.error("Unexpected error mirroring to Raindrop.io: %s - %s", url[:100], e)
