@@ -15,6 +15,7 @@ from services.obsidian.utils.author_yaml import (
     author_frontmatter_value,
     author_yaml_field,
     is_plain_to_wikilink_author_upgrade,
+    is_site_host_author,
     plain_author_label,
     split_author_names,
 )
@@ -389,12 +390,19 @@ def youtube_knowledge_hub_note_stem(
 ) -> str | None:
     """YouTube KH stem — same function as Reader docs, with a YouTube fallback.
 
-    Prefer Reader list/webhook ``title`` + ``author``/``creator``. If Reader
-    has no title yet, use the YouTube title (and channel) through the same
-    ``reader_knowledge_hub_note_stem`` helper. One naming path, not two.
+    Prefer Reader list/webhook ``title`` + a usable ``author``/``creator``.
+    A site-host author (``youtube.com``) is ignored so the stem can use
+    the Supadata/oEmbed channel (``fallback_author``), same as before
+    Reader existed. If Reader has no title yet, use the YouTube title
+    and channel through the same ``reader_knowledge_hub_note_stem`` helper.
     """
-    return reader_knowledge_hub_note_stem(title, author) or reader_knowledge_hub_note_stem(
-        fallback_title, fallback_author
+    author_text = plain_author_label(author)
+    if author_text:
+        return reader_knowledge_hub_note_stem(title, author_text) or (
+            reader_knowledge_hub_note_stem(fallback_title, fallback_author)
+        )
+    return reader_knowledge_hub_note_stem(title, fallback_author) or (
+        reader_knowledge_hub_note_stem(fallback_title, fallback_author)
     )
 
 
@@ -411,7 +419,10 @@ def _reader_document_id(payload: dict) -> str | None:
 
 
 def _reader_author(payload: dict) -> str | None:
-    return _nonempty(payload.get("author")) or _nonempty(payload.get("creator"))
+    author = _nonempty(payload.get("author")) or _nonempty(payload.get("creator"))
+    if author and is_site_host_author(author):
+        return None
+    return author
 
 
 def _reader_personal_url(payload: dict) -> str | None:

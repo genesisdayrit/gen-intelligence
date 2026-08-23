@@ -1501,6 +1501,10 @@ def test_reader_knowledge_hub_note_stem_adds_author():
     assert reader_knowledge_hub_note_stem("Deep Work", "") == "Deep Work"
     assert reader_knowledge_hub_note_stem(None, "Cal Newport") is None
     assert reader_knowledge_hub_note_stem("|#^]]", "Cal Newport") is None
+    assert reader_knowledge_hub_note_stem("Cool Video", "youtube.com") == "Cool Video"
+    assert reader_knowledge_hub_note_stem(
+        "Increasing Returns", "W. Brian Arthur"
+    ) == "Increasing Returns by W. Brian Arthur"
     creator_payload = _reader_payload(author=None, creator="Casey Newton")
     del creator_payload["author"]
     assert reader_knowledge_hub_note_stem(

@@ -13,6 +13,8 @@ from typing import TypedDict
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.author_yaml import is_site_host_author
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -164,7 +166,11 @@ def get_document(document_id: str | None) -> dict | None:
 
 
 def document_title_author(document: dict | None) -> tuple[str | None, str | None]:
-    """Reader list ``title`` and ``author``/``creator``. Empty strings → None."""
+    """Reader list ``title`` and ``author``/``creator``. Empty strings → None.
+
+    Site/host authors (``youtube.com``) are treated as missing so YouTube
+    stems can fall back to the channel name.
+    """
     if not document:
         return None, None
     title = str(document.get("title") or "").strip() or None
@@ -173,6 +179,8 @@ def document_title_author(document: dict | None) -> tuple[str | None, str | None
         or str(document.get("creator") or "").strip()
         or None
     )
+    if author and is_site_host_author(author):
+        author = None
     return title, author
 
 
