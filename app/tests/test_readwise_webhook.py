@@ -147,6 +147,18 @@ def _highlight_payload(**overrides):
     return data
 
 
+def _tweet_highlight(**overrides):
+    data = {
+        "title": "Tweets From Georgie Dorothea 🫩",
+        "author": "@georgiedorothea on Twitter",
+        "category": "tweets",
+        "source": "twitter",
+        "source_url": "https://twitter.com/georgiedorothea",
+    }
+    data.update(overrides)
+    return _highlight_payload(**data)
+
+
 # ---------------------------------------------------------------------------
 # Webhook auth / ping
 # ---------------------------------------------------------------------------
@@ -1551,6 +1563,136 @@ def test_locked_tweet_highlight_still_uses_handle_wikilink():
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert line != "- [[Tweets from @georgiedorothea]]"
+
+
+def test_format_tweet_strips_markdown_image_to_text_only():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(text="Quote text ![](https://pbs.twimg.com/media/foo.jpg)")
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Quote text"](https://readwise.io/open/954480)'
+    )
+    assert "pbs.twimg.com" not in line
+    assert "![]" not in line
+
+
+def test_format_tweet_strips_markdown_image_on_own_line():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(
+            text="Quote text\n\n![alt](https://pbs.twimg.com/media/foo.jpg)"
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Quote text"](https://readwise.io/open/954480)'
+    )
+    assert "pbs.twimg.com" not in line
+    assert "![" not in line
+
+
+def test_format_tweet_strips_html_img():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(
+            text='Quote text <img src="https://pbs.twimg.com/media/foo.jpg" alt="pic">'
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Quote text"](https://readwise.io/open/954480)'
+    )
+    assert "<img" not in line
+    assert "pbs.twimg.com" not in line
+
+
+def test_format_tweet_strips_bare_twimg_url():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(
+            text="Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc123"
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Quote text"](https://readwise.io/open/954480)'
+    )
+    assert "pbs.twimg.com" not in line
+    assert "pic.twitter.com" not in line
+
+
+def test_format_tweet_strips_bare_video_twimg_url():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(
+            text="Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Quote text"](https://readwise.io/open/954480)'
+    )
+    assert "video.twimg.com" not in line
+
+
+def test_format_non_tweet_unrelated_url_is_unchanged():
+    clear_book_cache()
+    text = "See https://example.com/diagram.png for the chart"
+    line = format_readwise_bullet(
+        _highlight_payload(
+            text=text,
+            title="Deep Work",
+            author="Cal Newport",
+            category="books",
+            source="kindle",
+        )
+    )
+    assert line == (
+        '- [[Deep Work by Cal Newport]]: '
+        f'["{text}"](https://readwise.io/open/954480)'
+    )
+    assert "https://example.com/diagram.png" in line
+
+
+def test_format_non_tweet_markdown_image_is_unchanged():
+    """Article/book quotes keep image markup; stripping is tweet-only."""
+    clear_book_cache()
+    text = "A figure ![](https://example.com/chart.png) in the book"
+    line = format_readwise_bullet(
+        _highlight_payload(
+            text=text,
+            title="Deep Work",
+            author="Cal Newport",
+            category="books",
+        )
+    )
+    assert line == (
+        '- [[Deep Work by Cal Newport]]: '
+        f'["{text}"](https://readwise.io/open/954480)'
+    )
+    assert "![](https://example.com/chart.png)" in line
+
+
+def test_format_tweet_image_only_is_skipped():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)")
+    )
+    assert line is None
+
+
+def test_append_tweet_image_only_does_not_write():
+    """Empty-after-strip skips the journal line, same as empty highlight text."""
+    clear_book_cache()
+    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client") as mock_client:
+        result = append_readwise_buffet(
+            _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)")
+        )
+    assert result["success"] is True
+    assert result["action"] == "ignored"
+    mock_client.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
