@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 CONTENT_BUFFET_HEADER = "### Content Buffet:"
 BOOKMARKED_TWEETS_HEADER = "### Bookmarked Tweets"
 BOOK_HIGHLIGHTS_HEADER = "### Book highlights"
+ARTICLE_HIGHLIGHTS_HEADER = "### Article highlights"
+_VIDEO_CATEGORIES = {"videos", "video", "youtube"}
+_VIDEO_SOURCES = {"youtube"}
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
 EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
@@ -991,6 +994,19 @@ def insert_book_highlights_bullet(
     return _insert_heading_bullet(content, BOOK_HIGHLIGHTS_HEADER, bullet, keys)
 
 
+def insert_article_highlights_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Article highlights``. Returns (content, action).
+
+    Sibling of ``insert_book_highlights_bullet``. Missing heading is
+    appended; other sections stay. Dedup is the open URL only.
+    """
+    return _insert_heading_bullet(content, ARTICLE_HIGHLIGHTS_HEADER, bullet, keys)
+
+
 def _wikilink_from_note_stem(note_title: str) -> str | None:
     """Sanitize a Knowledge Hub filename stem for ``[[wikilink]]``.
 
@@ -1634,6 +1650,207 @@ def _append_book_pages_after_journal(
             )
 
 
+def _is_youtube_or_video_highlight(
+    book: dict | None,
+    payload: dict | None = None,
+) -> bool:
+    """True for YouTube/video parent documents (Transcript Highlights owns these)."""
+    data = book or {}
+    extra = payload or {}
+    category = (
+        _nonempty(data.get("category")) or _nonempty(extra.get("category")) or ""
+    ).lower()
+    if category in _VIDEO_CATEGORIES:
+        return True
+    source = (
+        _nonempty(data.get("source")) or _nonempty(extra.get("source")) or ""
+    ).lower()
+    if source in _VIDEO_SOURCES:
+        return True
+    return bool(_youtube_url_for_document(extra or data, None))
+
+
+def _is_article_highlight(book: dict | None, payload: dict | None = None) -> bool:
+    """True for Reader/article highlights that are not tweets, books, or video.
+
+    Readwise ``articles`` / Reader ``article`` and other non-tweet, non-book,
+    non-youtube/video parent documents (email, pdfs, …) count. A category
+    is required so uncategorized export books stay journal-only.
+    YouTube/video highlights are left for ``### Transcript Highlights``.
+    """
+    if not book or _is_tweet_book(book) or _is_book_highlight(book):
+        return False
+    if _is_youtube_or_video_highlight(book, payload):
+        return False
+    category = (
+        _nonempty(book.get("category")) or _nonempty((payload or {}).get("category")) or ""
+    ).lower()
+    return bool(category)
+
+
+def _article_page_stem(book: dict | None, payload: dict) -> str | None:
+    """``Title by Author`` stem (title-only if no author) for an article highlight."""
+    if not _is_article_highlight(book, payload):
+        return None
+    return reader_knowledge_hub_note_stem(
+        _nonempty((book or {}).get("title")),
+        _reader_author(book or {}) or _reader_author(payload),
+    )
+
+
+def _article_page_extras(payload: dict, book: dict | None) -> dict:
+    """Minimal YAML extras for an article page: author + fill-if-empty URL."""
+    extras: dict = {}
+    author, _people = _book_author_people(book, payload)
+    if author:
+        extras["author"] = author
+    source_url = _http_url((book or {}).get("source_url") or payload.get("source_url"))
+    if source_url:
+        extras["URL"] = source_url
+    return extras
+
+
+def _format_article_page_bullet(payload: dict, book: dict | None = None) -> str | None:
+    """Quote line for the article page: quote + open/id, no title wikilink.
+
+    Journal keeps ``- [[Title by Author]]: ["quote"](open/id)``.
+    The article page is already that note, so this is ``- ["quote"](open/id)``.
+    Articles only: requires ``_is_article_highlight``. User notes use the same
+    em dash as the journal formatter.
+    """
+    if not _is_article_highlight(book, payload):
+        return None
+    if not _article_page_stem(book, payload):
+        return None
+    text = _nonempty(payload.get("text"))
+    if not text:
+        return None
+    note = _nonempty(payload.get("note"))
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{_collapse(text)}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+    line = f"- {quote}"
+    if note:
+        line += f" — {_collapse(note)}"
+    return line
+
+
+def _new_article_page_markdown(
+    stem: str,
+    bullet: str,
+    extras: dict,
+    people_links: list[str],
+) -> str:
+    """Minimal article page: YAML title/author/People/URL, H1, Article highlights."""
+    lines = ["---", f'title: "{stem}"']
+    author = extras.get("author")
+    if author:
+        lines.append(f"author: {author_yaml_literal(author)}")
+    if people_links:
+        lines.append("People:")
+        for link in people_links:
+            lines.append(f'  - "{link}"')
+    url = extras.get("URL")
+    if url and str(url).strip():
+        lines.append(f"URL: {url}")
+    lines.extend(["---", "", f"# {stem}", "", ARTICLE_HIGHLIGHTS_HEADER, bullet, ""])
+    return "\n".join(lines)
+
+
+def _append_article_page(
+    dbx: dropbox.Dropbox,
+    payload: dict,
+    hub_path: str,
+) -> str | None:
+    """Create or append one article highlight on the ``Title by Author`` note.
+
+    Articles only — gated on ``_is_article_highlight``. Returns the Dropbox
+    action (``created``, ``inserted``, ``replaced``, ``skipped``) or None
+    when this highlight is not an article. Existing share-link / Reader
+    notes are updated in place and never renamed.
+    """
+    book = _resolve_highlight_book(payload)
+    if not _is_article_highlight(book, payload):
+        return None
+    stem = _article_page_stem(book, payload)
+    if not stem:
+        return None
+    bullet = _format_article_page_bullet(payload, book)
+    if not bullet:
+        return None
+    keys = dedup_keys(payload)
+    extras = _article_page_extras(payload, book)
+    extras["title"] = stem
+    _author, people_links = _book_author_people(book, payload)
+    filename = _hub_note_filename(stem)
+    existing = _download_hub_note(dbx, hub_path, filename)
+    if existing is None:
+        file_path = f"{hub_path}/{filename}"
+        markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
+        dbx.files_upload(
+            markdown.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("Article page created path=%s", file_path)
+        return "created"
+
+    file_path, content = existing
+    updated, action = insert_article_highlights_bullet(content, bullet, keys)
+    url_only = {}
+    if extras.get("URL"):
+        url_only["URL"] = extras["URL"]
+    if url_only:
+        updated = _ensure_book_page_frontmatter(updated, url_only, [])
+    if updated != content:
+        dbx.files_upload(
+            updated.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        if action == "skipped":
+            logger.info("Article page URL backfill path=%s", file_path)
+        else:
+            logger.info("Article page %s path=%s", action, file_path)
+    elif action == "skipped":
+        logger.info("Article page skipped (duplicate) path=%s", file_path)
+    return action
+
+
+def _append_article_pages_after_journal(
+    dbx: dropbox.Dropbox,
+    payloads: list[dict],
+) -> None:
+    """Best-effort article-page writes after a successful highlight journal pass.
+
+    ``readwise.highlight.created`` only (the same ``format_readwise_bullet``
+    writer the journal article line uses). Gated on ``_is_article_highlight``
+    — tweets stay on the tweet-page path, books stay on ``### Book
+    highlights``, and YouTube/video highlights are left for Transcript
+    Highlights. Not used for Reader ``*_document.created``, share-link,
+    YouTube, or Raindrop. Resolves the Knowledge Hub folder only when the
+    payload is an article. Failures are logged and never raised — the
+    journal write already happened.
+    """
+    hub_path: str | None = None
+    for payload in payloads:
+        if not is_highlight_event(payload):
+            continue
+        book = _resolve_highlight_book(payload)
+        if not _is_article_highlight(book, payload):
+            continue
+        try:
+            if hub_path is None:
+                hub_path = _resolve_knowledge_hub_folder(dbx)
+            _append_article_page(dbx, payload, hub_path)
+        except Exception:
+            logger.exception(
+                "Article page write failed; journal write kept (highlight %s)",
+                payload.get("id"),
+            )
+
+
 def write_highlights_by_journal(
     payloads: list[dict],
     now: datetime | None = None,
@@ -1650,11 +1867,14 @@ def write_highlights_by_journal(
     to today. After a successful journal pass, tweet *highlights* also
     create or append the ``Tweets from @handle`` Knowledge Hub page, and
     book *highlights* (``category == books``, not tweets) create or append
-    the ``Title by Author`` page under ``### Book highlights``, when
+    the ``Title by Author`` page under ``### Book highlights``, and
+    article *highlights* (not tweets, not books, not YouTube/video) create
+    or append the same stem under ``### Article highlights``, when
     ``format_fn`` is ``format_readwise_bullet`` (webhook
     ``readwise.highlight.created`` and the existing highlight backfill,
     which already calls this writer). Document fallback / other formatters
-    skip both. Page failures are logged and never undo the journal write.
+    skip those page writes. Page failures are logged and never undo the
+    journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -1728,6 +1948,7 @@ def write_highlights_by_journal(
             if format_fn is format_readwise_bullet:
                 _append_tweet_pages_after_journal(dbx, buffet_payloads)
                 _append_book_pages_after_journal(dbx, buffet_payloads)
+                _append_article_pages_after_journal(dbx, buffet_payloads)
         except Exception as exc:
             logger.exception("Readwise buffet failed for %s", file_path)
             if raise_errors:
@@ -1904,9 +2125,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     tweet highlights also create or append ``Tweets from @handle`` under
     ``### Bookmarked Tweets`` after the journal write. Book highlights
     (``category == books``, not tweets) create or append
-    ``Title by Author`` under ``### Book highlights``. Reader document
-    events, share-link, YouTube, and Raindrop do not write those pages.
-    Child annotation documents are ignored.
+    ``Title by Author`` under ``### Book highlights``. Article highlights
+    (not tweets, not books, not YouTube/video) create or append the same
+    stem under ``### Article highlights``. Reader document events,
+    share-link, YouTube, and Raindrop do not write those pages. Child
+    annotation documents are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)

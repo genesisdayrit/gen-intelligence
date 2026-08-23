@@ -524,6 +524,42 @@ def test_export_book_highlight_creates_title_by_author_page():
     assert any(item["path"] == book_page for item in uploaded)
 
 
+def test_export_article_highlight_creates_title_by_author_page():
+    """Backfill writes the journal wikilink and the article page highlight."""
+    pages = [
+        _export_page([
+            _book(
+                title="A long essay",
+                author="The Verge",
+                category="articles",
+                source="reader",
+                source_url="https://www.theverge.com/long-essay",
+                highlights=[_hl()],
+            ),
+        ]),
+    ]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    article_page = f"{KH_FOLDER}/A long essay by The Verge.md"
+    result, uploaded, store, _ = _run_backfill(
+        pages,
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+    )
+    assert result["files_written"] == 1
+    journal = next(item for item in uploaded if item["path"] == nov_path)
+    assert (
+        '- [[A long essay by The Verge]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal["content"]
+    page = store[article_page]
+    assert "### Article highlights" in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "- [[A long essay by The Verge]]:" not in page
+    assert "### Book highlights" not in page
+    assert 'author: "[[The Verge]]"' in page
+    assert '  - "[[The Verge]]"' in page
+    assert any(item["path"] == article_page for item in uploaded)
+
+
 # ---------------------------------------------------------------------------
 # Export pagination
 # ---------------------------------------------------------------------------
