@@ -37,7 +37,7 @@ from services.obsidian.add_shared_link import (
     get_predicted_link_path,
 )
 from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
-from services.raindrop.client import create_bookmark
+from services.raindrop.client import mirror_to_raindrop as _mirror_to_raindrop
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -927,18 +927,6 @@ async def readwise_webhook(
 
     background_tasks.add_task(_process_readwise_event, data)
     return JSONResponse(status_code=202, content={"status": "accepted"})
-
-
-def _mirror_to_raindrop(url: str, title: str | None, excerpt: str | None = None) -> None:
-    """Save a bookmark to Raindrop.io unsorted collection. Logs errors but never raises."""
-    try:
-        raindrop_result = create_bookmark(url, title, excerpt)
-        if raindrop_result["success"]:
-            logger.info("Mirrored to Raindrop.io: %s (id=%s)", url[:100], raindrop_result["bookmark_id"])
-        else:
-            logger.error("Failed to mirror to Raindrop.io: %s - %s", url[:100], raindrop_result["error"])
-    except Exception as e:
-        logger.error("Unexpected error mirroring to Raindrop.io: %s - %s", url[:100], e)
 
 
 def _process_shared_link(url: str, title: str | None) -> None:
