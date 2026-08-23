@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.author_yaml import author_frontmatter_value, plain_author_label
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
 
 load_dotenv()
@@ -49,15 +50,6 @@ _AUTHOR_TWITTER_SUFFIX = re.compile(r"\s+on twitter\s*$", re.I)
 _AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
 _TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
-# Obsidian embeds these in a buffet quote. Tweet highlights only.
-_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_HTML_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE | re.DOTALL)
-_HTML_IMG_CLOSE = re.compile(r"</img\s*>", re.IGNORECASE)
-_TWEET_MEDIA_URL = re.compile(
-    r"(?:https?://)?(?:pbs\.twimg\.com|pic\.twitter\.com|video\.twimg\.com)"
-    r"/[^\s<>)\]'\"]+",
-    re.IGNORECASE,
-)
 
 
 def _system_tz() -> pytz.BaseTzInfo:
@@ -662,26 +654,12 @@ def format_document_bullet(payload: dict) -> str | None:
     return line
 
 
-def _strip_tweet_buffet_images(text: str) -> str:
-    """Remove markup Obsidian would render as an image on a journal buffet line.
-
-    Used only for tweet highlights (``_is_tweet_book``). Strips markdown images
-    (``![alt](url)``, ``![](url)``, image-only lines), HTML ``<img>``, and bare
-    ``pbs.twimg.com`` / ``pic.twitter.com`` / ``video.twimg.com`` URLs.
-    """
-    cleaned = _MARKDOWN_IMAGE.sub("", text)
-    cleaned = _HTML_IMG_TAG.sub("", cleaned)
-    cleaned = _HTML_IMG_CLOSE.sub("", cleaned)
-    cleaned = _TWEET_MEDIA_URL.sub("", cleaned)
-    return cleaned
-
-
 def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     text = _nonempty(payload.get("text"))
     if not text:
         return None
     if _is_tweet_book(book):
-        text = _nonempty(_strip_tweet_buffet_images(text))
+        text = tweet_highlight_quote(text)
         if not text:
             return None
     note = _nonempty(payload.get("note"))
