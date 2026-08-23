@@ -52,6 +52,7 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Todoist Webhook Setup](docs/guides/todoist-webhook-setup.md)
 - [Linear Webhook Setup](docs/guides/linear-webhook-setup.md)
 - [Readwise Webhook Setup](docs/guides/readwise-webhook-setup.md) — point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` with `READWISE_WEBHOOK_SECRET`
+- [Raindrop Webhook Setup](docs/guides/raindrop-webhook-setup.md) — inbound `POST {WEBHOOK_BASE_URL}/raindrop/webhook` with `RAINDROP_WEBHOOK_SECRET` (IFTTT/Make; Raindrop has no official webhook)
 - [GitHub Webhook Setup](docs/guides/github-webhook-setup.md)
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
 - [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)

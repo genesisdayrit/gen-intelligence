@@ -15,6 +15,7 @@ os.environ.setdefault("TG_WEBHOOK_SECRET", "test-secret")
 os.environ.setdefault("LINK_SHARE_API_KEY", "test-link-api-key")
 os.environ.setdefault("MANUS_API_KEY", "test-manus-key")
 os.environ.setdefault("READWISE_WEBHOOK_SECRET", "test-readwise-secret")
+os.environ.setdefault("RAINDROP_WEBHOOK_SECRET", "test-raindrop-secret")
 os.environ.setdefault("WEBHOOK_BASE_URL", "")
 
 from cryptography.hazmat.primitives import hashes as crypto_hashes, serialization

@@ -38,6 +38,7 @@ from services.obsidian.add_shared_link import (
 )
 from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
 from services.raindrop.client import create_bookmark
+from services.raindrop.webhook import is_created_raindrop_event, process_created_raindrop
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -58,6 +59,7 @@ GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
 MANUS_API_KEY = os.getenv("MANUS_API_KEY")
 READWISE_WEBHOOK_SECRET = os.getenv("READWISE_WEBHOOK_SECRET")
+RAINDROP_WEBHOOK_SECRET = os.getenv("RAINDROP_WEBHOOK_SECRET")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
@@ -926,6 +928,75 @@ async def readwise_webhook(
         return JSONResponse(status_code=202, content={"status": "accepted"})
 
     background_tasks.add_task(_process_readwise_event, data)
+    return JSONResponse(status_code=202, content={"status": "accepted"})
+
+
+def _raindrop_secret() -> str | None:
+    return os.getenv("RAINDROP_WEBHOOK_SECRET") or RAINDROP_WEBHOOK_SECRET
+
+
+def _raindrop_secrets_match(provided: object) -> bool:
+    expected = _raindrop_secret()
+    if not expected or provided is None:
+        return False
+    provided_str = str(provided)
+    if len(provided_str) != len(expected):
+        return False
+    return hmac.compare_digest(provided_str, expected)
+
+
+def _raindrop_request_authorized(request: Request, data: dict) -> bool:
+    """Accept the shared secret from JSON ``secret`` and/or header."""
+    header_secret = request.headers.get("x-raindrop-webhook-secret") or request.headers.get(
+        "x-webhook-secret"
+    )
+    return _raindrop_secrets_match(header_secret) or _raindrop_secrets_match(data.get("secret"))
+
+
+def _process_raindrop_event(data: dict) -> None:
+    """Write a created Raindrop bookmark to Knowledge Hub. Logs errors; never raises."""
+    try:
+        result = process_created_raindrop(data)
+        logger.info("Raindrop webhook write: action=%s", result.get("action"))
+    except Exception:
+        logger.exception("Failed to write Raindrop bookmark to Knowledge Hub")
+
+
+@app.post("/raindrop/webhook")
+async def raindrop_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+):
+    """Receive inbound Raindrop document-created events.
+
+    Raindrop has no official public webhook; IFTTT, Make, or a manual POST
+    can hit this surface. Empty-body test pings return 200 with no write.
+    Authenticated created bookmarks return 202 and write in the background
+    (same Knowledge Hub note + standalone Content Buffet wikilink as
+    ``/share/link``). Does not remirror to Raindrop.
+    """
+    raw = await request.body()
+    if not raw.strip():
+        logger.info("Raindrop webhook test ping received")
+        return JSONResponse(content={"status": "ok"})
+
+    try:
+        data = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not _raindrop_request_authorized(request, data):
+        logger.warning("Invalid or missing Raindrop webhook secret")
+        raise HTTPException(status_code=401, detail="Invalid secret")
+
+    if not is_created_raindrop_event(data):
+        logger.info("Raindrop event ignored (not a created bookmark)")
+        return JSONResponse(status_code=202, content={"status": "accepted"})
+
+    background_tasks.add_task(_process_raindrop_event, data)
     return JSONResponse(status_code=202, content={"status": "accepted"})
 
 
