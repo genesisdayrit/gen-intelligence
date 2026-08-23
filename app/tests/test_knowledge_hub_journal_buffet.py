@@ -33,8 +33,11 @@ from services.obsidian.add_readwise_buffet import (  # noqa: E402
     _wikilink_from_note_stem,
     append_readwise_buffet,
     append_wikilink_to_journal_buffet,
+    format_readwise_bullet,
+    insert_content_buffet_bullet,
     journal_filename,
     knowledge_hub_note_stem,
+    reader_document_buffet_nested_lines,
 )
 from services.obsidian.add_shared_link import add_shared_link  # noqa: E402
 from services.obsidian.add_youtube_link import add_youtube_link  # noqa: E402
@@ -289,6 +292,12 @@ def test_shared_link_create_appends_buffet_wikilink():
     assert journal["path"] == JOURNAL_PATH
     assert journal["path"].endswith(f"{kh_date}.md")
     assert "- [[My Article]]" in journal["content"]
+    assert "readwise_id" not in kh["content"]
+    assert "readwise_url" not in kh["content"]
+    assert "saved_at:" not in kh["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    assert "[source]" not in section
+    assert "[readwise]" not in section
 
 
 def test_shared_link_update_appends_buffet_wikilink():
@@ -504,14 +513,20 @@ def test_reader_document_writes_kh_note_and_buffet_wikilink():
     kh = _kh_upload(uploads)
     journal = _journal_upload(uploads)
     assert kh["path"].endswith(f"{stem}.md")
-    assert "URL: https://www.theverge.com/black-friday" in kh["content"]
     assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
     assert journal is not None
     assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
+    assert "URL: https://www.theverge.com/black-friday" in kh["content"]
+    assert "author: The Verge" in kh["content"]
+    assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    assert "saved_at: 2025-11-28T14:02:02.213618+00:00" in kh["content"]
+    assert "published:" not in kh["content"]
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
-    assert f"- [[{stem}]]" in section
-    assert "read.readwise.io" not in section
-    assert "](http" not in section
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines[0] == f"- [[{stem}]]"
+    assert lines[1:] == reader_document_buffet_nested_lines(payload)
+    assert '["' not in section
 
 
 def test_reader_document_missing_journal_does_not_fail_kh_save():
@@ -525,8 +540,129 @@ def test_reader_document_missing_journal_does_not_fail_kh_save():
     assert result["success"] is True
     assert result["action"] == "created"
     assert result["error"] is None
-    assert _kh_upload(uploads) is not None
+    kh = _kh_upload(uploads)
+    assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert _journal_upload(uploads) is None
+
+
+def test_reader_document_omits_missing_published_and_author():
+    payload = _reader_document_payload(author=None)
+    del payload["author"]
+    stem = knowledge_hub_note_stem(payload["title"])
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert "author: The Verge" not in kh["content"]
+    assert "published:" not in kh["content"]
+    assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines[0] == f"- [[{stem}]]"
+    assert not any(line.startswith("  - published:") for line in lines)
+    assert "  - The Verge" not in lines
+    assert any("[readwise]" in line for line in lines)
+    assert any("[source]" in line for line in lines)
+
+
+def test_reader_document_update_fills_empty_extras_keeps_people_body():
+    payload = _reader_document_payload()
+    existing = f"""---
+Journal:
+  - "[[Jan 1, 2026]]"
+created time: 2026-01-01T00:00:00+00:00
+modified time: 2026-01-01T00:00:00+00:00
+key words:
+People:
+  - "[[Casey Newton]]"
+URL: https://www.theverge.com/black-friday
+author:
+Notes+Ideas:
+Experiences:
+Tags:
+---
+
+## {payload["title"]}
+
+Keep this body
+"""
+    mock_dbx, uploads = _mock_dbx(kh_exists=True, kh_content=existing)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(_shared_patches(mock_dbx, title=payload["title"]), "services.obsidian.add_shared_link.datetime"):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "updated"
+    kh = _kh_upload(uploads)
+    assert "[[Casey Newton]]" in kh["content"]
+    assert "Keep this body" in kh["content"]
+    assert "The Verge" in kh["content"]
+    assert "01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    assert "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
+
+
+def test_reader_highlight_append_does_not_add_another_metadata_block():
+    payload = _reader_document_payload()
+    stem = knowledge_hub_note_stem(payload["title"])
+    journal = f"""---
+date: 2025-11-28
+---
+
+### Content Buffet:
+- [[{stem}]]
+  - [source](https://www.theverge.com/black-friday)
+  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`
+  - The Verge
+  - saved: 2025-11-28T14:02:02.213618+00:00
+
+### Content Planning
+- plan something
+"""
+    highlight = {
+        "id": 954480,
+        "text": "Most Amazing Highlight Ever",
+        "title": payload["title"],
+        "author": "The Verge",
+        "highlighted_at": "2025-11-28T18:00:00Z",
+        "event_type": "readwise.highlight.created",
+        "book_id": 8237,
+    }
+    bullet = format_readwise_bullet(highlight)
+    updated, action = insert_content_buffet_bullet(
+        journal, bullet, keys=[f"https://readwise.io/open/{highlight['id']}"]
+    )
+    assert action == "inserted"
+    section = updated.split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines[0] == f"- [[{stem}]]"
+    assert lines.count("  - The Verge") == 1
+    assert lines.count(f"  - [source](https://www.theverge.com/black-friday)") == 1
+    assert lines[-1] == (
+        f'- [[{stem}]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_shared_link_without_extras_does_not_get_readwise_id():
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(_shared_patches(mock_dbx, title="My Article"), "services.obsidian.add_shared_link.datetime"):
+        result = add_shared_link("https://example.com/article", title="My Article")
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert "readwise_id" not in kh["content"]
+    assert "readwise_url" not in kh["content"]
+    assert "saved_at:" not in kh["content"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == ["- [[My Article]]"]
 
 
 def test_reader_document_same_day_does_not_double_buffet_wikilink():

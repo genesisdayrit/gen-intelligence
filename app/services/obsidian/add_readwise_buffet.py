@@ -331,6 +331,126 @@ def document_page_url(payload: dict) -> str | None:
     return _http_url(payload.get("source_url")) or _document_permalink(payload)
 
 
+def _reader_document_id(payload: dict) -> str | None:
+    value = payload.get("id")
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
+def _reader_author(payload: dict) -> str | None:
+    return _nonempty(payload.get("author")) or _nonempty(payload.get("creator"))
+
+
+def _reader_personal_url(payload: dict) -> str | None:
+    """Personal Reader link: payload ``url`` if it is already one, else ``/read/{id}``."""
+    url = _http_url(payload.get("url"))
+    if url and "read.readwise.io/read/" in url:
+        return url
+    doc_id = _reader_document_id(payload)
+    if doc_id:
+        return READER_DOC_URL.format(document_id=doc_id)
+    return None
+
+
+def _as_published_date(value: object) -> str | None:
+    """YYYY-MM-DD from a payload date. None if missing or unparseable (never invented)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        ts = float(value)
+        if ts <= 0:
+            return None
+        if ts > 1e12:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=pytz.UTC).date().isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = _nonempty(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return text
+    iso = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(iso).date().isoformat()
+    except ValueError:
+        return None
+
+
+def _published_date_value(payload: dict) -> str | None:
+    for key in ("published_date", "published", "published_at", "date_published"):
+        parsed = _as_published_date(payload.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _document_saved_at_iso(payload: dict) -> str | None:
+    """ISO timestamp used for the document. Keep the original timezone string."""
+    for key in ("created_at", "saved_at", "updated", "updated_at"):
+        value = payload.get(key)
+        if isinstance(value, datetime):
+            return value.isoformat()
+        text = _nonempty(value)
+        if text:
+            return text
+    return None
+
+
+def reader_document_extra_frontmatter(payload: dict) -> dict:
+    """KH YAML extras for a Reader parent document. Omits empty fields."""
+    extra: dict = {}
+    source = _http_url(payload.get("source_url"))
+    if source:
+        extra["URL"] = source
+    author = _reader_author(payload)
+    if author:
+        extra["author"] = author
+    doc_id = _reader_document_id(payload)
+    if doc_id:
+        extra["readwise_id"] = doc_id
+    readwise_url = _reader_personal_url(payload)
+    if readwise_url:
+        extra["readwise_url"] = readwise_url
+    published = _published_date_value(payload)
+    if published:
+        extra["published"] = published
+    saved = _document_saved_at_iso(payload)
+    if saved:
+        extra["saved_at"] = saved
+    return extra
+
+
+def reader_document_buffet_nested_lines(payload: dict) -> list[str]:
+    """Nested Content Buffet bullets under ``- [[Note Title]]``. No quote."""
+    lines: list[str] = []
+    source = _http_url(payload.get("source_url"))
+    if source:
+        lines.append(f"  - [source]({source})")
+    readwise_url = _reader_personal_url(payload)
+    readwise_id = _reader_document_id(payload)
+    if readwise_url and readwise_id:
+        lines.append(f"  - [readwise]({readwise_url}) · `{readwise_id}`")
+    elif readwise_url:
+        lines.append(f"  - [readwise]({readwise_url})")
+    elif readwise_id:
+        lines.append(f"  - `{readwise_id}`")
+    author = _reader_author(payload)
+    if author:
+        lines.append(f"  - {_collapse(author)}")
+    published = _published_date_value(payload)
+    if published:
+        lines.append(f"  - published: {published}")
+    saved = _document_saved_at_iso(payload)
+    if saved:
+        lines.append(f"  - saved: {saved}")
+    return lines
+
+
 def document_journal_date(payload: dict, now: datetime | None = None) -> str:
     """3am-aware journal date label for a Reader document (e.g. ``Aug 22, 2026``)."""
     local = document_local_datetime(payload, now=now)
@@ -347,16 +467,38 @@ def _youtube_url_for_document(payload: dict, url: str | None) -> str | None:
     return None
 
 
-def _create_shared_link(url: str, title: str | None, journal_date: str) -> dict:
+def _create_shared_link(
+    url: str,
+    title: str | None,
+    journal_date: str,
+    extra_frontmatter: dict | None = None,
+    buffet_nested: list[str] | None = None,
+) -> dict:
     from services.obsidian.add_shared_link import add_shared_link
 
-    return add_shared_link(url, title=title, journal_date=journal_date)
+    return add_shared_link(
+        url,
+        title=title,
+        journal_date=journal_date,
+        extra_frontmatter=extra_frontmatter,
+        buffet_nested=buffet_nested,
+    )
 
 
-def _create_youtube_link(url: str, journal_date: str) -> dict:
+def _create_youtube_link(
+    url: str,
+    journal_date: str,
+    extra_frontmatter: dict | None = None,
+    buffet_nested: list[str] | None = None,
+) -> dict:
     from services.obsidian.add_youtube_link import add_youtube_link
 
-    return add_youtube_link(url, journal_date=journal_date)
+    return add_youtube_link(
+        url,
+        journal_date=journal_date,
+        extra_frontmatter=extra_frontmatter,
+        buffet_nested=buffet_nested,
+    )
 
 
 def _book_from_payload(payload: dict) -> dict:
@@ -612,6 +754,12 @@ def _section_has_dedup_key(
     return any(key in section_text for key in keys if key)
 
 
+def _buffet_bullet_lines(bullet: str) -> list[str]:
+    """Split a (possibly nested) buffet block into individual lines."""
+    lines = str(bullet).splitlines()
+    return lines if lines else [""]
+
+
 def insert_content_buffet_bullet(
     content: str,
     bullet: str,
@@ -626,12 +774,15 @@ def insert_content_buffet_bullet(
     ``exact_line=True`` matches stripped lines only, so a standalone
     ``- [[Note Title]]`` does not collapse into
     ``- [[Note Title]]: ["quote"](https://readwise.io/open/{id})``.
+    Nested metadata under the standalone line is part of ``bullet`` and is
+    inserted with it; dedup keys should still be the first line only.
     """
     lines = content.split("\n")
     header_idx, section_end = _section_bounds(lines)
+    bullet_lines = _buffet_bullet_lines(bullet)
 
     if header_idx is None:
-        new_section = [CONTENT_BUFFET_HEADER, bullet, ""]
+        new_section = [CONTENT_BUFFET_HEADER, *bullet_lines, ""]
         planning_idx = _planning_index(lines)
         if planning_idx is not None:
             updated = lines[:planning_idx] + new_section + lines[planning_idx:]
@@ -652,7 +803,7 @@ def insert_content_buffet_bullet(
         new_body: list[str] = []
         for line in section_body:
             if not replaced and EMPTY_PLACEHOLDER.match(line.strip()):
-                new_body.append(bullet)
+                new_body.extend(bullet_lines)
                 replaced = True
             else:
                 new_body.append(line)
@@ -662,7 +813,7 @@ def insert_content_buffet_bullet(
     for i, line in enumerate(section_body):
         if line.strip() and not EMPTY_PLACEHOLDER.match(line.strip()):
             insert_at = header_idx + 1 + i + 1
-    updated = lines[:insert_at] + [bullet] + lines[insert_at:]
+    updated = lines[:insert_at] + bullet_lines + lines[insert_at:]
     return "\n".join(updated), "inserted"
 
 
@@ -678,23 +829,36 @@ def _wikilink_from_note_stem(note_title: str) -> str | None:
     return cleaned or None
 
 
-def standalone_wikilink_bullet(note_title: str) -> tuple[str, list[str]] | None:
+def standalone_wikilink_bullet(
+    note_title: str,
+    nested_lines: list[str] | None = None,
+) -> tuple[str, list[str]] | None:
     """Standalone buffet line ``- [[stem]]`` with exact-line dedup keys.
 
-    Keys are the full bullet only. A later highlight line
+    Keys are the first line only. Nested metadata (source/readwise/author)
+    is optional and is not used as a dedup key. A later highlight line
     ``- [[stem]]: ["quote"](https://readwise.io/open/{id})`` must not match.
     """
     target = _wikilink_from_note_stem(note_title)
     if not target:
         return None
-    bullet = f"- [[{target}]]"
-    return bullet, [bullet]
+    first = f"- [[{target}]]"
+    if not nested_lines:
+        return first, [first]
+    block = [first]
+    for line in nested_lines:
+        text = str(line).rstrip("\n")
+        if text.strip():
+            block.append(text)
+    return "\n".join(block), [first]
 
 
 def append_wikilink_to_journal_buffet(
     note_title: str,
     journal_date: str,
     dbx: dropbox.Dropbox | None = None,
+    *,
+    nested_lines: list[str] | None = None,
 ) -> dict:
     """Append ``- [[note_title]]`` to that journal day's Content Buffet.
 
@@ -702,9 +866,11 @@ def append_wikilink_to_journal_buffet(
     (e.g. ``Aug 22, 2026``). Missing journal files are skipped — never created
     and never raised to the caller. Dedup is exact-line on the standalone
     wikilink so highlight quote lines are not treated as the same entry.
+    Optional ``nested_lines`` are written under the wikilink on first insert
+    only; a same-day skip does not duplicate them.
     """
     result: dict = {"success": True, "action": None, "error": None, "file_path": None}
-    prepared = standalone_wikilink_bullet(note_title)
+    prepared = standalone_wikilink_bullet(note_title, nested_lines=nested_lines)
     if not prepared:
         logger.info("KH journal buffet skipped; empty wikilink target from %r", note_title)
         result["action"] = "ignored"
@@ -956,6 +1122,8 @@ def _append_reader_document_knowledge_hub(
     stem = knowledge_hub_note_stem(title)
     journal_date = document_journal_date(payload, now=now)
     youtube_url = _youtube_url_for_document(payload, url)
+    extras = reader_document_extra_frontmatter(payload) or None
+    nested = reader_document_buffet_nested_lines(payload) or None
 
     if not youtube_url and not stem:
         logger.info(
@@ -969,9 +1137,20 @@ def _append_reader_document_knowledge_hub(
 
     try:
         if youtube_url:
-            result = _create_youtube_link(youtube_url, journal_date=journal_date)
+            result = _create_youtube_link(
+                youtube_url,
+                journal_date=journal_date,
+                extra_frontmatter=extras,
+                buffet_nested=nested,
+            )
         else:
-            result = _create_shared_link(url, title=title, journal_date=journal_date)
+            result = _create_shared_link(
+                url,
+                title=title,
+                journal_date=journal_date,
+                extra_frontmatter=extras,
+                buffet_nested=nested,
+            )
     except Exception as exc:
         logger.exception(
             "Knowledge Hub save failed for Reader document %s", payload.get("id")
@@ -1010,11 +1189,11 @@ def _append_reader_document_knowledge_hub(
 def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     """Append a Readwise highlight or Reader document to the journal for its date.
 
-    Parent Reader documents create/update a Knowledge Hub note and write
-    ``- [[Note Title]]`` to that day's Content Buffet (same as share-link),
-    then bookmark the document page URL in Raindrop Unsorted. Highlights
-    wikilink that KH stem and are not bookmarked. Child annotation documents
-    are ignored.
+    Parent Reader documents create/update a Knowledge Hub note (with Reader
+    YAML extras when present) and write ``- [[Note Title]]`` plus nested
+    metadata to that day's Content Buffet, then bookmark the document page
+    URL in Raindrop Unsorted. Highlights wikilink that KH stem and are not
+    bookmarked. Child annotation documents are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)
