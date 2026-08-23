@@ -52,7 +52,7 @@ def mock_add_shared_link(url, title=None):
     return {"success": True, "action": "created", "error": None, "file_path": "test.md", "vault_name": "test"}
 
 
-def mock_add_youtube_link(url):
+def mock_add_youtube_link(url, **_kwargs):
     """Mock that returns success without creating files."""
     return {"success": True, "action": "created", "error": None}
 

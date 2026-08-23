@@ -130,6 +130,52 @@ def save_document(
         return result
 
 
+def get_document(document_id: str | None) -> dict | None:
+    """GET one Reader document by id via ``/api/v3/list/?id=``.
+
+    Save only returns ``{id, url}``. Title/author/creator come from list.
+    Missing token, empty id, and HTTP errors return None and never raise.
+    """
+    doc_id = str(document_id).strip() if document_id is not None else ""
+    if not doc_id:
+        return None
+    try:
+        headers = _headers()
+    except EnvironmentError as exc:
+        logger.error("Reader list skipped: %s", exc)
+        return None
+    try:
+        response = requests.get(
+            LIST_URL,
+            params={"id": doc_id},
+            headers=headers,
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+        results = data.get("results") or []
+        if not results:
+            logger.info("Reader list returned no document for id=%s", doc_id)
+            return None
+        return results[0]
+    except requests.RequestException as exc:
+        logger.error("Failed to fetch Reader document id=%s: %s", doc_id, exc)
+        return None
+
+
+def document_title_author(document: dict | None) -> tuple[str | None, str | None]:
+    """Reader list ``title`` and ``author``/``creator``. Empty strings → None."""
+    if not document:
+        return None, None
+    title = str(document.get("title") or "").strip() or None
+    author = (
+        str(document.get("author") or "").strip()
+        or str(document.get("creator") or "").strip()
+        or None
+    )
+    return title, author
+
+
 def is_parent_reader_document(document: dict) -> bool:
     """Skip Reader child docs (highlights/notes) that duplicate highlight export."""
     category = str(document.get("category") or "").strip().lower()

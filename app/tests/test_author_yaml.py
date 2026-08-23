@@ -456,7 +456,7 @@ def test_youtube_extra_author_is_quoted_wikilink():
     assert result["success"] is True
     kh = _kh_upload(uploads)
     assert 'author: "[[Jane Doe]], [[John Smith]]"' in kh["content"]
-    assert kh["path"].endswith("Cool Video.md")
+    assert kh["path"].endswith("Cool Video by A Channel.md")
     assert "[[" not in kh["path"]
 
 

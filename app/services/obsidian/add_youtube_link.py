@@ -11,7 +11,12 @@ import httpx
 import pytz
 from openai import OpenAI
 
-from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
+from .add_readwise_buffet import (
+    append_wikilink_to_journal_buffet,
+    find_hub_note_by_identity,
+    journal_filename,
+    youtube_knowledge_hub_note_stem,
+)
 from .add_shared_link import (
     _get_dropbox_client,
     _find_knowledge_hub_path,
@@ -548,19 +553,24 @@ def add_youtube_link(
     *,
     journal_date: str | None = None,
     extra_frontmatter: dict | None = None,
+    note_title: str | None = None,
+    note_author: str | None = None,
 ) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
-    If the file already exists, appends the journal date if not already present.
-    Also backfills missing People and Channel fields if they are empty.
+    Filename / buffet stem is ``reader_knowledge_hub_note_stem`` (Title by
+    Author when author exists). Prefer Reader ``note_title`` / ``note_author``;
+    if Reader has no title yet, fall back to the YouTube title + channel
+    through the same helper. Existing notes are found by that stem, then
+    YAML ``URL`` / ``readwise_id`` — never a second file.
 
     Args:
         url: The YouTube URL to save
         journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
             When omitted, uses today in SYSTEM_TIMEZONE.
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
-            iOS YouTube shares write these after Reader save. The Reader
-            webhook passes them so same-day skip still fill-if-empty.
+        note_title: Preferred Reader list/webhook title.
+        note_author: Preferred Reader author/creator.
 
     Returns:
         dict with keys:
@@ -610,12 +620,33 @@ def add_youtube_link(
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
 
-        # Sanitize filename and limit length
-        sanitized_title = _sanitize_filename(video_title)
-        if len(sanitized_title) > 100:
-            sanitized_title = sanitized_title[:100]
-        filename = sanitized_title + '.md'
+        channel_name = metadata.get("author_name")
+        note_stem = youtube_knowledge_hub_note_stem(
+            note_title,
+            note_author,
+            fallback_title=video_title,
+            fallback_author=channel_name,
+        ) or _sanitize_filename(video_title)
+        filename = _sanitize_filename(note_stem) + ".md"
         file_path = f"{knowledge_hub_path}/{filename}"
+
+        extras_id = None
+        if extra_frontmatter:
+            extras_id = extra_frontmatter.get("readwise_id")
+        if not _file_exists(dbx, file_path):
+            found = find_hub_note_by_identity(
+                dbx,
+                knowledge_hub_path,
+                url=url,
+                readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+            )
+            if found:
+                file_path, _found_content = found
+                note_stem = file_path.rsplit("/", 1)[-1].removesuffix(".md")
+                logger.info(
+                    "YouTube KH note found by URL/readwise_id; keeping existing stem %s",
+                    note_stem,
+                )
 
         # Get timestamps
         system_tz = pytz.timezone(timezone_str)
@@ -627,7 +658,6 @@ def add_youtube_link(
             formatted_local_date = str(journal_date).removesuffix(".md").strip()
         else:
             formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
-        note_stem = sanitized_title
         result["title"] = video_title
         result["description"] = description
         result["stem"] = note_stem
@@ -657,7 +687,7 @@ def add_youtube_link(
             if today_link in existing_journals:
                 # Same-day skip still fill-if-empty extras (Reader webhook
                 # after iOS share). Do not append buffet again and do not
-                # rename off Reader's Title by Author — stem is YouTube title.
+                # create a second file when the stem string drifted.
                 extras_changed = _merge_extra_frontmatter(frontmatter, extra_frontmatter)
                 if extras_changed:
                     frontmatter["modified time"] = now_utc.isoformat()

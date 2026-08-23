@@ -37,6 +37,7 @@ from services.obsidian.add_readwise_buffet import (  # noqa: E402
     insert_content_buffet_bullet,
     journal_filename,
     reader_knowledge_hub_note_stem,
+    youtube_knowledge_hub_note_stem,
 )
 from services.obsidian.add_shared_link import add_shared_link  # noqa: E402
 from services.obsidian.add_youtube_link import (  # noqa: E402
@@ -54,6 +55,8 @@ assert JOURNAL_DATE == "Aug 22, 2026"
 
 KH_PATH = "/obsidian/personal/_knowledge-hub"
 JOURNAL_FOLDER = "/obsidian/personal/01_daily/_journal"
+YOUTUBE_STEM = youtube_knowledge_hub_note_stem("Cool Video", "A Channel")
+assert YOUTUBE_STEM == "Cool Video by A Channel"
 JOURNAL_PATH = f"{JOURNAL_FOLDER}/{JOURNAL_DATE}.md"
 
 SAMPLE_JOURNAL = """---
@@ -106,11 +109,22 @@ def _not_found_api_error() -> dropbox.exceptions.ApiError:
     return dropbox.exceptions.ApiError("req", error, "", "")
 
 
-def _mock_dbx(*, kh_exists=False, kh_content=None, journal_content=SAMPLE_JOURNAL, journal_missing=False):
+def _mock_dbx(
+    *,
+    kh_exists=False,
+    kh_content=None,
+    journal_content=SAMPLE_JOURNAL,
+    journal_missing=False,
+    existing_paths=None,
+):
     uploads: list[dict] = []
     mock_dbx = MagicMock()
 
     def get_metadata(path):
+        if existing_paths is not None:
+            if path in existing_paths or any(u["path"] == path for u in uploads):
+                return MagicMock()
+            raise _not_found_api_error()
         if KH_PATH in path:
             if kh_exists:
                 return MagicMock()
@@ -134,9 +148,34 @@ def _mock_dbx(*, kh_exists=False, kh_content=None, journal_content=SAMPLE_JOURNA
     def capture_upload(data, path, mode=None):
         uploads.append({"content": data.decode("utf-8"), "path": path, "mode": mode})
 
+    def list_folder(path, **_kwargs):
+        result = MagicMock()
+        result.has_more = False
+        prefix = path.rstrip("/") + "/"
+        seen: set[str] = set()
+        entries = []
+        candidates = list(existing_paths or [])
+        for upload in uploads:
+            candidates.append(upload["path"])
+        for file_path in candidates:
+            if not file_path.startswith(prefix):
+                continue
+            name = file_path[len(prefix) :]
+            if "/" in name or name in seen:
+                continue
+            seen.add(name)
+            entry = MagicMock()
+            entry.name = name
+            entry.path_display = file_path
+            entry.path_lower = file_path
+            entries.append(entry)
+        result.entries = entries
+        return result
+
     mock_dbx.files_get_metadata.side_effect = get_metadata
     mock_dbx.files_download.side_effect = download
     mock_dbx.files_upload.side_effect = capture_upload
+    mock_dbx.files_list_folder.side_effect = list_folder
     return mock_dbx, uploads
 
 
@@ -386,7 +425,7 @@ def test_youtube_link_create_appends_buffet_wikilink():
     assert kh_date == JOURNAL_DATE
     assert journal["path"] == f"{JOURNAL_FOLDER}/{kh_date}.md"
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
-    assert "- [[Cool Video]]" in section
+    assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "](http" not in section
     assert "youtube.com" not in section
 
@@ -404,7 +443,7 @@ def test_youtube_link_update_appends_buffet_wikilink():
     journal = _journal_upload(uploads)
     assert journal is not None
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
-    assert "- [[Cool Video]]" in section
+    assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "](http" not in section
 
 
@@ -421,14 +460,15 @@ def test_youtube_link_already_linked_today_does_not_double():
     assert uploads == []
 
 
-def test_youtube_link_wikilink_uses_sanitized_filename_stem():
+def test_youtube_link_wikilink_uses_reader_stem_helper():
     title = 'Watch this: "AI" / part 1?'
-    expected_stem = shared_mod._sanitize_filename(title)
+    expected_stem = youtube_knowledge_hub_note_stem(title, "A Channel")
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     with _patched(_youtube_patches(mock_dbx, title=title), "services.obsidian.add_youtube_link.datetime"):
         result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     assert result["success"] is True
+    assert result["stem"] == expected_stem
     journal = _journal_upload(uploads)
     assert journal is not None
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
@@ -484,7 +524,7 @@ def test_youtube_link_explicit_journal_date_not_today():
     assert _journal_date_from_kh(kh["content"]) == "Nov 28, 2025"
     assert journal is not None
     assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
-    assert "- [[Cool Video]]" in journal["content"]
+    assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
 
 
 def _reader_document_payload(**overrides):
@@ -725,20 +765,21 @@ def test_reader_document_same_day_does_not_double_buffet_wikilink():
 
 
 def _reader_youtube_payload(**overrides):
-    return _reader_document_payload(
-        title="Cool Video",
-        author="A Channel",
-        source_url="https://www.youtube.com/watch?v=abcdefghijk",
-        category="video",
-        **overrides,
-    )
+    data = {
+        "title": "Cool Video",
+        "author": "A Channel",
+        "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+        "category": "video",
+    }
+    data.update(overrides)
+    return _reader_document_payload(**data)
 
 
-def test_reader_youtube_webhook_keeps_youtube_stem_not_reader_title():
-    """YouTube Reader docs stay on the add_youtube_link stem, not Title by Author."""
+def test_reader_youtube_webhook_uses_reader_title_by_author_stem():
+    """Fresh YouTube Reader docs use the shared Title by Author stem."""
     payload = _reader_youtube_payload()
     reader_stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
-    assert reader_stem == "Cool Video by A Channel"
+    assert reader_stem == YOUTUBE_STEM
 
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
@@ -751,24 +792,53 @@ def test_reader_youtube_webhook_keeps_youtube_stem_not_reader_title():
 
     assert result["success"] is True
     kh = _kh_upload(uploads)
-    assert kh["path"].endswith("Cool Video.md")
-    assert " by " not in kh["path"]
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
     journal = _journal_upload(uploads)
     assert journal is not None
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
-    assert "- [[Cool Video]]" in section
-    assert "- [[Cool Video by A Channel]]" not in section
+    assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
 
 
-def test_reader_youtube_same_day_fills_extras_on_existing_youtube_stem():
-    """Webhook after iOS share hits Cool Video.md and only fill-if-empty extras."""
+def test_reader_youtube_webhook_does_not_create_second_note_when_stem_drifts():
+    """Existing title-only note is updated in place; no second Title by Author file."""
+    payload = _reader_youtube_payload(title="Cool Video (Reader)")
+    drifted = "Cool Video (Reader) by A Channel"
+    assert reader_knowledge_hub_note_stem(payload["title"], payload["author"]) == drifted
+    old_path = f"{KH_PATH}/Cool Video.md"
+    existing = _existing_kh(
+        journal_dates=["Nov 28, 2025"],
+        title="Cool Video",
+    ).replace("URL: https://example.com/article", "URL: https://www.youtube.com/watch?v=abcdefghijk")
+    mock_dbx, uploads = _mock_dbx(
+        existing_paths=[old_path],
+        kh_content=existing,
+        journal_content=JOURNAL_WITH_ITEM.replace("Already There", "Cool Video"),
+    )
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+
+    with _patched(
+        _youtube_patches(mock_dbx, title="Cool Video"),
+        "services.obsidian.add_youtube_link.datetime",
+    ):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    assert kh["path"] == old_path
+    assert not any(u["path"].endswith(f"{drifted}.md") for u in uploads)
+    assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
+    assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
+
+
+def test_reader_youtube_same_day_fills_extras_on_existing_stem():
+    """Webhook after iOS share hits the shared stem and only fill-if-empty extras."""
     payload = _reader_youtube_payload()
     mock_dbx, uploads = _mock_dbx(
         kh_exists=True,
         kh_content=_existing_kh(journal_dates=["Nov 28, 2025"], title="Cool Video"),
-        journal_content=JOURNAL_WITH_ITEM.replace("Already There", "Cool Video"),
+        journal_content=JOURNAL_WITH_ITEM.replace("Already There", YOUTUBE_STEM),
     )
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
 
@@ -781,8 +851,7 @@ def test_reader_youtube_same_day_fills_extras_on_existing_youtube_stem():
     assert result["success"] is True
     assert result["action"] == "skipped"
     kh = _kh_upload(uploads)
-    assert kh["path"].endswith("Cool Video.md")
-    assert " by " not in kh["path"]
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
     assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert _journal_upload(uploads) is None
@@ -824,53 +893,56 @@ def _save_result(*, status_code=201, success=True, error=None):
 
 
 def test_process_youtube_share_saves_video_and_writes_readwise_url():
-    """Successful YouTube share POSTs category=video with the Obsidian stem."""
+    """Successful YouTube share POSTs category=video and names KH from Reader list."""
     from main import _process_youtube_link
 
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    listed = {"id": "01readerdoc", "title": "Cool Video", "author": "A Channel"}
     with _patched(
         _youtube_patches(mock_dbx, title="Cool Video"),
         "services.obsidian.add_youtube_link.datetime",
     ), patch(
         "main.save_document",
         return_value=_save_result(status_code=201),
-    ) as mock_save, patch("main._mirror_to_raindrop"):
+    ) as mock_save, patch("main.get_document", return_value=listed), patch(
+        "main._mirror_to_raindrop"
+    ):
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     mock_save.assert_called_once_with(
         "https://www.youtube.com/watch?v=abcdefghijk",
         category="video",
-        title="Cool Video",
         saved_using="gen-intelligence",
     )
     kh = _kh_upload(uploads)
-    assert kh["path"].endswith("Cool Video.md")
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
     assert "readwise_url: https://read.readwise.io/read/01readerdoc" in kh["content"]
     assert "readwise_id: 01readerdoc" in kh["content"]
     journal = _journal_upload(uploads)
     assert journal is not None
-    assert "- [[Cool Video]]" in journal["content"]
-    assert " by " not in journal["content"]
+    assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
 
 
 def test_process_youtube_share_200_still_writes_readwise_url():
     from main import _process_youtube_link
 
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    listed = {"id": "01readerdoc", "title": "Cool Video", "author": "A Channel"}
     with _patched(
         _youtube_patches(mock_dbx, title="Cool Video"),
         "services.obsidian.add_youtube_link.datetime",
     ), patch(
         "main.save_document",
         return_value=_save_result(status_code=200),
-    ), patch("main._mirror_to_raindrop"):
+    ), patch("main.get_document", return_value=listed), patch("main._mirror_to_raindrop"):
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     kh = _kh_upload(uploads)
     assert "readwise_url: https://read.readwise.io/read/01readerdoc" in kh["content"]
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
 
 
-def test_process_youtube_share_save_failure_still_writes_kh():
+def test_process_youtube_share_save_failure_falls_back_to_youtube_stem():
     from main import _process_youtube_link
 
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
@@ -880,14 +952,17 @@ def test_process_youtube_share_save_failure_still_writes_kh():
     ), patch(
         "main.save_document",
         return_value=_save_result(success=False, status_code=500, error="boom"),
-    ) as mock_save, patch("main._mirror_to_raindrop") as mock_raindrop:
+    ) as mock_save, patch("main.get_document") as mock_get, patch(
+        "main._mirror_to_raindrop"
+    ) as mock_raindrop:
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     mock_save.assert_called_once()
+    mock_get.assert_not_called()
     mock_raindrop.assert_called_once()
     kh = _kh_upload(uploads)
-    assert kh["path"].endswith("Cool Video.md")
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
     assert "readwise_url" not in kh["content"]
     journal = _journal_upload(uploads)
     assert journal is not None
-    assert "- [[Cool Video]]" in journal["content"]
+    assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
