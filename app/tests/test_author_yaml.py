@@ -189,18 +189,32 @@ def test_single_author_is_quoted_wikilink():
 
 
 def test_two_authors_joined_with_and():
-    assert author_frontmatter_value("Jane Doe and John Smith") == (
-        "[[Jane Doe]], [[John Smith]]"
-    )
+    assert author_frontmatter_value("Jane Doe and John Smith") == [
+        "[[Jane Doe]]",
+        "[[John Smith]]",
+    ]
     assert author_yaml_literal("Jane Doe and John Smith") == (
-        '"[[Jane Doe]], [[John Smith]]"'
+        '\n  - "[[Jane Doe]]"\n  - "[[John Smith]]"'
     )
 
 
 def test_two_full_names_split_on_comma():
     assert split_author_names("Alice Smith, Bob Jones") == ["Alice Smith", "Bob Jones"]
-    assert author_frontmatter_value("Alice Smith, Bob Jones") == (
-        "[[Alice Smith]], [[Bob Jones]]"
+    assert author_frontmatter_value("Alice Smith, Bob Jones") == [
+        "[[Alice Smith]]",
+        "[[Bob Jones]]",
+    ]
+
+
+def test_accented_names_split_and_keep_spelling():
+    raw = "Dagoberto Gilb, Rubén Martínez"
+    assert split_author_names(raw) == ["Dagoberto Gilb", "Rubén Martínez"]
+    assert author_frontmatter_value(raw) == [
+        "[[Dagoberto Gilb]]",
+        "[[Rubén Martínez]]",
+    ]
+    assert author_yaml_literal(raw) == (
+        '\n  - "[[Dagoberto Gilb]]"\n  - "[[Rubén Martínez]]"'
     )
 
 
@@ -268,9 +282,13 @@ def test_junk_and_empty_author_skipped():
 
 def test_idempotent_when_already_wikilinked():
     assert author_frontmatter_value("[[W. Brian Arthur]]") == "[[W. Brian Arthur]]"
-    assert author_frontmatter_value("[[Alice Smith]], [[Bob Jones]]") == (
-        "[[Alice Smith]], [[Bob Jones]]"
-    )
+    assert author_frontmatter_value("[[Alice Smith]], [[Bob Jones]]") == [
+        "[[Alice Smith]]",
+        "[[Bob Jones]]",
+    ]
+    assert author_frontmatter_value(
+        ["[[Alice Smith]]", "[[Bob Jones]]"]
+    ) == ["[[Alice Smith]]", "[[Bob Jones]]"]
 
 
 def test_plain_to_wikilink_upgrade_same_authors_only():
@@ -278,13 +296,21 @@ def test_plain_to_wikilink_upgrade_same_authors_only():
         "W. Brian Arthur", "[[W. Brian Arthur]]"
     )
     assert is_plain_to_wikilink_author_upgrade(
-        "Alice Smith, Bob Jones", "[[Alice Smith]], [[Bob Jones]]"
+        "Alice Smith, Bob Jones", ["[[Alice Smith]]", "[[Bob Jones]]"]
+    )
+    assert is_plain_to_wikilink_author_upgrade(
+        "[[Alice Smith]], [[Bob Jones]]",
+        ["[[Alice Smith]]", "[[Bob Jones]]"],
     )
     assert not is_plain_to_wikilink_author_upgrade(
         "Casey Newton", "[[The Verge]]"
     )
     assert not is_plain_to_wikilink_author_upgrade(
         "[[W. Brian Arthur]]", "[[W. Brian Arthur]]"
+    )
+    assert not is_plain_to_wikilink_author_upgrade(
+        ["[[Alice Smith]]", "[[Bob Jones]]"],
+        ["[[Alice Smith]]", "[[Bob Jones]]"],
     )
 
 
@@ -300,6 +326,24 @@ def test_merge_upgrades_plain_text_same_author():
     changed = _merge_extra_frontmatter(frontmatter, {"author": "W. Brian Arthur"})
     assert changed is True
     assert frontmatter["author"] == "[[W. Brian Arthur]]"
+
+
+def test_merge_upgrades_comma_joined_wikilinks_to_list():
+    frontmatter = {"author": "[[Alice Smith]], [[Bob Jones]]"}
+    changed = _merge_extra_frontmatter(
+        frontmatter, {"author": "Alice Smith, Bob Jones"}
+    )
+    assert changed is True
+    assert frontmatter["author"] == ["[[Alice Smith]]", "[[Bob Jones]]"]
+
+
+def test_merge_does_not_rewrite_matching_author_list():
+    frontmatter = {"author": ["[[Alice Smith]]", "[[Bob Jones]]"]}
+    changed = _merge_extra_frontmatter(
+        frontmatter, {"author": "Alice Smith, Bob Jones"}
+    )
+    assert changed is False
+    assert frontmatter["author"] == ["[[Alice Smith]]", "[[Bob Jones]]"]
 
 
 def test_reader_extra_wikilinks_author_and_leaves_tweet_plain():
@@ -377,7 +421,7 @@ def test_reader_extra_two_authors_do_not_enter_filename():
             "source_url": "https://example.com/zero",
         }
     )
-    assert extras["author"] == "[[Peter Thiel]], [[Blake Masters]]"
+    assert extras["author"] == ["[[Peter Thiel]]", "[[Blake Masters]]"]
     mock_dbx, uploads = _mock_dbx()
     with _patched(
         _shared_patches(mock_dbx, title="Zero to One", author="Peter Thiel, Blake Masters"),
@@ -394,7 +438,8 @@ def test_reader_extra_two_authors_do_not_enter_filename():
     assert kh["path"].endswith("Zero to One.md")
     assert "[[" not in kh["path"]
     assert "by [[Peter Thiel]]" not in kh["path"]
-    assert 'author: "[[Peter Thiel]], [[Blake Masters]]"' in kh["content"]
+    assert 'author:\n  - "[[Peter Thiel]]"\n  - "[[Blake Masters]]"' in kh["content"]
+    assert 'author: "[[Peter Thiel]], [[Blake Masters]]"' not in kh["content"]
 
 
 def test_fill_if_empty_does_not_clobber_different_author():
@@ -418,6 +463,31 @@ def test_fill_if_empty_does_not_clobber_different_author():
     kh = _kh_upload(uploads)
     assert "Casey Newton" in kh["content"]
     assert "[[The Verge]]" not in kh["content"]
+
+
+def test_fill_if_empty_upgrades_comma_joined_wikilinks_to_list():
+    existing = _existing_kh(
+        journal_dates=["Jan 1, 2026"],
+        title="Zero to One",
+        author_line='"[[Peter Thiel]], [[Blake Masters]]"',
+    )
+    mock_dbx, uploads = _mock_dbx(kh_exists=True, kh_content=existing)
+    with _patched(
+        _shared_patches(mock_dbx, title="Zero to One", author="Peter Thiel, Blake Masters"),
+        "services.obsidian.add_shared_link.datetime",
+    ):
+        result = add_shared_link(
+            "https://example.com/zero",
+            title="Zero to One",
+            extra_frontmatter={"author": "Peter Thiel, Blake Masters"},
+        )
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    frontmatter_block = kh["content"].split("---", 2)[1]
+    assert "[[Peter Thiel]]" in frontmatter_block
+    assert "[[Blake Masters]]" in frontmatter_block
+    assert 'author: "[[Peter Thiel]], [[Blake Masters]]"' not in kh["content"]
 
 
 def test_fill_if_empty_upgrades_plain_matching_author():
@@ -455,7 +525,8 @@ def test_youtube_extra_author_is_quoted_wikilink():
 
     assert result["success"] is True
     kh = _kh_upload(uploads)
-    assert 'author: "[[Jane Doe]], [[John Smith]]"' in kh["content"]
+    assert 'author:\n  - "[[Jane Doe]]"\n  - "[[John Smith]]"' in kh["content"]
+    assert 'author: "[[Jane Doe]], [[John Smith]]"' not in kh["content"]
     assert kh["path"].endswith("Cool Video by A Channel.md")
     assert "[[" not in kh["path"]
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Strong separators first; a plain comma is last and still requires person-name sides.
 _SPLITTERS = (
@@ -14,6 +15,7 @@ _SPLITTERS = (
 )
 
 # 2+ of these tokens (initials allowed) is a "person name" for split decisions.
+# Accented letters (Rubén, Martínez) count; spelling is not ASCII-folded.
 _NAME_TOKEN = re.compile(
     r"""
     (?:
@@ -32,6 +34,8 @@ _ON_TWITTER = re.compile(r"\bon twitter\b", re.I)
 _WIKILINK_LIST = re.compile(
     r"^(?:\s*\[\[.*?\]\]\s*,)*\s*\[\[.*?\]\]\s*$"
 )
+_SINGLE_WIKILINK = re.compile(r"^\[\[.+\]\]$")
+_WIKILINK_FIND = re.compile(r"\[\[.*?\]\]")
 
 
 def _collapse(value: str) -> str:
@@ -40,6 +44,8 @@ def _collapse(value: str) -> str:
 
 def _nonempty(value: object) -> str | None:
     if value is None:
+        return None
+    if isinstance(value, list):
         return None
     text = str(value).strip()
     return text or None
@@ -57,8 +63,24 @@ def _looks_like_tweet_handle_author(text: str) -> bool:
     return bool(_AUTHOR_HANDLE.search(text) and _ON_TWITTER.search(text))
 
 
+def _is_unicode_name_letter(char: str) -> bool:
+    """Letter or combining mark. Does not ASCII-fold."""
+    category = unicodedata.category(char)
+    return category.startswith("L") or category in {"Mn", "Mc", "Lm"}
+
+
+def _is_unicode_name_token(token: str) -> bool:
+    """Capitalized name token that may include accented letters (``Rubén``)."""
+    if not token or unicodedata.category(token[0]) != "Lu":
+        return False
+    return all(
+        _is_unicode_name_letter(char) or char in "'’\u2019-"
+        for char in token[1:]
+    )
+
+
 def _is_name_token(token: str) -> bool:
-    return bool(_NAME_TOKEN.match(token))
+    return bool(_NAME_TOKEN.match(token)) or _is_unicode_name_token(token)
 
 
 def _looks_like_person_name(text: str) -> bool:
@@ -82,6 +104,8 @@ def split_author_names(raw: str) -> list[str]:
     piece looks like a person name. A plain comma splits only under that same
     rule, so role/org suffixes stay attached:
     ``Mark Zuckerberg, Founder and CEO, Meta`` stays one token.
+    Accented letters count as name tokens (``Rubén Martínez``); spelling is
+    preserved.
     """
     text = _collapse(_unwrap_wikilinks(raw))
     if not text:
@@ -110,6 +134,18 @@ def _split_author_names(text: str) -> list[str]:
     return [text]
 
 
+def _author_text_from_raw(raw: object) -> str | None:
+    """Flatten a string or list of author pieces into one comparable string."""
+    if isinstance(raw, list):
+        pieces = []
+        for item in raw:
+            text = _author_text_from_raw(item)
+            if text:
+                pieces.append(text)
+        return ", ".join(pieces) or None
+    return _nonempty(raw)
+
+
 def plain_author_label(raw: object) -> str | None:
     """Author text for a ``Title by Author`` stem or other non-YAML uses.
 
@@ -117,38 +153,52 @@ def plain_author_label(raw: object) -> str | None:
     Hub YAML ``author``. Does not collapse internal whitespace so the stem
     matches the existing filename sanitizer.
     """
-    text = _nonempty(raw)
+    text = _author_text_from_raw(raw)
     if not text:
         return None
     return _unwrap_wikilinks(text).strip() or None
 
 
-def author_frontmatter_value(raw: object, *, is_tweet: bool = False) -> str | None:
+def _wikilink_author_links(raw: object) -> list[str]:
+    """Build ``[[Name]]`` links from a string or list. Empty when junk."""
+    text = _author_text_from_raw(raw)
+    if not text:
+        return []
+    links: list[str] = []
+    for part in split_author_names(_collapse(text)):
+        target = _wikilink_target(part)
+        if not target:
+            continue
+        links.append(f"[[{target}]]")
+    return links
+
+
+def author_frontmatter_value(
+    raw: object, *, is_tweet: bool = False
+) -> str | list[str] | None:
     """Turn an author/creator string into a YAML ``author`` value (unquoted).
 
-    One author: ``[[W. Brian Arthur]]``.
-    Several: ``[[Alice Smith]], [[Bob Jones]]`` (same ``author`` key).
+    One author: ``[[W. Brian Arthur]]`` (string).
+    Several: ``["[[Alice Smith]]", "[[Bob Jones]]"]`` (YAML list, same shape
+    as People). Never a comma-joined ``"[[A]], [[B]]"`` scalar.
     Tweet ``@handle on Twitter`` strings stay plain. Empty/junk returns None.
 
     Use this only for Knowledge Hub YAML. Buffet / journal / highlight / filename
     stems must stay plain via ``plain_author_label``.
     """
-    text = _nonempty(raw)
+    text = _author_text_from_raw(raw)
     if not text:
         return None
     collapsed = _collapse(text)
     if is_tweet or _looks_like_tweet_handle_author(collapsed):
         return collapsed
 
-    links: list[str] = []
-    for part in split_author_names(collapsed):
-        target = _wikilink_target(part)
-        if not target:
-            continue
-        links.append(f"[[{target}]]")
+    links = _wikilink_author_links(collapsed)
     if not links:
         return None
-    return ", ".join(links)
+    if len(links) == 1:
+        return links[0]
+    return links
 
 
 def quote_yaml_scalar(value: str) -> str:
@@ -160,14 +210,44 @@ def quote_yaml_scalar(value: str) -> str:
 def author_yaml_literal(raw: object, *, is_tweet: bool = False) -> str:
     """Value to write after ``author: `` in a hand-built YAML block.
 
-    Quoted wikilink(s), a plain tweet handle, or empty string.
+    Quoted wikilink, a YAML list of quoted wikilinks, a plain tweet handle,
+    or empty string.
     """
     formatted = author_frontmatter_value(raw, is_tweet=is_tweet)
     if not formatted:
         return ""
+    if isinstance(formatted, list):
+        items = "\n".join(f"  - {quote_yaml_scalar(item)}" for item in formatted)
+        return f"\n{items}"
     if "[[" in formatted:
         return quote_yaml_scalar(formatted)
     return formatted
+
+
+def _wikilink_count(value: object) -> int:
+    if isinstance(value, list):
+        return sum(_wikilink_count(item) for item in value)
+    text = _nonempty(value)
+    if not text:
+        return 0
+    return len(_WIKILINK_FIND.findall(text))
+
+
+def _is_single_wikilink(value: object) -> bool:
+    text = _nonempty(value)
+    return bool(text and _SINGLE_WIKILINK.match(_collapse(text)))
+
+
+def _is_canonical_wikilink_author(value: object) -> bool:
+    """True when ``author`` is already the new Obsidian-safe form.
+
+    One person: a single quoted-style ``[[Name]]`` string.
+    Several: a list of ``[[Name]]`` strings. A comma-joined
+    ``"[[A]], [[B]]"`` scalar is the broken old form, not canonical.
+    """
+    if isinstance(value, list):
+        return bool(value) and all(_is_single_wikilink(item) for item in value)
+    return _is_single_wikilink(value)
 
 
 def _author_name_key_set(value: object) -> set[str] | None:
@@ -188,18 +268,19 @@ def _author_name_key_set(value: object) -> set[str] | None:
 
 
 def is_plain_to_wikilink_author_upgrade(existing: object, new: object) -> bool:
-    """True when ``existing`` is the same author(s) as plain text and ``new`` adds brackets.
+    """True when ``existing`` is the same author(s) in an older form than ``new``.
 
-    Does not treat a different existing author as upgradable.
+    Accepts a plain-text scalar, the old comma-joined ``"[[A]], [[B]]"``
+    string, or the new list of wikilinks. Upgrades the broken string to a
+    list when the names match. Does not treat a different existing author
+    as upgradable, and does not rewrite an already-canonical value.
     """
-    existing_text = existing if isinstance(existing, str) else None
-    new_text = new if isinstance(new, str) else None
-    if not existing_text or not new_text:
+    existing_keys = _author_name_key_set(existing)
+    new_keys = _author_name_key_set(new)
+    if not existing_keys or existing_keys != new_keys:
         return False
-    if "[[" in existing_text:
+    if _is_canonical_wikilink_author(existing):
         return False
-    if "[[" not in new_text:
-        return False
-    existing_keys = _author_name_key_set(existing_text)
-    new_keys = _author_name_key_set(new_text)
-    return bool(existing_keys and existing_keys == new_keys)
+    if _is_canonical_wikilink_author(new):
+        return True
+    return _wikilink_count(new) > _wikilink_count(existing)

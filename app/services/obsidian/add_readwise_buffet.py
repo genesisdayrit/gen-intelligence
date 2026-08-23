@@ -1552,7 +1552,9 @@ def _distinct_author_names(raw: object) -> list[str]:
     return names
 
 
-def _book_author_people(book: dict | None, payload: dict) -> tuple[str | None, list[str]]:
+def _book_author_people(
+    book: dict | None, payload: dict
+) -> tuple[str | list[str] | None, list[str]]:
     """Wikilinked ``author`` value and People list for distinct book authors."""
     names = _distinct_author_names(
         _reader_author(book or {}) or _reader_author(payload)
@@ -1665,7 +1667,8 @@ def _ensure_book_page_frontmatter(
     """Fill empty YAML keys and add missing People author wikilinks.
 
     Does not overwrite People/body/other keys blindly. A plain-text
-    ``author`` is upgraded to wikilinks only when it is the same name(s).
+    ``author`` or comma-joined ``"[[A]], [[B]]"`` string is upgraded to
+    the new wikilink form only when it is the same name(s).
     """
     from services.obsidian.add_shared_link import _extract_frontmatter, _rebuild_markdown
 
@@ -1678,6 +1681,8 @@ def _ensure_book_page_frontmatter(
         if key == "title":
             continue
         if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        if isinstance(value, list) and not value:
             continue
         existing = frontmatter.get(key)
         if key == "author":
