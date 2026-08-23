@@ -48,6 +48,7 @@ from services.obsidian.add_readwise_buffet import (
     is_highlight_event,
     journal_filename,
     knowledge_hub_note_stem,
+    standalone_wikilink_bullet,
 )
 from services.obsidian.add_shared_link import _sanitize_filename
 
@@ -1283,3 +1284,113 @@ def test_format_highlight_special_filename_chars_match_kh_stem():
     assert " by " not in line
     assert "read.readwise.io" not in line
     assert "readwise.io/bookreview" not in line
+
+
+# ---------------------------------------------------------------------------
+# Locked buffet shape: standalone wikilink + separate highlight lines
+# ---------------------------------------------------------------------------
+
+
+def _buffet_lines(content: str) -> list[str]:
+    section = content.split("### Content Buffet:")[1].split("### Content Planning")[0]
+    return [line for line in section.splitlines() if line.strip()]
+
+
+def test_standalone_wikilink_is_title_only_no_quote_or_readwise_url():
+    prepared = standalone_wikilink_bullet("Deep Work")
+    assert prepared is not None
+    bullet, keys = prepared
+    assert bullet == "- [[Deep Work]]"
+    assert keys == ["- [[Deep Work]]"]
+    assert ":" not in bullet
+    assert "readwise" not in bullet
+    assert '"' not in bullet
+
+
+def test_highlight_appends_separate_line_without_removing_standalone():
+    """Document line stays; highlight.created appends a second line."""
+    content = """### Content Buffet:
+- [[Deep Work]]
+
+### Content Planning
+"""
+    payload = _highlight_payload(title="Deep Work", author="Cal Newport")
+    bullet = format_readwise_bullet(payload)
+    assert bullet == (
+        '- [[Deep Work]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
+    assert action == "inserted"
+    assert _buffet_lines(updated) == [
+        "- [[Deep Work]]",
+        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+    ]
+
+
+def test_standalone_wikilink_does_not_collapse_into_existing_highlight_line():
+    """Highlight-first: later document save still writes the standalone line."""
+    content = """### Content Buffet:
+- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)
+
+### Content Planning
+"""
+    prepared = standalone_wikilink_bullet("Deep Work")
+    assert prepared is not None
+    bullet, keys = prepared
+    updated, action = insert_content_buffet_bullet(
+        content, bullet, keys, exact_line=True
+    )
+    assert action == "inserted"
+    assert _buffet_lines(updated) == [
+        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        "- [[Deep Work]]",
+    ]
+
+
+def test_highlight_dedup_does_not_skip_because_standalone_wikilink_exists():
+    content = """### Content Buffet:
+- [[Deep Work]]
+
+### Content Planning
+"""
+    payload = _highlight_payload(title="Deep Work")
+    updated, action = insert_content_buffet_bullet(
+        content, format_readwise_bullet(payload), keys=dedup_keys(payload)
+    )
+    assert action == "inserted"
+    assert "https://readwise.io/open/954480" in updated
+    assert _buffet_lines(updated)[0] == "- [[Deep Work]]"
+
+
+def test_standalone_wikilink_dedups_only_exact_line():
+    content = """### Content Buffet:
+- [[Deep Work]]
+
+### Content Planning
+"""
+    prepared = standalone_wikilink_bullet("Deep Work")
+    assert prepared is not None
+    updated, action = insert_content_buffet_bullet(
+        content, prepared[0], prepared[1], exact_line=True
+    )
+    assert action == "skipped"
+    assert updated == content
+
+
+def test_locked_tweet_highlight_still_uses_handle_wikilink():
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            title="Tweets From Georgie Dorothea 🫩",
+            author="@georgiedorothea on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/georgiedorothea",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert line != "- [[Tweets from @georgiedorothea]]"

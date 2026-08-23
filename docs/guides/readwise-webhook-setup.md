@@ -7,13 +7,16 @@ Subscribe to both:
 - `readwise.highlight.created` — highlight quotes under `### Content Buffet:`
 - `reader.any_document.created` — parent Reader documents as a Knowledge Hub note plus `- [[Note Title]]`
 
-When a parent Reader document is created, the webhook creates or updates a Knowledge Hub note the same way as a share-link (YouTube URLs use the YouTube helper). The journal date on the note and buffet is the document's 3am-aware date (`created_at` / `saved_at` / `updated_at`), not "now". The buffet line is `- [[Note Title]]` (the KH filename stem). The old markdown Reader URL bullet is not also written. Child annotation documents (`category=highlight|note` or `parent_id` set) are still skipped. If KH create fails, the webhook logs it and does not crash; it does not fall back to a markdown Reader URL unless KH was skipped for a junk/empty title.
+When a parent Reader document is created, the webhook creates or updates a Knowledge Hub note the same way as a share-link (YouTube URLs use the YouTube helper). The journal date on the note and buffet is the document's 3am-aware date (`created_at` / `saved_at` / `updated_at`), not "now". The buffet line is **only** the standalone wikilink `- [[Note Title]]` (the KH filename stem) — no quote and no Readwise URL on that first line. Later `highlight.created` events **append** a separate line and do not replace or remove the standalone wikilink. Child annotation documents (`category=highlight|note` or `parent_id` set) are still skipped. If KH create fails, the webhook logs it and does not crash; it does not fall back to a markdown Reader URL unless KH was skipped for a junk/empty title.
 
-Highlights are written as:
+Locked Content Buffet shape:
 
 ```
+- [[Note Title]]
 - [[Note Title]]: ["quote"](https://readwise.io/open/{id})
 ```
+
+Standalone lines dedup on the exact wikilink bullet. Highlight lines dedup on `readwise.io/open/{id}`. The two never collapse into each other.
 
 The wikilink target is the same Knowledge Hub stem as the document save (`_sanitize_filename` then wikilink sanitize). Do not use `[[Title by Author]]` or a `readwise.io/bookreview` / `read.readwise.io` title link when a stem exists. If there is no title/stem, keep the quote-only or author-only fallback. Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) still use `[[Tweets from @handle]]`, with the handle taken from the author or the last path segment of `source_url`. Do not put `by` on tweets. The highlight permalink stays on the quote. Dedup remains `readwise.io/open/{id}`.
 

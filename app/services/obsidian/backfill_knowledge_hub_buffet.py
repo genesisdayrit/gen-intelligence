@@ -24,6 +24,7 @@ from services.obsidian.add_readwise_buffet import (
     _wikilink_from_note_stem,
     insert_content_buffet_bullet,
     journal_filename,
+    standalone_wikilink_bullet,
 )
 from services.obsidian.add_shared_link import (
     _extract_frontmatter,
@@ -130,15 +131,11 @@ def journal_date_label(journal_day: date) -> str:
 
 
 def buffet_bullet_and_keys(note_title: str) -> tuple[str, list[str]] | None:
-    """Same wikilink bullet + dedup keys as ``append_wikilink_to_journal_buffet``."""
+    """Same standalone wikilink bullet + exact-line keys as share/document saves."""
     target = _wikilink_from_note_stem(note_title)
     if not target or is_junk_note_stem(target):
         return None
-    bullet = f"- [[{target}]]"
-    keys = [bullet, f"[[{target}]]", target]
-    if note_title and note_title != target:
-        keys.append(note_title)
-    return bullet, keys
+    return standalone_wikilink_bullet(note_title)
 
 
 def _empty_summary(since: str) -> dict:
@@ -244,7 +241,9 @@ def write_wikilinks_by_journal(
 
             original = content
             for _stem, bullet, keys in items:
-                content, action = insert_content_buffet_bullet(content, bullet, keys)
+                content, action = insert_content_buffet_bullet(
+                    content, bullet, keys, exact_line=True
+                )
                 if action in {"inserted", "replaced"}:
                     summary["lines_inserted"] += 1
                 elif action == "skipped":

@@ -335,6 +335,34 @@ def test_already_present_title_counts_as_dup_not_write():
     assert uploaded == []
 
 
+def test_highlight_quote_line_does_not_count_as_standalone_wikilink():
+    """Backfill still writes - [[Title]] when only a highlight quote line exists."""
+    aug_path = f"{JOURNAL_FOLDER}/Aug 22, 2026.md"
+    journal = """---
+date: 2026-08-22
+---
+
+### Content Buffet:
+- [[My Article]]: ["a quote"](https://readwise.io/open/954480)
+
+### Content Planning
+- plan something
+"""
+    result, uploaded, _, _ = _run_backfill(
+        kh_notes={"My Article.md": _kh_note(journal_dates=["Aug 22, 2026"])},
+        journals={aug_path: journal},
+    )
+    assert result["lines_inserted"] == 1
+    assert result["lines_skipped_dup"] == 0
+    assert result["files_written"] == 1
+    section = uploaded[0]["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == [
+        '- [[My Article]]: ["a quote"](https://readwise.io/open/954480)',
+        "- [[My Article]]",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Scheduler wiring
 # ---------------------------------------------------------------------------

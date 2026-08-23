@@ -596,14 +596,35 @@ def _planning_index(lines: list[str]) -> int | None:
     return None
 
 
+def _section_has_dedup_key(
+    section_body: list[str],
+    keys: list[str] | None,
+    *,
+    exact_line: bool,
+) -> bool:
+    if not keys:
+        return False
+    if exact_line:
+        stripped = {line.strip() for line in section_body}
+        return any(key.strip() in stripped for key in keys if key)
+    section_text = "\n".join(section_body)
+    return any(key in section_text for key in keys if key)
+
+
 def insert_content_buffet_bullet(
     content: str,
     bullet: str,
     keys: list[str] | None = None,
+    *,
+    exact_line: bool = False,
 ) -> tuple[str, str]:
     """Insert ``bullet`` under Content Buffet. Returns (updated_content, action).
 
     Actions: ``inserted``, ``replaced`` (empty placeholder), ``skipped`` (dedup).
+
+    ``exact_line=True`` matches stripped lines only, so a standalone
+    ``- [[Note Title]]`` does not collapse into
+    ``- [[Note Title]]: ["quote"](https://readwise.io/open/{id})``.
     """
     lines = content.split("\n")
     header_idx, section_end = _section_bounds(lines)
@@ -621,10 +642,8 @@ def insert_content_buffet_bullet(
         return "\n".join(updated), "inserted"
 
     section_body = lines[header_idx + 1 : section_end]
-    section_text = "\n".join(section_body)
-    for key in keys or []:
-        if key and key in section_text:
-            return content, "skipped"
+    if _section_has_dedup_key(section_body, keys, exact_line=exact_line):
+        return content, "skipped"
 
     nonempty = [line for line in section_body if line.strip()]
     if len(nonempty) == 1 and EMPTY_PLACEHOLDER.match(nonempty[0].strip()):
@@ -658,6 +677,19 @@ def _wikilink_from_note_stem(note_title: str) -> str | None:
     return cleaned or None
 
 
+def standalone_wikilink_bullet(note_title: str) -> tuple[str, list[str]] | None:
+    """Standalone buffet line ``- [[stem]]`` with exact-line dedup keys.
+
+    Keys are the full bullet only. A later highlight line
+    ``- [[stem]]: ["quote"](https://readwise.io/open/{id})`` must not match.
+    """
+    target = _wikilink_from_note_stem(note_title)
+    if not target:
+        return None
+    bullet = f"- [[{target}]]"
+    return bullet, [bullet]
+
+
 def append_wikilink_to_journal_buffet(
     note_title: str,
     journal_date: str,
@@ -667,19 +699,18 @@ def append_wikilink_to_journal_buffet(
 
     ``journal_date`` must be the same string written to KH YAML ``Journal``
     (e.g. ``Aug 22, 2026``). Missing journal files are skipped — never created
-    and never raised to the caller.
+    and never raised to the caller. Dedup is exact-line on the standalone
+    wikilink so highlight quote lines are not treated as the same entry.
     """
     result: dict = {"success": True, "action": None, "error": None, "file_path": None}
-    target = _wikilink_from_note_stem(note_title)
-    if not target:
+    prepared = standalone_wikilink_bullet(note_title)
+    if not prepared:
         logger.info("KH journal buffet skipped; empty wikilink target from %r", note_title)
         result["action"] = "ignored"
         return result
 
-    bullet = f"- [[{target}]]"
-    keys = [bullet, f"[[{target}]]", target]
-    if note_title and note_title != target:
-        keys.append(note_title)
+    bullet, keys = prepared
+    target = _wikilink_from_note_stem(note_title) or note_title
 
     try:
         if dbx is None:
@@ -697,7 +728,9 @@ def append_wikilink_to_journal_buffet(
             result["action"] = "skipped_missing_journal"
             return result
 
-        updated, action = insert_content_buffet_bullet(content, bullet, keys)
+        updated, action = insert_content_buffet_bullet(
+            content, bullet, keys, exact_line=True
+        )
         result["action"] = action
         if action != "skipped" and updated != content:
             dbx.files_upload(

@@ -232,6 +232,31 @@ def test_append_wikilink_dedups_existing_title():
     assert uploads == []
 
 
+def test_append_wikilink_does_not_collapse_into_highlight_quote_line():
+    """Standalone - [[Title]] is a different line from a highlight quote."""
+    journal = """---
+date: 2026-08-22
+---
+
+### Content Buffet:
+- [[My Article]]: ["a quote"](https://readwise.io/open/954480)
+
+### Content Planning
+- plan something
+"""
+    mock_dbx, uploads = _mock_dbx(journal_content=journal)
+    with patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER):
+        result = append_wikilink_to_journal_buffet("My Article", JOURNAL_DATE, dbx=mock_dbx)
+
+    assert result["action"] == "inserted"
+    section = uploads[0]["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == [
+        '- [[My Article]]: ["a quote"](https://readwise.io/open/954480)',
+        "- [[My Article]]",
+    ]
+
+
 def test_append_wikilink_missing_journal_does_not_create():
     mock_dbx, uploads = _mock_dbx(journal_missing=True)
     with patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER):
