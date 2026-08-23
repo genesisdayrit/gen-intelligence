@@ -51,6 +51,21 @@ _AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
 _TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
 
+# Same image-embed rules as the journal tweet strip (separate PR). Used
+# locally for Bookmarked Tweets until ``tweet_highlight_quote`` is on main.
+_EMPTY_ALT_TWIMG_MEDIA = re.compile(
+    r"(?:!\[\]\(\s*https?://pbs\.twimg\.com/media/[^)\s]+\s*\)(?:\s+)?)+",
+    re.IGNORECASE,
+)
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_HTML_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE | re.DOTALL)
+_HTML_IMG_CLOSE = re.compile(r"</img\s*>", re.IGNORECASE)
+_TWEET_MEDIA_URL = re.compile(
+    r"(?:https?://)?(?:pbs\.twimg\.com|pic\.twitter\.com|video\.twimg\.com)"
+    r"/[^\s<>)\]'\"]+",
+    re.IGNORECASE,
+)
+
 
 def _system_tz() -> pytz.BaseTzInfo:
     return pytz.timezone(os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles"))
@@ -695,25 +710,63 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     return line
 
 
+def _strip_tweet_image_embeds(text: object) -> str | None:
+    """Remove markdown/HTML/twimg image embeds from tweet highlight text.
+
+    Same rules as the journal buffet strip: no ``![]()``, ``<img>``, or
+    bare ``pbs.twimg.com`` / ``pic.twitter.com`` / ``video.twimg.com``.
+    Keeps quote text (including t.co links). Returns None if nothing remains.
+    """
+    if text is None:
+        return None
+    raw = str(text)
+    if not raw.strip():
+        return None
+    cleaned = _EMPTY_ALT_TWIMG_MEDIA.sub("", raw)
+    cleaned = _MARKDOWN_IMAGE.sub("", cleaned)
+    cleaned = _HTML_IMG_TAG.sub("", cleaned)
+    cleaned = _HTML_IMG_CLOSE.sub("", cleaned)
+    cleaned = _TWEET_MEDIA_URL.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
+def _tweet_quote_for_page(text: object) -> str | None:
+    """Tweet quote for the handle page. Prefer the shared helper when present."""
+    try:
+        from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
+    except ImportError:
+        return _strip_tweet_image_embeds(text)
+    return tweet_highlight_quote(text)
+
+
 def _format_tweet_page_bullet(payload: dict, book: dict | None = None) -> str | None:
-    """Quote line for the handle page: same quote/note as the journal, no wikilink.
+    """Quote line for the handle page: stripped quote + open/id, no wikilink.
 
     Journal keeps ``- [[Tweets from @handle]]: ["quote"](open/id)``.
     The handle page is already that note, so this is ``- ["quote"](open/id)``.
     Tweets only: requires ``_is_tweet_book`` and ``_tweet_handle``.
+    Image embeds are stripped (same rule as the journal buffet).
     """
     if not _is_tweet_book(book) or not _tweet_handle(book):
         return None
-    target = _tweet_wikilink_target(book)
-    if not target:
+    if not _tweet_wikilink_target(book):
         return None
-    journal_line = _format_highlight(payload, book)
-    if not journal_line:
+    text = _nonempty(payload.get("text"))
+    if not text:
         return None
-    prefix = f"- [[{target}]]: "
-    if journal_line.startswith(prefix):
-        return f"- {journal_line[len(prefix):]}"
-    return None
+    text = _tweet_quote_for_page(text)
+    if not text:
+        return None
+    note = _nonempty(payload.get("note"))
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{text}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+    line = f"- {quote}"
+    if note:
+        line += f" — {_collapse(note)}"
+    return line
 
 
 def dedup_keys(payload: dict) -> list[str]:

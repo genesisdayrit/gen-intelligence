@@ -37,7 +37,9 @@ from services.obsidian.add_readwise_buffet import (
     _is_tweet_book,
     _new_tweet_page_markdown,
     _resolve_highlight_book,
+    _strip_tweet_image_embeds,
     _tweet_handle,
+    _tweet_quote_for_page,
     _tweet_wikilink_target,
     append_readwise_buffet,
     clear_book_cache,
@@ -1805,6 +1807,101 @@ def test_format_tweet_page_bullet_omits_wikilink_and_keeps_note():
     assert _tweet_wikilink_target(book) == "Tweets from @georgiedorothea"
 
 
+def test_strip_tweet_image_embeds_matches_journal_rules():
+    assert _strip_tweet_image_embeds(
+        "New York is now the #1 market for tech talent, dethroning "
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+        "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+        "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+    ) == (
+        "New York is now the #1 market for tech talent, dethroning "
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            'Quote text <img src="https://pbs.twimg.com/media/foo.jpg" alt="pic">'
+        )
+        == "Quote text"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            "Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc123"
+        )
+        == "Quote text"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            "Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
+        )
+        == "Quote text"
+    )
+    assert _strip_tweet_image_embeds("![](https://pbs.twimg.com/media/foo.jpg)") is None
+    assert _tweet_quote_for_page("Quote text ![](https://pbs.twimg.com/media/foo.jpg)") == (
+        "Quote text"
+    )
+
+
+def test_format_tweet_page_bullet_strips_images_keeps_quote_and_open_id():
+    clear_book_cache()
+    payload = _tweet_highlight(
+        text=(
+            "New York is now the #1 market for tech talent, dethroning "
+            "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+            "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+            "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+        )
+    )
+    book = _resolve_highlight_book(payload)
+    page = _format_tweet_page_bullet(payload, book)
+    assert page == (
+        '- ["New York is now the #1 market for tech talent, dethroning '
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+        '"](https://readwise.io/open/954480)'
+    )
+    assert "![]" not in page
+    assert "<img" not in page
+    assert "pbs.twimg.com" not in page
+    assert "pic.twitter.com" not in page
+    assert "video.twimg.com" not in page
+    assert "https://readwise.io/open/954480" in page
+
+
+def test_format_tweet_page_bullet_strips_html_and_bare_twimg():
+    clear_book_cache()
+    book = _resolve_highlight_book(_tweet_highlight())
+    html = _format_tweet_page_bullet(
+        _tweet_highlight(text='Quote text <img src="https://pbs.twimg.com/media/foo.jpg">'),
+        book,
+    )
+    assert html == '- ["Quote text"](https://readwise.io/open/954480)'
+    bare = _format_tweet_page_bullet(
+        _tweet_highlight(
+            text="Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc"
+        ),
+        book,
+    )
+    assert bare == '- ["Quote text"](https://readwise.io/open/954480)'
+    video = _format_tweet_page_bullet(
+        _tweet_highlight(
+            text="Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
+        ),
+        book,
+    )
+    assert video == '- ["Quote text"](https://readwise.io/open/954480)'
+
+
+def test_format_tweet_page_bullet_image_only_is_none():
+    clear_book_cache()
+    book = _resolve_highlight_book(_tweet_highlight())
+    assert (
+        _format_tweet_page_bullet(
+            _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)"),
+            book,
+        )
+        is None
+    )
+
+
 def test_format_tweet_page_bullet_skips_missing_handle_or_text():
     clear_book_cache()
     no_handle = _resolve_highlight_book(
@@ -2147,3 +2244,45 @@ Some intro.
     assert "old" in page
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
     assert any(item["path"] == alt_path for item in uploaded)
+
+
+def test_tweet_page_write_strips_images_keeps_quote_and_open_id():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _tweet_highlight(
+                text=(
+                    "Quote text https://t.co/abc "
+                    "![](https://pbs.twimg.com/media/foo.jpg) "
+                    "<img src='https://pbs.twimg.com/media/bar.jpg'>"
+                )
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    line = [ln for ln in page.splitlines() if "Quote text" in ln][0]
+    assert line == '- ["Quote text https://t.co/abc"](https://readwise.io/open/954480)'
+    assert "![]" not in page
+    assert "<img" not in page
+    assert "pbs.twimg.com" not in page
+    assert "https://readwise.io/open/954480" in page
+
+
+def test_tweet_page_image_only_does_not_create_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    assert TWEET_PAGE_PATH not in store
+    assert not any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
