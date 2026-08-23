@@ -172,10 +172,50 @@ def _mock_dbx(
         result.entries = entries
         return result
 
+    def search_v2(query, options=None, **_kwargs):
+        result = MagicMock()
+        result.has_more = False
+        matches = []
+        q = str(query or "")
+        scope = getattr(options, "path", None) if options is not None else None
+        prefix = (str(scope).rstrip("/") + "/") if isinstance(scope, str) and scope else None
+        candidates = list(existing_paths or [])
+        for upload in uploads:
+            candidates.append(upload["path"])
+        seen: set[str] = set()
+        for file_path in candidates:
+            if file_path in seen:
+                continue
+            seen.add(file_path)
+            if prefix and not (
+                file_path == str(scope).rstrip("/") or file_path.startswith(prefix)
+            ):
+                continue
+            name = file_path.rsplit("/", 1)[-1]
+            if not name.endswith(".md"):
+                continue
+            content = kh_content or ""
+            for upload in reversed(uploads):
+                if upload["path"] == file_path:
+                    content = upload["content"]
+                    break
+            if q not in f"{file_path}\n{content}":
+                continue
+            match = MagicMock()
+            meta = MagicMock()
+            meta.name = name
+            meta.path_display = file_path
+            meta.path_lower = file_path
+            match.metadata.get_metadata.return_value = meta
+            matches.append(match)
+        result.matches = matches
+        return result
+
     mock_dbx.files_get_metadata.side_effect = get_metadata
     mock_dbx.files_download.side_effect = download
     mock_dbx.files_upload.side_effect = capture_upload
     mock_dbx.files_list_folder.side_effect = list_folder
+    mock_dbx.files_search_v2.side_effect = search_v2
     return mock_dbx, uploads
 
 
