@@ -316,6 +316,7 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
     Applies ``_sanitize_filename`` then ``_wikilink_from_note_stem`` so
     highlight wikilinks resolve to the same note a share/document save created.
     Returns None when the title is empty or sanitizes to junk.
+    Title-only — regular iOS share-link / YouTube saves use this shape.
     """
     text = _nonempty(title)
     if not text:
@@ -324,6 +325,24 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
     if not stem or not re.search(r"[^\W_]", stem, re.UNICODE):
         return None
     return stem
+
+
+def reader_knowledge_hub_note_stem(
+    title: str | None,
+    author: str | None = None,
+) -> str | None:
+    """Reader KH filename stem: ``Title by Author`` when author/creator exists.
+
+    Same sanitizing as share-link (``_sanitize_filename`` then wikilink
+    sanitize). No usable author → title-only stem. Empty/junk title → None.
+    """
+    base = knowledge_hub_note_stem(title)
+    if not base:
+        return None
+    author_text = _nonempty(author)
+    if author_text and knowledge_hub_note_stem(author_text):
+        return knowledge_hub_note_stem(f"{_nonempty(title)} by {author_text}")
+    return base
 
 
 def document_page_url(payload: dict) -> str | None:
@@ -425,32 +444,6 @@ def reader_document_extra_frontmatter(payload: dict) -> dict:
     return extra
 
 
-def reader_document_buffet_nested_lines(payload: dict) -> list[str]:
-    """Nested Content Buffet bullets under ``- [[Note Title]]``. No quote."""
-    lines: list[str] = []
-    source = _http_url(payload.get("source_url"))
-    if source:
-        lines.append(f"  - [source]({source})")
-    readwise_url = _reader_personal_url(payload)
-    readwise_id = _reader_document_id(payload)
-    if readwise_url and readwise_id:
-        lines.append(f"  - [readwise]({readwise_url}) · `{readwise_id}`")
-    elif readwise_url:
-        lines.append(f"  - [readwise]({readwise_url})")
-    elif readwise_id:
-        lines.append(f"  - `{readwise_id}`")
-    author = _reader_author(payload)
-    if author:
-        lines.append(f"  - {_collapse(author)}")
-    published = _published_date_value(payload)
-    if published:
-        lines.append(f"  - published: {published}")
-    saved = _document_saved_at_iso(payload)
-    if saved:
-        lines.append(f"  - saved: {saved}")
-    return lines
-
-
 def document_journal_date(payload: dict, now: datetime | None = None) -> str:
     """3am-aware journal date label for a Reader document (e.g. ``Aug 22, 2026``)."""
     local = document_local_datetime(payload, now=now)
@@ -472,7 +465,6 @@ def _create_shared_link(
     title: str | None,
     journal_date: str,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     from services.obsidian.add_shared_link import add_shared_link
 
@@ -481,7 +473,6 @@ def _create_shared_link(
         title=title,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
-        buffet_nested=buffet_nested,
     )
 
 
@@ -489,7 +480,6 @@ def _create_youtube_link(
     url: str,
     journal_date: str,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     from services.obsidian.add_youtube_link import add_youtube_link
 
@@ -497,7 +487,6 @@ def _create_youtube_link(
         url,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
-        buffet_nested=buffet_nested,
     )
 
 
@@ -505,7 +494,7 @@ def _book_from_payload(payload: dict) -> dict:
     """Book fields already present on a webhook/export payload."""
     return {
         "title": _nonempty(payload.get("title")),
-        "author": _nonempty(payload.get("author")),
+        "author": _nonempty(payload.get("author")) or _nonempty(payload.get("creator")),
         "category": _nonempty(payload.get("category")),
         "source": _nonempty(payload.get("source")),
         "source_url": _nonempty(payload.get("source_url")),
@@ -674,10 +663,16 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
         quote = f"[{quote}]({highlight_url})"
 
     tweet_target = _tweet_wikilink_target(book)
-    stem = knowledge_hub_note_stem(raw_title)
     if tweet_target:
-        line = f"- [[{tweet_target}]]: {quote}"
-    elif stem:
+        stem = tweet_target
+    elif _is_tweet_book(book):
+        stem = knowledge_hub_note_stem(raw_title)
+    else:
+        stem = reader_knowledge_hub_note_stem(
+            raw_title,
+            _reader_author(book or {}) or _reader_author(payload),
+        )
+    if stem:
         line = f"- [[{stem}]]: {quote}"
     elif author:
         line = f"- {author}: {quote}"
@@ -1119,11 +1114,10 @@ def _append_reader_document_knowledge_hub(
     """
     url = document_page_url(payload)
     title = _nonempty(payload.get("title"))
-    stem = knowledge_hub_note_stem(title)
+    stem = reader_knowledge_hub_note_stem(title, _reader_author(payload))
     journal_date = document_journal_date(payload, now=now)
     youtube_url = _youtube_url_for_document(payload, url)
     extras = reader_document_extra_frontmatter(payload) or None
-    nested = reader_document_buffet_nested_lines(payload) or None
 
     if not youtube_url and not stem:
         logger.info(
@@ -1141,15 +1135,13 @@ def _append_reader_document_knowledge_hub(
                 youtube_url,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
-                buffet_nested=nested,
             )
         else:
             result = _create_shared_link(
                 url,
-                title=title,
+                title=stem,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
-                buffet_nested=nested,
             )
     except Exception as exc:
         logger.exception(
@@ -1190,10 +1182,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     """Append a Readwise highlight or Reader document to the journal for its date.
 
     Parent Reader documents create/update a Knowledge Hub note (with Reader
-    YAML extras when present) and write ``- [[Note Title]]`` plus nested
-    metadata to that day's Content Buffet, then bookmark the document page
-    URL in Raindrop Unsorted. Highlights wikilink that KH stem and are not
-    bookmarked. Child annotation documents are ignored.
+    YAML extras when present) and write a standalone ``- [[Title by Author]]``
+    (or ``- [[Title]]`` if no author) to that day's Content Buffet, then
+    bookmark the document page URL in Raindrop Unsorted. Highlights wikilink
+    that same KH stem and are not bookmarked. Child annotation documents
+    are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)

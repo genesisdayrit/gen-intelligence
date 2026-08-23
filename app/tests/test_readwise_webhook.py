@@ -48,8 +48,8 @@ from services.obsidian.add_readwise_buffet import (
     is_highlight_event,
     journal_filename,
     knowledge_hub_note_stem,
-    reader_document_buffet_nested_lines,
     reader_document_extra_frontmatter,
+    reader_knowledge_hub_note_stem,
     standalone_wikilink_bullet,
 )
 from services.obsidian.add_shared_link import _sanitize_filename
@@ -479,8 +479,7 @@ def test_highlight_dedup_skips_old_title_dash_author_via_open_url():
 """
     payload = _highlight_payload(title="Deep Work", author="Cal Newport")
     bullet = format_readwise_bullet(payload)
-    assert "[[Deep Work]]" in bullet
-    assert " by " not in bullet
+    assert "[[Deep Work by Cal Newport]]" in bullet
     keys = dedup_keys(payload)
     assert "https://readwise.io/open/954480" in keys
     assert not any(key in {"Deep Work", "Cal Newport"} for key in keys)
@@ -556,10 +555,9 @@ def test_format_official_sample_attaches_book_title(mock_get):
 
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        '- [[Deep Work]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert " by " not in line
     assert "bookreview" not in line
     assert "(Book)" not in line
     mock_get.assert_called_once_with(
@@ -585,32 +583,29 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
 
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        '- [[Deep Work]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
-    assert " by " not in line
 
 
 def test_format_uses_payload_title_as_kh_stem():
-    """Export payloads include title; wikilink is the KH filename stem, not Title by Author."""
+    """Export payloads include title+author; wikilink is the Reader KH stem."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(title="Deep Work", author="Cal Newport")
     )
     assert line == (
-        '- [[Deep Work]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "bookreview" not in line
     assert "read.readwise.io" not in line
     assert "(Book)" not in line
-    assert " by " not in line
-    assert "[[Deep Work by Cal Newport]]" not in line
     assert "[[Deep Work - Cal Newport]]" not in line
 
 
-def test_format_highlight_title_is_kh_stem_not_title_by_author():
-    """Author stays off the wikilink once a KH stem exists."""
+def test_format_highlight_uses_title_by_author_stem():
+    """Reader/book highlights wikilink the same Title by Author stem as the KH note."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -619,11 +614,9 @@ def test_format_highlight_title_is_kh_stem_not_title_by_author():
         )
     )
     assert line == (
-        '- [[Zero to One]]: '
+        '- [[Zero to One by Peter Thiel, Blake Masters]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert " by " not in line
-    assert "Peter Thiel" not in line
 
     line = format_readwise_bullet(
         _highlight_payload(
@@ -632,10 +625,10 @@ def test_format_highlight_title_is_kh_stem_not_title_by_author():
         )
     )
     assert line == (
-        "- [[Surely You're Joking, Mr. Feynman!]]: "
+        "- [[Surely You're Joking, Mr. Feynman! by Richard P. Feynman, "
+        "Ralph Leighton, Edward Hutchings, and Albert R. Hibbs]]: "
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert " by " not in line
 
     line = format_readwise_bullet(
         _highlight_payload(
@@ -644,7 +637,25 @@ def test_format_highlight_title_is_kh_stem_not_title_by_author():
         )
     )
     assert line == (
-        '- [[Zero to One]]: '
+        '- [[Zero to One by Peter Thiel,   Blake Masters]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_highlight_stem_matches_reader_document_stem():
+    """Document save and later highlight use the same Title by Author string."""
+    clear_book_cache()
+    title = "Our Black Friday sale ends soon"
+    author = "The Verge"
+    stem = reader_knowledge_hub_note_stem(title, author)
+    assert stem == "Our Black Friday sale ends soon by The Verge"
+    line = format_readwise_bullet(_highlight_payload(title=title, author=author))
+    assert line == (
+        f'- [[{stem}]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert line != (
+        '- [[Our Black Friday sale ends soon]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
 
@@ -675,17 +686,16 @@ def test_format_wikilink_uses_sanitized_filename_stem():
     """KH stem: _sanitize_filename then strip |, #, ^, and ]] from the wikilink."""
     clear_book_cache()
     title = "Foo|Bar #1 ^block]] extra"
-    expected_stem = knowledge_hub_note_stem(title)
-    assert expected_stem == "Foo_Bar 1 block extra"
+    author = "Cal | Newport"
+    expected_stem = reader_knowledge_hub_note_stem(title, author)
+    assert expected_stem == "Foo_Bar 1 block extra by Cal _ Newport"
     line = format_readwise_bullet(
-        _highlight_payload(title=title, author="Cal | Newport")
+        _highlight_payload(title=title, author=author)
     )
     assert line == (
         f'- [[{expected_stem}]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert " by " not in line
-    assert "Cal Newport" not in line
 
 
 def test_format_skips_empty_wikilink_after_sanitize():
@@ -708,8 +718,7 @@ def test_format_wikilink_title_and_unlinked_quote_when_id_missing():
     line = format_readwise_bullet(
         _highlight_payload(id=None, title="Deep Work", author="Cal Newport")
     )
-    assert line == '- [[Deep Work]]: "Most Amazing Highlight Ever"'
-    assert " by " not in line
+    assert line == '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever"'
     assert "bookreview" not in line
     assert "readwise.io/open" not in line
 
@@ -905,8 +914,8 @@ def test_format_tweet_missing_handle_falls_back_to_kh_stem():
     assert " by " not in line
 
 
-def test_format_non_tweet_uses_kh_stem_not_title_by_author():
-    """Ordinary books wikilink the KH stem even if the author string looks unusual."""
+def test_format_non_tweet_uses_title_by_author_stem():
+    """Ordinary books wikilink the Reader Title by Author stem."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -918,11 +927,10 @@ def test_format_non_tweet_uses_kh_stem_not_title_by_author():
         )
     )
     assert line == (
-        '- [[Deep Work]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "Tweets from" not in line
-    assert " by " not in line
     assert "[[Deep Work - Cal Newport]]" not in line
     assert "read.readwise.io" not in line
 
@@ -1077,7 +1085,7 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     payload = _reader_payload()
     title = payload["title"]
-    stem = knowledge_hub_note_stem(title)
+    stem = reader_knowledge_hub_note_stem(title, payload.get("author"))
     mock_dbx, uploaded = _mock_journal_dbx()
 
     with patch(
@@ -1099,7 +1107,8 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
     assert result["action"] == "created"
     mock_share.assert_called_once()
     assert mock_share.call_args.args[0] == "https://www.theverge.com/black-friday"
-    assert mock_share.call_args.kwargs["title"] == title
+    assert mock_share.call_args.kwargs["title"] == stem
+    assert stem == "Our Black Friday sale ends soon by The Verge"
     assert mock_share.call_args.kwargs["journal_date"] == "Nov 28, 2025"
     extras = mock_share.call_args.kwargs["extra_frontmatter"]
     assert extras["URL"] == "https://www.theverge.com/black-friday"
@@ -1108,9 +1117,7 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
     assert extras["readwise_url"] == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
     assert extras["saved_at"] == "2025-11-28T14:02:02.213618+00:00"
     assert "published" not in extras
-    assert mock_share.call_args.kwargs["buffet_nested"][0] == (
-        "  - [source](https://www.theverge.com/black-friday)"
-    )
+    assert "buffet_nested" not in mock_share.call_args.kwargs
     mock_youtube.assert_not_called()
     mock_dbx.files_upload.assert_not_called()
     assert uploaded == {}
@@ -1142,6 +1149,7 @@ def test_append_youtube_document_uses_youtube_helper():
     extras = mock_youtube.call_args.kwargs["extra_frontmatter"]
     assert extras["readwise_id"] == "01kb5cap1wy21zp37bc2rjj"
     assert extras["URL"] == "https://www.youtube.com/watch?v=abcdefghijk"
+    assert "buffet_nested" not in mock_youtube.call_args.kwargs
     mock_share.assert_not_called()
 
 
@@ -1405,16 +1413,32 @@ def test_knowledge_hub_note_stem_matches_shared_link_filename():
     assert knowledge_hub_note_stem("|#^]]") is None
 
 
+def test_reader_knowledge_hub_note_stem_adds_author():
+    assert reader_knowledge_hub_note_stem("Deep Work", "Cal Newport") == (
+        "Deep Work by Cal Newport"
+    )
+    assert reader_knowledge_hub_note_stem("Deep Work", None) == "Deep Work"
+    assert reader_knowledge_hub_note_stem("Deep Work", "") == "Deep Work"
+    assert reader_knowledge_hub_note_stem(None, "Cal Newport") is None
+    assert reader_knowledge_hub_note_stem("|#^]]", "Cal Newport") is None
+    creator_payload = _reader_payload(author=None, creator="Casey Newton")
+    del creator_payload["author"]
+    assert reader_knowledge_hub_note_stem(
+        creator_payload["title"],
+        creator_payload["creator"],
+    ) == "Our Black Friday sale ends soon by Casey Newton"
+
+
 def test_format_highlight_special_filename_chars_match_kh_stem():
     clear_book_cache()
     title = 'What is AI? A "deep" look / part 1'
-    stem = knowledge_hub_note_stem(title)
+    stem = reader_knowledge_hub_note_stem(title, "Someone")
     line = format_readwise_bullet(_highlight_payload(title=title, author="Someone"))
     assert line == (
         f'- [[{stem}]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert " by " not in line
+    assert stem == _sanitize_filename(f'{title} by Someone')
     assert "read.readwise.io" not in line
     assert "readwise.io/bookreview" not in line
 
@@ -1450,14 +1474,14 @@ def test_highlight_appends_separate_line_without_removing_standalone():
     payload = _highlight_payload(title="Deep Work", author="Cal Newport")
     bullet = format_readwise_bullet(payload)
     assert bullet == (
-        '- [[Deep Work]]: '
+        '- [[Deep Work by Cal Newport]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
     assert action == "inserted"
     assert _buffet_lines(updated) == [
         "- [[Deep Work]]",
-        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        '- [[Deep Work by Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
     ]
 
 
@@ -1530,11 +1554,11 @@ def test_locked_tweet_highlight_still_uses_handle_wikilink():
 
 
 # ---------------------------------------------------------------------------
-# Reader document metadata (KH YAML + nested journal bullets)
+# Reader document metadata (KH YAML only; journal buffet is standalone)
 # ---------------------------------------------------------------------------
 
 
-def test_reader_extra_frontmatter_and_nested_lines_from_payload():
+def test_reader_extra_frontmatter_from_payload():
     extras = reader_document_extra_frontmatter(_reader_payload())
     assert extras == {
         "URL": "https://www.theverge.com/black-friday",
@@ -1544,13 +1568,6 @@ def test_reader_extra_frontmatter_and_nested_lines_from_payload():
         "saved_at": "2025-11-28T14:02:02.213618+00:00",
     }
     assert "published" not in extras
-    nested = reader_document_buffet_nested_lines(_reader_payload())
-    assert nested == [
-        "  - [source](https://www.theverge.com/black-friday)",
-        "  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`",
-        "  - The Verge",
-        "  - saved: 2025-11-28T14:02:02.213618+00:00",
-    ]
 
 
 def test_reader_extra_omits_missing_published_and_author():
@@ -1559,11 +1576,6 @@ def test_reader_extra_omits_missing_published_and_author():
     extras = reader_document_extra_frontmatter(payload)
     assert "author" not in extras
     assert "published" not in extras
-    nested = reader_document_buffet_nested_lines(payload)
-    assert not any(line.startswith("  - published:") for line in nested)
-    assert "  - The Verge" not in nested
-    assert any(line.startswith("  - [source](") for line in nested)
-    assert any("[readwise]" in line for line in nested)
 
 
 def test_reader_extra_uses_published_date_and_creator():
@@ -1575,18 +1587,12 @@ def test_reader_extra_uses_published_date_and_creator():
     extras = reader_document_extra_frontmatter(payload)
     assert extras["author"] == "Casey Newton"
     assert extras["published"] == "2025-11-20"
-    nested = reader_document_buffet_nested_lines(payload)
-    assert "  - Casey Newton" in nested
-    assert "  - published: 2025-11-20" in nested
 
 
 def test_reader_extra_mailto_source_omits_public_url():
     extras = reader_document_extra_frontmatter(OFFICIAL_DOCUMENT)
     assert "URL" not in extras
     assert extras["readwise_url"] == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
-    nested = reader_document_buffet_nested_lines(OFFICIAL_DOCUMENT)
-    assert not any("[source]" in line for line in nested)
-    assert any("[readwise]" in line for line in nested)
 
 
 def test_standalone_wikilink_with_nested_dedups_on_first_line_only():
@@ -1617,13 +1623,9 @@ def test_standalone_wikilink_with_nested_dedups_on_first_line_only():
 
 
 def test_highlight_append_does_not_add_another_metadata_block():
-    """Highlight.created appends a quote line; nested metadata stays once."""
+    """Highlight.created appends a quote line; journal stays standalone + quote."""
     content = """### Content Buffet:
 - [[Deep Work]]
-  - [source](https://calnewport.com/deep-work)
-  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`
-  - Cal Newport
-  - saved: 2025-11-28T14:02:02.213618+00:00
 
 ### Content Planning
 """
@@ -1634,12 +1636,9 @@ def test_highlight_append_does_not_add_another_metadata_block():
     lines = _buffet_lines(updated)
     assert lines == [
         "- [[Deep Work]]",
-        "  - [source](https://calnewport.com/deep-work)",
-        "  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`",
-        "  - Cal Newport",
-        "  - saved: 2025-11-28T14:02:02.213618+00:00",
-        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        '- [[Deep Work by Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
     ]
-    assert lines.count("  - Cal Newport") == 1
-    assert lines.count("  - [source](https://calnewport.com/deep-work)") == 1
+    assert "readwise.io" not in "\n".join(lines[:-1])
+    assert "published:" not in "\n".join(lines)
+    assert "saved:" not in "\n".join(lines)
     assert not any(key in {"Cal Newport", "https://calnewport.com/deep-work"} for key in dedup_keys(payload))
