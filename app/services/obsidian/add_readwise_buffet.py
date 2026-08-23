@@ -1093,11 +1093,70 @@ def _tweet_page_filename(target: str) -> str:
     return _sanitize_note_filename(target) + ".md"
 
 
-def _new_tweet_page_markdown(title: str, bullet: str) -> str:
-    """Minimal handle page: YAML title, H1, Bookmarked Tweets, first bullet."""
+def _tweet_people_wikilink(handle: str) -> str:
+    """People target ``[[@{handle}]]`` — Readwise casing as-is, including ``@``.
+
+    Do not lowercase, strip ``@``, or run the handle through a sanitizer
+    that drops ``@``. ``_tweet_handle`` already returns the token without
+    a leading ``@``.
+    """
+    return f"[[@{handle}]]"
+
+
+def _people_list(value: object) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if item is not None and str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _people_entry_has_handle(entry: object, handle: str) -> bool:
+    """True when ``entry`` is already this handle (case-insensitive).
+
+    ``[[@Handle]]``, ``@Handle``, and ``Handle`` all count as present.
+    """
+    text = str(entry).strip()
+    if text.startswith("[[") and text.endswith("]]"):
+        text = text[2:-2].strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    if text.startswith("@"):
+        text = text[1:]
+    return bool(text) and text.casefold() == handle.casefold()
+
+
+def _ensure_tweet_page_people(content: str, handle: str) -> str:
+    """Add ``[[@{handle}]]`` to YAML People when that handle is missing.
+
+    Does not overwrite other People entries or clear the body. A matching
+    ``[[@Handle]]`` / ``@Handle`` / ``Handle`` (case-insensitive) is left
+    as-is so we do not duplicate.
+    """
+    from services.obsidian.add_shared_link import _extract_frontmatter, _rebuild_markdown
+
+    people_link = _tweet_people_wikilink(handle)
+    frontmatter, body = _extract_frontmatter(content)
+    people = _people_list(frontmatter.get("People"))
+    if any(_people_entry_has_handle(item, handle) for item in people):
+        return content
+    frontmatter["People"] = [*people, people_link]
+    return _rebuild_markdown(frontmatter, body)
+
+
+def _new_tweet_page_markdown(title: str, bullet: str, handle: str) -> str:
+    """Minimal handle page: YAML title + People, H1, Bookmarked Tweets, first bullet.
+
+    People is a list of wikilinks, same shape share-link uses
+    (``People: ["[[@handle]]"]`` / block list of ``[[name]]`` items).
+    """
+    people_link = _tweet_people_wikilink(handle)
     return (
         f"---\n"
         f'title: "{title}"\n'
+        f"People:\n"
+        f'  - "{people_link}"\n'
         f"---\n"
         f"\n"
         f"# {title}\n"
@@ -1170,7 +1229,8 @@ def _append_tweet_page(
     or None when this highlight is not a tweet with a handle.
     """
     book = _resolve_highlight_book(payload)
-    if not _is_tweet_book(book) or not _tweet_handle(book):
+    handle = _tweet_handle(book)
+    if not _is_tweet_book(book) or not handle:
         return None
     target = _tweet_wikilink_target(book)
     if not target:
@@ -1183,7 +1243,7 @@ def _append_tweet_page(
     existing = _download_tweet_page(dbx, hub_path, filename)
     if existing is None:
         file_path = f"{hub_path}/{filename}"
-        markdown = _new_tweet_page_markdown(target, bullet)
+        markdown = _new_tweet_page_markdown(target, bullet, handle)
         dbx.files_upload(
             markdown.encode("utf-8"),
             file_path,
@@ -1194,13 +1254,17 @@ def _append_tweet_page(
 
     file_path, content = existing
     updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
-    if action != "skipped" and updated != content:
+    updated = _ensure_tweet_page_people(updated, handle)
+    if updated != content:
         dbx.files_upload(
             updated.encode("utf-8"),
             file_path,
             mode=dropbox.files.WriteMode.overwrite,
         )
-        logger.info("Tweet page %s path=%s", action, file_path)
+        if action == "skipped":
+            logger.info("Tweet page people backfill path=%s", file_path)
+        else:
+            logger.info("Tweet page %s path=%s", action, file_path)
     elif action == "skipped":
         logger.info("Tweet page skipped (duplicate) path=%s", file_path)
     return action

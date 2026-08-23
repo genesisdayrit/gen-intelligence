@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from services.obsidian.add_readwise_buffet import clear_book_cache
+from services.obsidian.add_shared_link import _extract_frontmatter
 from services.readwise.backfill import (
     DEFAULT_SINCE,
     backfill_readwise_highlights,
@@ -485,6 +486,8 @@ def test_export_tweet_highlight_creates_handle_page():
     assert "### Bookmarked Tweets" in page
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
     assert "- [[Tweets from @georgiedorothea]]:" not in page
+    frontmatter, _body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@georgiedorothea]]"]
     assert any(item["path"] == tweet_page for item in uploaded)
 
 
