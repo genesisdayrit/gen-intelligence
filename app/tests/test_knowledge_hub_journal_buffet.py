@@ -211,7 +211,7 @@ def _patched(patches, datetime_target=None):
         yield mock_dt
 
 
-def _youtube_patches(mock_dbx, title="Cool Video"):
+def _youtube_patches(mock_dbx, title="Cool Video", transcript=None):
     return [
         patch("services.obsidian.add_youtube_link._get_dropbox_client", return_value=mock_dbx),
         patch("services.obsidian.add_youtube_link._find_knowledge_hub_path", return_value=KH_PATH),
@@ -220,7 +220,7 @@ def _youtube_patches(mock_dbx, title="Cool Video"):
             return_value={"title": title, "author_name": "A Channel", "description": None},
         ),
         patch("services.obsidian.add_youtube_link._extract_people", return_value=[]),
-        patch("services.obsidian.add_youtube_link._fetch_transcript", return_value=None),
+        patch("services.obsidian.add_youtube_link._fetch_transcript", return_value=transcript),
         patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER),
     ]
 
@@ -899,7 +899,7 @@ def test_process_youtube_share_saves_video_and_writes_readwise_url():
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     listed = {"id": "01readerdoc", "title": "Cool Video", "author": "A Channel"}
     with _patched(
-        _youtube_patches(mock_dbx, title="Cool Video"),
+        _youtube_patches(mock_dbx, title="Cool Video", transcript="auto captions from a talk"),
         "services.obsidian.add_youtube_link.datetime",
     ), patch(
         "main.save_document",
@@ -929,7 +929,7 @@ def test_process_youtube_share_200_still_writes_readwise_url():
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     listed = {"id": "01readerdoc", "title": "Cool Video", "author": "A Channel"}
     with _patched(
-        _youtube_patches(mock_dbx, title="Cool Video"),
+        _youtube_patches(mock_dbx, title="Cool Video", transcript="auto captions from a talk"),
         "services.obsidian.add_youtube_link.datetime",
     ), patch(
         "main.save_document",
@@ -947,7 +947,7 @@ def test_process_youtube_share_save_failure_falls_back_to_youtube_stem():
 
     mock_dbx, uploads = _mock_dbx(kh_exists=False)
     with _patched(
-        _youtube_patches(mock_dbx, title="Cool Video"),
+        _youtube_patches(mock_dbx, title="Cool Video", transcript="auto captions from a talk"),
         "services.obsidian.add_youtube_link.datetime",
     ), patch(
         "main.save_document",
@@ -966,3 +966,59 @@ def test_process_youtube_share_save_failure_falls_back_to_youtube_stem():
     journal = _journal_upload(uploads)
     assert journal is not None
     assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
+
+
+def test_process_youtube_share_no_transcript_skips_reader_and_writes_kh():
+    """No usable transcript: skip Reader, still write KH + buffet from YouTube title."""
+    from main import _process_youtube_link
+
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    with _patched(
+        _youtube_patches(mock_dbx, title="Cool Video", transcript=None),
+        "services.obsidian.add_youtube_link.datetime",
+    ), patch("main.save_document") as mock_save, patch("main.get_document") as mock_get, patch(
+        "main._mirror_to_raindrop"
+    ) as mock_raindrop:
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    mock_save.assert_not_called()
+    mock_get.assert_not_called()
+    mock_raindrop.assert_called_once()
+    kh = _kh_upload(uploads)
+    assert kh["path"].endswith(f"{YOUTUBE_STEM}.md")
+    assert "readwise_id" not in kh["content"]
+    assert "readwise_url" not in kh["content"]
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert f"- [[{YOUTUBE_STEM}]]" in journal["content"]
+
+
+def test_process_youtube_share_fetches_transcript_once():
+    from main import _process_youtube_link
+
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    listed = {"id": "01readerdoc", "title": "Cool Video", "author": "A Channel"}
+    with _patched(
+        [
+            patch("services.obsidian.add_youtube_link._get_dropbox_client", return_value=mock_dbx),
+            patch("services.obsidian.add_youtube_link._find_knowledge_hub_path", return_value=KH_PATH),
+            patch(
+                "services.obsidian.add_youtube_link.fetch_youtube_metadata",
+                return_value={"title": "Cool Video", "author_name": "A Channel", "description": None},
+            ),
+            patch("services.obsidian.add_youtube_link._extract_people", return_value=[]),
+            patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER),
+        ],
+        "services.obsidian.add_youtube_link.datetime",
+    ), patch(
+        "services.obsidian.add_youtube_link._fetch_transcript",
+        return_value="auto captions from a talk",
+    ) as mock_fetch, patch(
+        "main.save_document",
+        return_value=_save_result(status_code=201),
+    ), patch("main.get_document", return_value=listed), patch("main._mirror_to_raindrop"):
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert mock_fetch.call_count == 1
+    kh = _kh_upload(uploads)
+    assert "readwise_id: 01readerdoc" in kh["content"]

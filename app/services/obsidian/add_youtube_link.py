@@ -64,6 +64,8 @@ SUPADATA_API_URL = "https://api.supadata.ai/v1/youtube/video"
 SUPADATA_TRANSCRIPT_URL = "https://api.supadata.ai/v1/youtube/transcript"
 # Skip summarization if transcript is too short to be meaningful (~100 tokens)
 MIN_TRANSCRIPT_CHARS = 400
+# Sentinel so add_youtube_link can reuse a prefetched transcript (including None)
+_TRANSCRIPT_UNSET = object()
 # Max chars per single summarization call (~250k tokens, leaving room for prompt + response)
 CHUNK_CHAR_LIMIT = 1_000_000
 
@@ -286,6 +288,30 @@ def _fetch_transcript(video_id: str) -> str | None:
 
     except httpx.RequestError as e:
         logger.warning("Transcript fetch failed for video %s: %s", video_id, e)
+        return None
+
+
+def fetch_youtube_transcript(url: str) -> str | None:
+    """Transcript text for a YouTube share URL, or None if unusable.
+
+    Channels, playlists, missing video id, empty/404/error fetches all
+    return None. Never raises — fetch failures are treated as no transcript.
+    Any non-empty stripped text counts (auto-captions included). The
+    ``MIN_TRANSCRIPT_CHARS`` threshold is only for AI summary, not this gate.
+    """
+    try:
+        if _is_channel_url(url) or _is_playlist_url(url):
+            return None
+        video_id = _extract_video_id(url)
+        if not video_id:
+            return None
+        transcript = _fetch_transcript(video_id)
+        if transcript is None:
+            return None
+        transcript = str(transcript).strip()
+        return transcript or None
+    except Exception as e:
+        logger.warning("Transcript fetch failed for YouTube share %s: %s", url[:100], e)
         return None
 
 
@@ -555,6 +581,7 @@ def add_youtube_link(
     extra_frontmatter: dict | None = None,
     note_title: str | None = None,
     note_author: str | None = None,
+    transcript=_TRANSCRIPT_UNSET,
 ) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
@@ -571,6 +598,9 @@ def add_youtube_link(
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
         note_title: Preferred Reader list/webhook title.
         note_author: Preferred Reader author/creator.
+        transcript: Prefetched transcript text. When omitted, fetches from
+            Supadata. Pass ``None`` to skip a second fetch after a failed
+            or empty lookup.
 
     Returns:
         dict with keys:
@@ -607,15 +637,19 @@ def add_youtube_link(
         # Extract main people from title/description
         people = _extract_people(video_title, description)
 
-        # Fetch and summarize transcript (non-blocking to core flow)
+        # Summarize transcript (non-blocking to core flow). Reuse a
+        # prefetched value when the share path already gated on it.
         summary_section = ""
-        video_id = _extract_video_id(url)
-        if video_id and not _is_channel_url(url) and not _is_playlist_url(url):
-            transcript = _fetch_transcript(video_id)
-            if transcript:
-                summary = _summarize_transcript(transcript, video_title)
-                if summary:
-                    summary_section = f"\n## AI Summary\n\n{summary}\n"
+        if transcript is _TRANSCRIPT_UNSET:
+            transcript = fetch_youtube_transcript(url)
+        elif transcript:
+            transcript = str(transcript).strip() or None
+        else:
+            transcript = None
+        if transcript:
+            summary = _summarize_transcript(transcript, video_title)
+            if summary:
+                summary_section = f"\n## AI Summary\n\n{summary}\n"
 
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
