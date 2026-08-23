@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.author_yaml import author_frontmatter_value, plain_author_label
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
 
 load_dotenv()
@@ -657,6 +658,10 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     text = _nonempty(payload.get("text"))
     if not text:
         return None
+    if _is_tweet_book(book):
+        text = tweet_highlight_quote(text)
+        if not text:
+            return None
     note = _nonempty(payload.get("note"))
     raw_title = _nonempty((book or {}).get("title"))
     raw_author = _nonempty((book or {}).get("author"))
