@@ -17,7 +17,7 @@ from openai import OpenAI
 from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
 from .utils.author_yaml import (
     author_frontmatter_value,
-    author_yaml_literal,
+    author_yaml_field,
     is_plain_to_wikilink_author_upgrade,
     quote_yaml_scalar,
 )
@@ -332,7 +332,7 @@ def _extra_frontmatter_yaml(
             prepared = _prepare_author_frontmatter_value(value)
             if not prepared:
                 continue
-            lines.append(f"{key}: {author_yaml_literal(prepared)}")
+            lines.append(author_yaml_field(prepared, key=key))
             continue
         rendered = str(value)
         if "[[" in rendered:
@@ -645,7 +645,7 @@ def add_shared_link(
             if extra_author:
                 author_source = extra_author
 
-        author_value = author_yaml_literal(author_source)
+        author_field = author_yaml_field(author_source)
 
         extra_yaml = _extra_frontmatter_yaml(extra_frontmatter, skip_keys={"URL", "author"})
 
@@ -668,7 +668,7 @@ modified time: {now_utc.isoformat()}
 key words:
 People:{people_yaml}
 URL: {url_value}
-author: {author_value}{extra_yaml}
+{author_field}{extra_yaml}
 Notes+Ideas:
 Experiences:
 Tags:

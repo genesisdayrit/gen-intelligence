@@ -45,6 +45,7 @@ from services.obsidian import add_shared_link as shared_mod  # noqa: E402
 from services.obsidian.add_youtube_link import add_youtube_link  # noqa: E402
 from services.obsidian.utils.author_yaml import (  # noqa: E402
     author_frontmatter_value,
+    author_yaml_field,
     author_yaml_literal,
     is_plain_to_wikilink_author_upgrade,
     plain_author_label,
@@ -186,6 +187,7 @@ def _journal_upload(uploads: list[dict]) -> dict | None:
 def test_single_author_is_quoted_wikilink():
     assert author_frontmatter_value("W. Brian Arthur") == "[[W. Brian Arthur]]"
     assert author_yaml_literal("W. Brian Arthur") == '"[[W. Brian Arthur]]"'
+    assert author_yaml_field("W. Brian Arthur") == 'author: "[[W. Brian Arthur]]"'
 
 
 def test_two_authors_joined_with_and():
@@ -195,6 +197,9 @@ def test_two_authors_joined_with_and():
     ]
     assert author_yaml_literal("Jane Doe and John Smith") == (
         '\n  - "[[Jane Doe]]"\n  - "[[John Smith]]"'
+    )
+    assert author_yaml_field("Jane Doe and John Smith") == (
+        'author:\n  - "[[Jane Doe]]"\n  - "[[John Smith]]"'
     )
 
 
@@ -215,6 +220,9 @@ def test_accented_names_split_and_keep_spelling():
     ]
     assert author_yaml_literal(raw) == (
         '\n  - "[[Dagoberto Gilb]]"\n  - "[[Rubén Martínez]]"'
+    )
+    assert author_yaml_field(raw) == (
+        'author:\n  - "[[Dagoberto Gilb]]"\n  - "[[Rubén Martínez]]"'
     )
 
 

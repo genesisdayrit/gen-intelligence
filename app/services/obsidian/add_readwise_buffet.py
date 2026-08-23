@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.author_yaml import (
     author_frontmatter_value,
-    author_yaml_literal,
+    author_yaml_field,
     is_plain_to_wikilink_author_upgrade,
     plain_author_label,
     split_author_names,
@@ -1645,7 +1645,7 @@ def _new_book_page_markdown(
     lines = ["---", f'title: "{stem}"']
     author = extras.get("author")
     if author:
-        lines.append(f"author: {author_yaml_literal(author)}")
+        lines.append(author_yaml_field(author))
     if people_links:
         lines.append("People:")
         for link in people_links:
@@ -1895,7 +1895,7 @@ def _new_article_page_markdown(
     lines = ["---", f'title: "{stem}"']
     author = extras.get("author")
     if author:
-        lines.append(f"author: {author_yaml_literal(author)}")
+        lines.append(author_yaml_field(author))
     if people_links:
         lines.append("People:")
         for link in people_links:

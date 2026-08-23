@@ -34,7 +34,7 @@ _ON_TWITTER = re.compile(r"\bon twitter\b", re.I)
 _WIKILINK_LIST = re.compile(
     r"^(?:\s*\[\[.*?\]\]\s*,)*\s*\[\[.*?\]\]\s*$"
 )
-_SINGLE_WIKILINK = re.compile(r"^\[\[.+\]\]$")
+_SINGLE_WIKILINK = re.compile(r"^\[\[[^\]]+\]\]$")
 _WIKILINK_FIND = re.compile(r"\[\[.*?\]\]")
 
 
@@ -210,8 +210,9 @@ def quote_yaml_scalar(value: str) -> str:
 def author_yaml_literal(raw: object, *, is_tweet: bool = False) -> str:
     """Value to write after ``author: `` in a hand-built YAML block.
 
-    Quoted wikilink, a YAML list of quoted wikilinks, a plain tweet handle,
-    or empty string.
+    Quoted wikilink, a YAML list of quoted wikilinks (leading newline so
+    ``author:{literal}`` matches People), a plain tweet handle, or empty
+    string.
     """
     formatted = author_frontmatter_value(raw, is_tweet=is_tweet)
     if not formatted:
@@ -222,6 +223,18 @@ def author_yaml_literal(raw: object, *, is_tweet: bool = False) -> str:
     if "[[" in formatted:
         return quote_yaml_scalar(formatted)
     return formatted
+
+
+def author_yaml_field(raw: object, *, is_tweet: bool = False, key: str = "author") -> str:
+    """Full ``author: ...`` field for a hand-built YAML block.
+
+    Several authors omit the space after the colon so the list matches People:
+    ``author:\\n  - "[[A]]"``. One author stays ``author: "[[A]]"``.
+    """
+    literal = author_yaml_literal(raw, is_tweet=is_tweet)
+    if literal.startswith("\n"):
+        return f"{key}:{literal}"
+    return f"{key}: {literal}"
 
 
 def _wikilink_count(value: object) -> int:
