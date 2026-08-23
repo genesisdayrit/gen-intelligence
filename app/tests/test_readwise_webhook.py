@@ -2246,6 +2246,90 @@ Some intro.
     assert any(item["path"] == alt_path for item in uploaded)
 
 
+# Aug 23, 2026 journal — empty-alt twimg images after t.co, stripped by hand.
+LIVE_INTERNET_HOF_TEXT = (
+    "New York is now the #1 market for tech talent, dethroning "
+    "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+    "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+    "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+)
+LIVE_FLOWER_ALICEE_TEXT = (
+    "...but then when https://t.co/p3GyToJO6M "
+    "![](https://pbs.twimg.com/media/HQWvI2ZbIAA4WBd.jpg) "
+    "![](https://pbs.twimg.com/media/HQWvI2ZaoAAdqfb.jpg)"
+)
+
+
+def test_bookmarked_tweets_live_interneth0f_keeps_tco_and_open_id():
+    """Today's journal: two space-separated empty-alt ![](pbs.twimg.com/media/...) after t.co."""
+    clear_book_cache()
+    page_path = f"{KH_FOLDER}/Tweets from @InternetH0F.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167879,
+                text=LIVE_INTERNET_HOF_TEXT,
+                title="Tweets From InternetH0F",
+                author="@InternetH0F on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/InternetH0F",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    line = [ln for ln in page.splitlines() if "New York is now" in ln][0]
+    assert line == (
+        '- ["New York is now the #1 market for tech talent, dethroning '
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+        '"](https://readwise.io/open/1047167879)'
+    )
+    assert line.startswith("- [\"")
+    assert "https://t.co/L3eHRbgQyG" in line
+    assert "https://readwise.io/open/1047167879" in line
+    assert "![]" not in page
+    assert "pbs.twimg.com" not in page
+    assert "HQYkftsXEAAsKdm" not in page
+    assert "HQYkgifXEAAfKbH" not in page
+
+
+def test_bookmarked_tweets_live_flower_alicee_keeps_tco_and_open_id():
+    """Today's journal: two space-separated empty-alt ![](pbs.twimg.com/media/...) after t.co."""
+    clear_book_cache()
+    page_path = f"{KH_FOLDER}/Tweets from @flower_alicee.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167880,
+                text=LIVE_FLOWER_ALICEE_TEXT,
+                title="Tweets From flower_alicee",
+                author="@flower_alicee on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/flower_alicee",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    line = [ln for ln in page.splitlines() if "but then when" in ln][0]
+    assert line == (
+        '- ["...but then when https://t.co/p3GyToJO6M"]'
+        "(https://readwise.io/open/1047167880)"
+    )
+    assert "https://t.co/p3GyToJO6M" in line
+    assert "https://readwise.io/open/1047167880" in line
+    assert "![]" not in page
+    assert "pbs.twimg.com" not in page
+
+
 def test_tweet_page_write_strips_images_keeps_quote_and_open_id():
     clear_book_cache()
     mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})

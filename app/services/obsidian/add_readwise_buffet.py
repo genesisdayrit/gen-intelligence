@@ -53,6 +53,8 @@ _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
 
 # Same image-embed rules as the journal tweet strip (separate PR). Used
 # locally for Bookmarked Tweets until ``tweet_highlight_quote`` is on main.
+# Live Aug 23, 2026 journal: t.co then one or more space-separated
+# ``![](https://pbs.twimg.com/media/....jpg)``.
 _EMPTY_ALT_TWIMG_MEDIA = re.compile(
     r"(?:!\[\]\(\s*https?://pbs\.twimg\.com/media/[^)\s]+\s*\)(?:\s+)?)+",
     re.IGNORECASE,
