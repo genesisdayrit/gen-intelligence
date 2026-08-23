@@ -26,13 +26,19 @@ Standalone lines dedup on the exact wikilink bullet (`- [[Title by Author]]`). H
 
 The wikilink target is the same Knowledge Hub stem as the document save (`_sanitize_filename` then wikilink sanitize). Reader/book highlights use that `Title by Author` stem — not a different string, and not a `readwise.io/bookreview` / `read.readwise.io` title link. If there is no title/stem, keep the quote-only or author-only fallback. Tweet sources (`category=tweets`, `source=twitter`, a `Tweets From …` title, `@handle on Twitter` author, or a twitter.com / x.com `source_url`) still use `[[Tweets from @handle]]`, with the handle taken from the author or the last path segment of `source_url`. Do not put `by` on tweets. The highlight permalink stays on the quote. Dedup remains `readwise.io/open/{id}`.
 
+After the journal buffet line is written, tweet highlights also create or update a Knowledge Hub note named `Tweets from @handle` (the same stem as `_tweet_wikilink_target`). The note is found first in the `*_Knowledge-Hub` folder by filename (Dropbox path reads are case-insensitive; a folder scan covers a different displayed casing). If none exists, a minimal note is created: YAML `title` and H1 `Tweets from @handle`, then `### Bookmarked Tweets` and the first bullet. No People, no nested buffet metadata, no author wikilinks. Existing People/body/other headings on an existing page are left alone; a missing `### Bookmarked Tweets` heading is appended.
+
+Each bookmark on that page is `- ["quote"](https://readwise.io/open/{id})` — the handle wikilink is omitted because you are already on the note. The user note is included after an em dash when the journal line has one. Dedup is the open URL inside `### Bookmarked Tweets` only (not the handle or title). Highlights with no usable text or no handle skip the page write the same way the journal skips junk. Non-tweet highlights do not write this page or section onto book/article notes.
+
+Page create or append failures are logged and never undo a successful journal write. Missing journals still skip; tweets are never dumped onto today. The journal Content Buffet line stays `- [[Tweets from @handle]]: ["quote"](https://readwise.io/open/{id})`.
+
 `reader.any_document.created` includes RSS and newsletter feed items as well as documents you save yourself. Those days will be logged too. If you only want manually saved documents, subscribe to `reader.non_feed_document.created` instead (this endpoint also accepts `reader.feed_document.created` and treats them the same). Reader also models highlights and notes as documents (`category=highlight|note`, or `parent_id` set); those are skipped so they do not duplicate `readwise.highlight.created` lines.
 
 Highlights are dated by `highlighted_at` (3am local rollover). Documents are dated by `created_at`, then `saved_at`, then `updated_at`. Missing journal files are skipped, not created.
 
 ## Backfill historical highlights
 
-Readwise does not refire webhooks for historical imports. Use the repeatable `backfill_readwise_highlights` job to pull from [GET /api/v2/export/](https://readwise.io/api_deets) and append the same Content Buffet bullets. Safe to rerun: existing highlight id / `readwise.io/open/{id}` bullets are skipped. Missing journal files are skipped (never dumped onto today). Writes are batched per journal day.
+Readwise does not refire webhooks for historical imports. Use the repeatable `backfill_readwise_highlights` job to pull from [GET /api/v2/export/](https://readwise.io/api_deets) and append the same Content Buffet bullets (and the same `Tweets from @handle` Bookmarked Tweets lines). Safe to rerun: existing highlight id / `readwise.io/open/{id}` bullets are skipped on both the journal and the handle page. Missing journal files are skipped (never dumped onto today). Journal writes are batched per journal day; handle-page failures do not undo those writes.
 
 ```bash
 # Default since=2024-08-13 (first day of the unbroken daily journal streak)
