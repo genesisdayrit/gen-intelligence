@@ -36,7 +36,11 @@ from services.obsidian.add_shared_link import (
     check_save_readiness,
     get_predicted_link_path,
 )
-from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
+from services.obsidian.add_youtube_link import (
+    add_youtube_link,
+    fetch_youtube_transcript,
+    is_valid_youtube_url,
+)
 from services.raindrop.client import mirror_to_raindrop as _mirror_to_raindrop
 from services.readwise.reader import (
     document_title_author,
@@ -987,13 +991,30 @@ def _save_youtube_reader_document(url: str) -> tuple[dict | None, str | None, st
 
 
 def _process_youtube_link(url: str) -> None:
-    """Background task: Reader save, then KH note named like Reader, then Raindrop."""
-    extras, reader_title, reader_author = _save_youtube_reader_document(url)
+    """Background task: transcript gate, optional Reader save, KH note, Raindrop.
+
+    Reader save is skipped when there is no usable transcript (None/empty
+    after strip, channels, playlists, or fetch failures). KH note, journal
+    buffet, and Raindrop still run. Note naming falls back to YouTube
+    title + channel when Reader is skipped.
+    """
+    transcript = fetch_youtube_transcript(url)
+    if isinstance(transcript, str):
+        transcript = transcript.strip() or None
+    extras, reader_title, reader_author = None, None, None
+    if transcript:
+        extras, reader_title, reader_author = _save_youtube_reader_document(url)
+    else:
+        logger.info(
+            "Skipping Reader save for YouTube share (no usable transcript): %s",
+            url[:100],
+        )
     result = add_youtube_link(
         url,
         extra_frontmatter=extras,
         note_title=reader_title,
         note_author=reader_author,
+        transcript=transcript,
     )
     if result["success"]:
         logger.info(

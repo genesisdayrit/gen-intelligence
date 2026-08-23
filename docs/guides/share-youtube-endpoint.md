@@ -4,7 +4,7 @@
 
 The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description) from the Supadata API, with a fallback to YouTube's oEmbed API and page scraping if Supadata is unavailable.
 
-It also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) so Genesis can highlight the video in Reader. The Knowledge Hub filename and buffet wikilink use the same `reader_knowledge_hub_note_stem` helper as other Reader docs: `Title by Author` when author/creator exists, otherwise title-only. After save, the note prefers Reader's list title + author; if Reader has no title yet, it falls back to the YouTube title (and channel) through that same helper. `/share/link` routes YouTube URLs through this path; regular article shares are unchanged.
+It also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) when a usable transcript exists, so Genesis can highlight the video in Reader. Channels, playlists, empty/404/error transcript fetches, and whitespace-only transcripts skip Reader — Knowledge Hub, journal Content Buffet, and Raindrop still run. The Knowledge Hub filename and buffet wikilink use the same `reader_knowledge_hub_note_stem` helper as other Reader docs: `Title by Author` when author/creator exists, otherwise title-only. After a Reader save, the note prefers Reader's list title + author; if Reader is skipped or has no title yet, it falls back to the YouTube title (and channel) through that same helper. `/share/link` routes YouTube URLs through this path; regular article shares are unchanged.
 
 ## Endpoint Details
 
@@ -46,7 +46,7 @@ POST /share/youtube
 
 | File | Purpose |
 |------|---------|
-| `app/main.py` | Endpoint definition, `YouTubeShareRequest` model, auth, URL validation, Reader save then KH write |
+| `app/main.py` | Endpoint definition, `YouTubeShareRequest` model, auth, URL validation, transcript gate, optional Reader save, then KH write |
 | `app/services/obsidian/add_youtube_link.py` | YouTube metadata fetching, Dropbox file creation, YAML extras merge |
 | `app/services/readwise/reader.py` | `save_document` (`POST /api/v3/save/`) and `get_document` (`GET /api/v3/list/?id=`) |
 
@@ -56,16 +56,16 @@ POST /share/youtube
 2. **URL Validation**: Checks URL matches known YouTube patterns (returns 422 if invalid)
 3. **Background Processing**: Returns 202 immediately, processes via `BackgroundTasks`
 4. **Metadata Fetching**: Calls Supadata API for video metadata (title, description, channel name). Falls back to YouTube oEmbed + page scraping if Supadata is unavailable
-5. **Transcript Fetching**: Calls Supadata transcript API for video transcript (skipped for channels/playlists or if unavailable)
-6. **AI Summarization**: Sends transcript to OpenAI gpt-5.2 for structured summarization with key insights, references, and notable quotes (skipped if transcript unavailable or OPENAI_API_KEY not set)
-7. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
-8. **Reader save**: POSTs the YouTube URL to Reader Document CREATE with `category: video` and `saved_using: gen-intelligence` (title is left for Reader to scrape). `201` (new) and `200` (already exists) are both success. Failures are logged; the KH write still happens.
-9. **Reader list**: GETs `/api/v3/list/?id=` for title + author/creator. Save only returns `{id, url}`.
-10. **Filename / wikilink**: `reader_knowledge_hub_note_stem(Reader title, author)` — `Title by Author` when author exists. If Reader has no title yet, the same helper runs on the YouTube title + channel.
+5. **Transcript Fetching**: Calls Supadata transcript API once (skipped for channels/playlists). Empty/404/error/whitespace = no transcript. This fetch is reused for the AI summary — no second Supadata transcript call.
+6. **Reader save (transcript required)**: Only when stripped transcript text exists (auto-captions count; `MIN_TRANSCRIPT_CHARS` is only for AI summary). POSTs the YouTube URL to Reader Document CREATE with `category: video` and `saved_using: gen-intelligence` (title is left for Reader to scrape). `201` (new) and `200` (already exists) are both success. Failures are logged; the KH write still happens. No transcript → skip Reader and omit `readwise_id` / `readwise_url`.
+7. **Reader list**: After a successful save, GETs `/api/v3/list/?id=` for title + author/creator. Save only returns `{id, url}`.
+8. **AI Summarization**: Sends the same transcript to OpenAI gpt-5.2 for structured summarization (skipped if transcript is missing, shorter than `MIN_TRANSCRIPT_CHARS`, or OPENAI_API_KEY is not set)
+9. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
+10. **Filename / wikilink**: `reader_knowledge_hub_note_stem(Reader title, author)` — `Title by Author` when author exists. If Reader is skipped or has no title yet, the same helper runs on the YouTube title + channel.
 11. **Duplicate / identity lookup**: Prefer that stem. If the file is missing, find an existing note by YAML `URL` (YouTube id-aware) or `readwise_id` and update it — never create a second file when the title string drifted.
-12. **File Creation / extras**: Writes the markdown note with YAML `URL` (YouTube), fill-if-empty `readwise_id` and `readwise_url`. `readwise_url` is `https://read.readwise.io/read/{id}` (the save API returns `/new/read/{id}`; both open the video).
+12. **File Creation / extras**: Writes the markdown note with YAML `URL` (YouTube). When Reader was saved, fill-if-empty `readwise_id` and `readwise_url`. `readwise_url` is `https://read.readwise.io/read/{id}` (the save API returns `/new/read/{id}`; both open the video).
 13. **Journal buffet**: Standalone `- [[stem]]` using that same normalized stem.
-14. **Raindrop**: On a new KH note, mirrors the URL to Raindrop Unsorted (failures are logged and do not undo the note).
+14. **Raindrop**: On a new KH note, mirrors the URL to Raindrop Unsorted (failures are logged and do not undo the note). Reader skip does not skip Raindrop.
 
 ## File Format
 
@@ -129,7 +129,7 @@ def add_youtube_link(url: str) -> dict:
     """Main entry point. Returns success, action, stem, file_path, ..."""
 ```
 
-`save_document` in `app/services/readwise/reader.py` POSTs to Reader. `get_document` lists the saved video for title/author. `reader_permalink` normalizes the save API's `/new/read/{id}` to `/read/{id}` for the `readwise_url` YAML key. Naming is `youtube_knowledge_hub_note_stem` → `reader_knowledge_hub_note_stem`.
+`fetch_youtube_transcript` in `add_youtube_link.py` is the share-path gate (URL in, stripped text or None). `save_document` in `app/services/readwise/reader.py` POSTs to Reader only when that text exists. `get_document` lists the saved video for title/author. `reader_permalink` normalizes the save API's `/new/read/{id}` to `/read/{id}` for the `readwise_url` YAML key. Naming is `youtube_knowledge_hub_note_stem` → `reader_knowledge_hub_note_stem`.
 
 ## Testing
 

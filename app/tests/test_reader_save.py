@@ -135,6 +135,33 @@ def test_save_document_http_error_is_failure():
     assert result["id"] is None
 
 
+def test_fetch_youtube_transcript_returns_stripped_text():
+    from services.obsidian.add_youtube_link import fetch_youtube_transcript
+
+    with patch(
+        "services.obsidian.add_youtube_link._fetch_transcript", return_value="  hi there  "
+    ) as mock_fetch:
+        assert fetch_youtube_transcript("https://www.youtube.com/watch?v=abcdefghijk") == "hi there"
+    mock_fetch.assert_called_once_with("abcdefghijk")
+
+
+def test_fetch_youtube_transcript_none_for_empty_channel_playlist_or_error():
+    from services.obsidian.add_youtube_link import fetch_youtube_transcript
+
+    url = "https://www.youtube.com/watch?v=abcdefghijk"
+    with patch("services.obsidian.add_youtube_link._fetch_transcript", return_value="  \n"):
+        assert fetch_youtube_transcript(url) is None
+    with patch("services.obsidian.add_youtube_link._fetch_transcript") as mock_fetch:
+        assert fetch_youtube_transcript("https://www.youtube.com/@somechannel") is None
+        assert fetch_youtube_transcript("https://www.youtube.com/playlist?list=PLabc") is None
+        mock_fetch.assert_not_called()
+    with patch(
+        "services.obsidian.add_youtube_link._fetch_transcript",
+        side_effect=RuntimeError("boom"),
+    ):
+        assert fetch_youtube_transcript(url) is None
+
+
 def test_save_document_missing_token_does_not_post():
     with patch.dict(os.environ, {"READWISE_TOKEN": ""}, clear=False), patch(
         "services.readwise.reader.requests.post"
@@ -147,32 +174,40 @@ def test_save_document_missing_token_does_not_post():
     mock_post.assert_not_called()
 
 
-def test_process_youtube_link_uses_reader_list_title_author_for_stem():
-    from main import _process_youtube_link
-
-    kh = {
+def _kh_result(*, action="created"):
+    return {
         "success": True,
-        "action": "created",
+        "action": action,
         "title": "Cool Video",
         "stem": "Cool Video by A Channel",
         "file_path": "/vault/_knowledge-hub/Cool Video by A Channel.md",
         "description": None,
         "error": None,
     }
-    save = {
+
+
+def _save_ok(*, status_code=201):
+    return {
         "success": True,
         "id": "01readerdoc",
         "url": "https://read.readwise.io/new/read/01readerdoc",
         "error": None,
-        "status_code": 201,
+        "status_code": status_code,
     }
 
-    with patch("main.add_youtube_link", return_value=kh) as mock_kh, patch(
-        "main.save_document", return_value=save
+
+def test_process_youtube_link_uses_reader_list_title_author_for_stem():
+    from main import _process_youtube_link
+
+    transcript = "auto captions from a talk"
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document", return_value=_save_ok()
     ) as mock_save, patch(
         "main.get_document",
         return_value={"title": "Cool Video", "author": "A Channel"},
-    ) as mock_get, patch("main._mirror_to_raindrop"):
+    ) as mock_get, patch(
+        "main.fetch_youtube_transcript", return_value=transcript
+    ), patch("main._mirror_to_raindrop"):
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     mock_save.assert_called_once_with(
@@ -185,6 +220,7 @@ def test_process_youtube_link_uses_reader_list_title_author_for_stem():
     kwargs = mock_kh.call_args.kwargs
     assert kwargs["note_title"] == "Cool Video"
     assert kwargs["note_author"] == "A Channel"
+    assert kwargs["transcript"] == transcript
     assert kwargs["extra_frontmatter"]["readwise_id"] == "01readerdoc"
     assert kwargs["extra_frontmatter"]["readwise_url"] == (
         "https://read.readwise.io/read/01readerdoc"
@@ -194,28 +230,13 @@ def test_process_youtube_link_uses_reader_list_title_author_for_stem():
 def test_process_youtube_link_200_still_writes_yaml():
     from main import _process_youtube_link
 
-    kh = {
-        "success": True,
-        "action": "skipped",
-        "title": "Cool Video",
-        "stem": "Cool Video by A Channel",
-        "file_path": "/vault/_knowledge-hub/Cool Video by A Channel.md",
-        "description": None,
-        "error": None,
-    }
-    save = {
-        "success": True,
-        "id": "01readerdoc",
-        "url": "https://read.readwise.io/new/read/01readerdoc",
-        "error": None,
-        "status_code": 200,
-    }
-
-    with patch("main.add_youtube_link", return_value=kh) as mock_kh, patch(
-        "main.save_document", return_value=save
+    with patch("main.add_youtube_link", return_value=_kh_result(action="skipped")) as mock_kh, patch(
+        "main.save_document", return_value=_save_ok(status_code=200)
     ), patch(
         "main.get_document",
         return_value={"title": "Cool Video", "creator": "A Channel"},
+    ), patch(
+        "main.fetch_youtube_transcript", return_value="auto captions from a talk"
     ), patch("main._mirror_to_raindrop") as mock_raindrop:
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
@@ -228,17 +249,7 @@ def test_process_youtube_link_200_still_writes_yaml():
 def test_process_youtube_link_save_failure_still_reports_kh_success():
     from main import _process_youtube_link
 
-    kh = {
-        "success": True,
-        "action": "created",
-        "title": "Cool Video",
-        "stem": "Cool Video by A Channel",
-        "file_path": "/vault/_knowledge-hub/Cool Video by A Channel.md",
-        "description": None,
-        "error": None,
-    }
-
-    with patch("main.add_youtube_link", return_value=kh) as mock_kh, patch(
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
         "main.save_document",
         return_value={
             "success": False,
@@ -247,13 +258,109 @@ def test_process_youtube_link_save_failure_still_reports_kh_success():
             "error": "Reader down",
             "status_code": 503,
         },
-    ), patch("main.get_document") as mock_get, patch("main._mirror_to_raindrop") as mock_raindrop:
+    ), patch("main.get_document") as mock_get, patch(
+        "main.fetch_youtube_transcript", return_value="auto captions from a talk"
+    ), patch("main._mirror_to_raindrop") as mock_raindrop:
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 
     mock_kh.assert_called_once()
     assert mock_kh.call_args.kwargs["extra_frontmatter"] is None
     assert mock_kh.call_args.kwargs["note_title"] is None
     mock_get.assert_not_called()
+    mock_raindrop.assert_called_once()
+
+
+def test_process_youtube_link_skips_reader_when_no_transcript():
+    from main import _process_youtube_link
+
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document"
+    ) as mock_save, patch("main.get_document") as mock_get, patch(
+        "main.fetch_youtube_transcript", return_value=None
+    ), patch("main._mirror_to_raindrop") as mock_raindrop:
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    mock_save.assert_not_called()
+    mock_get.assert_not_called()
+    mock_kh.assert_called_once()
+    kwargs = mock_kh.call_args.kwargs
+    assert kwargs["extra_frontmatter"] is None
+    assert kwargs["note_title"] is None
+    assert kwargs["note_author"] is None
+    assert kwargs["transcript"] is None
+    mock_raindrop.assert_called_once()
+
+
+def test_process_youtube_link_skips_reader_when_transcript_is_whitespace():
+    from main import _process_youtube_link
+
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document"
+    ) as mock_save, patch(
+        "services.obsidian.add_youtube_link._fetch_transcript", return_value="   \n"
+    ), patch("main._mirror_to_raindrop"):
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    mock_save.assert_not_called()
+    mock_kh.assert_called_once()
+    assert mock_kh.call_args.kwargs["extra_frontmatter"] is None
+
+
+def test_process_youtube_link_short_transcript_still_saves_to_reader():
+    """MIN_TRANSCRIPT_CHARS is only for AI summary — any text still goes to Reader."""
+    from main import _process_youtube_link
+
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document", return_value=_save_ok()
+    ) as mock_save, patch(
+        "main.get_document",
+        return_value={"title": "Cool Video", "author": "A Channel"},
+    ), patch(
+        "main.fetch_youtube_transcript", return_value="hi"
+    ), patch("main._mirror_to_raindrop"):
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    mock_save.assert_called_once()
+    assert mock_kh.call_args.kwargs["transcript"] == "hi"
+    assert mock_kh.call_args.kwargs["extra_frontmatter"]["readwise_id"] == "01readerdoc"
+
+
+def test_process_youtube_link_skips_reader_for_channel_and_playlist():
+    from main import _process_youtube_link
+
+    kh = _kh_result()
+    for url in (
+        "https://www.youtube.com/@somechannel",
+        "https://www.youtube.com/playlist?list=PLabcdefghijk",
+    ):
+        with patch("main.add_youtube_link", return_value=kh) as mock_kh, patch(
+            "main.save_document"
+        ) as mock_save, patch(
+            "services.obsidian.add_youtube_link._fetch_transcript"
+        ) as mock_fetch, patch("main._mirror_to_raindrop"):
+            _process_youtube_link(url)
+
+        mock_save.assert_not_called()
+        mock_fetch.assert_not_called()
+        mock_kh.assert_called_once()
+        assert mock_kh.call_args.kwargs["extra_frontmatter"] is None
+        assert mock_kh.call_args.kwargs["transcript"] is None
+
+
+def test_process_youtube_link_skips_reader_when_transcript_fetch_raises():
+    from main import _process_youtube_link
+
+    with patch("main.add_youtube_link", return_value=_kh_result()) as mock_kh, patch(
+        "main.save_document"
+    ) as mock_save, patch(
+        "services.obsidian.add_youtube_link._fetch_transcript",
+        side_effect=RuntimeError("supadata down"),
+    ), patch("main._mirror_to_raindrop") as mock_raindrop:
+        _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    mock_save.assert_not_called()
+    mock_kh.assert_called_once()
+    assert mock_kh.call_args.kwargs["extra_frontmatter"] is None
     mock_raindrop.assert_called_once()
 
 
