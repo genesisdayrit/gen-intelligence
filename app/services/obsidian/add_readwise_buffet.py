@@ -30,6 +30,7 @@ CONTENT_BUFFET_HEADER = "### Content Buffet:"
 BOOKMARKED_TWEETS_HEADER = "### Bookmarked Tweets"
 BOOK_HIGHLIGHTS_HEADER = "### Book highlights"
 ARTICLE_HIGHLIGHTS_HEADER = "### Article highlights"
+TRANSCRIPT_HIGHLIGHTS_HEADER = "### Transcript Highlights"
 _VIDEO_CATEGORIES = {"videos", "video", "youtube"}
 _VIDEO_SOURCES = {"youtube"}
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
@@ -345,7 +346,9 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
 
     Applies ``_sanitize_filename`` then ``_wikilink_from_note_stem`` so
     highlight wikilinks resolve to the same note a share/document save created.
-    Title-only — regular iOS share-link / YouTube saves use this shape.
+    Title-only — regular iOS share-link uses this shape. YouTube notes
+    use ``reader_knowledge_hub_note_stem`` (Title by Author when author
+    exists) so later highlights resolve to the same file.
     Returns None when the title is empty or sanitizes to junk.
     """
     text = _nonempty(title)
@@ -374,6 +377,24 @@ def reader_knowledge_hub_note_stem(
     if author_text and knowledge_hub_note_stem(author_text):
         return knowledge_hub_note_stem(f"{_nonempty(title)} by {author_text}")
     return base
+
+
+def youtube_knowledge_hub_note_stem(
+    title: str | None,
+    author: str | None = None,
+    *,
+    fallback_title: str | None = None,
+    fallback_author: str | None = None,
+) -> str | None:
+    """YouTube KH stem — same function as Reader docs, with a YouTube fallback.
+
+    Prefer Reader list/webhook ``title`` + ``author``/``creator``. If Reader
+    has no title yet, use the YouTube title (and channel) through the same
+    ``reader_knowledge_hub_note_stem`` helper. One naming path, not two.
+    """
+    return reader_knowledge_hub_note_stem(title, author) or reader_knowledge_hub_note_stem(
+        fallback_title, fallback_author
+    )
 
 
 def document_page_url(payload: dict) -> str | None:
@@ -515,13 +536,23 @@ def _create_youtube_link(
     url: str,
     journal_date: str,
     extra_frontmatter: dict | None = None,
+    title: str | None = None,
+    author: str | None = None,
 ) -> dict:
+    """Save a YouTube Reader document onto the shared Reader stem.
+
+    Filename / buffet use ``reader_knowledge_hub_note_stem`` (Title by
+    Author when author exists). If a note already exists for this YouTube
+    URL or ``readwise_id``, only fill-if-empty extras — never a second file.
+    """
     from services.obsidian.add_youtube_link import add_youtube_link
 
     return add_youtube_link(
         url,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
+        note_title=title,
+        note_author=author,
     )
 
 
@@ -1007,6 +1038,42 @@ def insert_article_highlights_bullet(
     return _insert_heading_bullet(content, ARTICLE_HIGHLIGHTS_HEADER, bullet, keys)
 
 
+def _frontmatter_body_start(lines: list[str]) -> int:
+    """Index of the first body line after closing YAML ``---``."""
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return index + 1
+    return 0
+
+
+def insert_transcript_highlights_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Transcript Highlights`` at the top of the body.
+
+    If the heading is missing, create it at the top of the body (after YAML)
+    and leave other sections alone. If it already exists, insert into that
+    section without moving it. Dedup is the open URL only.
+    """
+    lines = content.split("\n")
+    header_idx, _section_end = _section_bounds(lines, TRANSCRIPT_HIGHLIGHTS_HEADER)
+    if header_idx is not None:
+        return _insert_heading_bullet(content, TRANSCRIPT_HIGHLIGHTS_HEADER, bullet, keys)
+
+    bullet_lines = _buffet_bullet_lines(bullet)
+    body_start = _frontmatter_body_start(lines)
+    insert_at = body_start
+    while insert_at < len(lines) and not lines[insert_at].strip():
+        insert_at += 1
+    block = [TRANSCRIPT_HIGHLIGHTS_HEADER, *bullet_lines, ""]
+    updated = lines[:body_start] + [""] + block + lines[insert_at:]
+    return "\n".join(updated), "inserted"
+
+
 def _wikilink_from_note_stem(note_title: str) -> str | None:
     """Sanitize a Knowledge Hub filename stem for ``[[wikilink]]``.
 
@@ -1279,6 +1346,77 @@ def _download_tweet_page(
 ) -> tuple[str, str] | None:
     """Return ``(path, content)`` for an existing handle page, or None."""
     return _download_hub_note(dbx, hub_path, filename)
+
+
+def _note_matches_identity(
+    content: str,
+    *,
+    url: str | None = None,
+    readwise_id: str | None = None,
+) -> bool:
+    """True when KH YAML ``URL`` or ``readwise_id`` matches (YouTube id-aware)."""
+    from services.obsidian.add_shared_link import _extract_frontmatter
+    from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
+
+    frontmatter, _body = _extract_frontmatter(content)
+    want_id = str(readwise_id).strip() if readwise_id is not None else ""
+    have_id = str(frontmatter.get("readwise_id") or "").strip()
+    if want_id and have_id and want_id == have_id:
+        return True
+    note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
+    if not url or not note_url:
+        return False
+    if url.rstrip("/") == note_url.rstrip("/"):
+        return True
+    if is_valid_youtube_url(url) and is_valid_youtube_url(note_url):
+        left = _extract_video_id(url)
+        right = _extract_video_id(note_url)
+        return bool(left and right and left == right)
+    return False
+
+
+def find_hub_note_by_identity(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    *,
+    stem: str | None = None,
+    url: str | None = None,
+    readwise_id: str | None = None,
+) -> tuple[str, str] | None:
+    """Find a Knowledge Hub note by stem, then YAML ``URL`` / ``readwise_id``.
+
+    Primary key is the shared Reader stem. Title drift still hits the same
+    note via YouTube ``URL`` or ``readwise_id``. Does not create a file.
+    """
+    if stem:
+        existing = _download_hub_note(dbx, hub_path, _hub_note_filename(stem))
+        if existing:
+            return existing
+    if not url and not readwise_id:
+        return None
+
+    result = dbx.files_list_folder(hub_path)
+    while True:
+        entries = getattr(result, "entries", None)
+        if not isinstance(entries, (list, tuple)):
+            return None
+        for entry in entries:
+            name = getattr(entry, "name", None)
+            if not isinstance(name, str) or not name.endswith(".md"):
+                continue
+            path = getattr(entry, "path_display", None) or getattr(entry, "path_lower", None)
+            if not path:
+                continue
+            try:
+                content = _get_file_content(dbx, path)
+            except FileNotFoundError:
+                continue
+            if _note_matches_identity(content, url=url, readwise_id=readwise_id):
+                return path, content
+        if getattr(result, "has_more", False) is not True:
+            break
+        result = dbx.files_list_folder_continue(result.cursor)
+    return None
 
 
 def _append_tweet_page(
@@ -1851,6 +1989,174 @@ def _append_article_pages_after_journal(
             )
 
 
+def _is_youtube_highlight(book: dict | None, payload: dict | None = None) -> bool:
+    """True for Readwise youtube / Reader video highlights (not tweets or books)."""
+    if not book or _is_tweet_book(book) or _is_book_highlight(book):
+        return False
+    return _is_youtube_or_video_highlight(book, payload)
+
+
+def _youtube_highlight_url(book: dict | None, payload: dict) -> str | None:
+    from services.obsidian.add_youtube_link import is_valid_youtube_url
+
+    for href in (
+        (book or {}).get("source_url"),
+        payload.get("source_url"),
+        (book or {}).get("url"),
+        payload.get("url"),
+    ):
+        text = _http_url(href)
+        if text and is_valid_youtube_url(text):
+            return text
+    return None
+
+
+def _youtube_page_stem(book: dict | None, payload: dict) -> str | None:
+    if not _is_youtube_highlight(book, payload):
+        return None
+    return youtube_knowledge_hub_note_stem(
+        _nonempty((book or {}).get("title")) or _nonempty(payload.get("title")),
+        _reader_author(book or {}) or _reader_author(payload),
+    )
+
+
+def _format_youtube_page_bullet(payload: dict, book: dict | None = None) -> str | None:
+    """Quote line for the YouTube note: ``- ["quote"](open/id)``, no wikilink."""
+    if not _is_youtube_highlight(book, payload):
+        return None
+    if not _youtube_page_stem(book, payload):
+        return None
+    text = _nonempty(payload.get("text"))
+    if not text:
+        return None
+    note = _nonempty(payload.get("note"))
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{_collapse(text)}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+    line = f"- {quote}"
+    if note:
+        line += f" — {_collapse(note)}"
+    return line
+
+
+def _new_youtube_highlight_page_markdown(stem: str, bullet: str, extras: dict) -> str:
+    """Minimal YouTube note when a highlight arrives before the iOS share."""
+    lines = ["---", f'title: "{stem}"']
+    for key in ("URL", "readwise_id", "readwise_url", "category"):
+        value = extras.get(key)
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        lines.append(f"{key}: {value}")
+    lines.extend(["Tags:", "  - youtube", "---", "", f"# {stem}", "", ""])
+    body = "\n".join(lines)
+    updated, _action = insert_transcript_highlights_bullet(
+        body, bullet, keys=None
+    )
+    return updated
+
+
+def _append_youtube_page(
+    dbx: dropbox.Dropbox,
+    payload: dict,
+    hub_path: str,
+) -> str | None:
+    """Append a transcript highlight onto the existing YouTube KH note.
+
+    Lookup is stem, then YAML ``URL`` / ``readwise_id``. Never creates a
+    second file when one already exists. If none exists, creates a minimal
+    note under the shared stem so the highlight has a home.
+    """
+    book = _resolve_highlight_book(payload)
+    if not _is_youtube_highlight(book, payload):
+        return None
+    stem = _youtube_page_stem(book, payload)
+    bullet = _format_youtube_page_bullet(payload, book)
+    if not bullet:
+        return None
+    keys = dedup_keys(payload)
+    youtube_url = _youtube_highlight_url(book, payload)
+    readwise_id = _nonempty(payload.get("book_id")) or _reader_document_id(payload)
+    existing = find_hub_note_by_identity(
+        dbx,
+        hub_path,
+        stem=stem,
+        url=youtube_url,
+        readwise_id=readwise_id,
+    )
+    extras = {}
+    if youtube_url:
+        extras["URL"] = youtube_url
+    if readwise_id:
+        extras["readwise_id"] = readwise_id
+    category = _nonempty((book or {}).get("category") or payload.get("category"))
+    if category:
+        extras["category"] = category
+
+    if existing is None:
+        if not stem:
+            return None
+        file_path = f"{hub_path}/{_hub_note_filename(stem)}"
+        markdown = _new_youtube_highlight_page_markdown(stem, bullet, extras)
+        dbx.files_upload(
+            markdown.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("YouTube transcript page created path=%s", file_path)
+        return "created"
+
+    file_path, content = existing
+    updated, action = insert_transcript_highlights_bullet(content, bullet, keys)
+    if extras:
+        from services.obsidian.add_shared_link import (
+            _extract_frontmatter,
+            _merge_extra_frontmatter,
+            _rebuild_markdown,
+        )
+
+        frontmatter, body = _extract_frontmatter(updated)
+        if _merge_extra_frontmatter(frontmatter, extras):
+            updated = _rebuild_markdown(frontmatter, body)
+    if updated != content:
+        dbx.files_upload(
+            updated.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("YouTube transcript page %s path=%s", action, file_path)
+    elif action == "skipped":
+        logger.info("YouTube transcript page skipped (duplicate) path=%s", file_path)
+    return action
+
+
+def _append_youtube_pages_after_journal(
+    dbx: dropbox.Dropbox,
+    payloads: list[dict],
+) -> None:
+    """Best-effort Transcript Highlights writes after a journal highlight pass.
+
+    Tweets, books, and articles stay on their own page writers. Failures
+    are logged and never undo the journal write.
+    """
+    hub_path: str | None = None
+    for payload in payloads:
+        if not is_highlight_event(payload):
+            continue
+        book = _resolve_highlight_book(payload)
+        if not _is_youtube_highlight(book, payload):
+            continue
+        try:
+            if hub_path is None:
+                hub_path = _resolve_knowledge_hub_folder(dbx)
+            _append_youtube_page(dbx, payload, hub_path)
+        except Exception:
+            logger.exception(
+                "YouTube transcript page write failed; journal write kept (highlight %s)",
+                payload.get("id"),
+            )
+
+
 def write_highlights_by_journal(
     payloads: list[dict],
     now: datetime | None = None,
@@ -1867,14 +2173,15 @@ def write_highlights_by_journal(
     to today. After a successful journal pass, tweet *highlights* also
     create or append the ``Tweets from @handle`` Knowledge Hub page, and
     book *highlights* (``category == books``, not tweets) create or append
-    the ``Title by Author`` page under ``### Book highlights``, and
-    article *highlights* (not tweets, not books, not YouTube/video) create
-    or append the same stem under ``### Article highlights``, when
-    ``format_fn`` is ``format_readwise_bullet`` (webhook
-    ``readwise.highlight.created`` and the existing highlight backfill,
-    which already calls this writer). Document fallback / other formatters
-    skip those page writes. Page failures are logged and never undo the
-    journal write.
+    the ``Title by Author`` page under ``### Book highlights``, article
+    *highlights* (not tweets, not books, not YouTube/video) create or
+    append the same stem under ``### Article highlights``, and YouTube /
+    Reader-video highlights append ``### Transcript Highlights`` at the
+    top of that note's body, when ``format_fn`` is ``format_readwise_bullet``
+    (webhook ``readwise.highlight.created`` and the existing highlight
+    backfill, which already calls this writer). Document fallback / other
+    formatters skip those page writes. Page failures are logged and never
+    undo the journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -1949,6 +2256,7 @@ def write_highlights_by_journal(
                 _append_tweet_pages_after_journal(dbx, buffet_payloads)
                 _append_book_pages_after_journal(dbx, buffet_payloads)
                 _append_article_pages_after_journal(dbx, buffet_payloads)
+                _append_youtube_pages_after_journal(dbx, buffet_payloads)
         except Exception as exc:
             logger.exception("Readwise buffet failed for %s", file_path)
             if raise_errors:
@@ -2066,11 +2374,15 @@ def _append_reader_document_knowledge_hub(
         return {"success": True, "action": "ignored", "error": None, "file_path": None}
 
     try:
+        # YouTube: shared Reader stem (Title by Author). If a note already
+        # exists for this URL / readwise_id, extras only — never a second file.
         if youtube_url:
             result = _create_youtube_link(
                 youtube_url,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
+                title=title,
+                author=_reader_author(payload),
             )
         else:
             result = _create_shared_link(
@@ -2127,9 +2439,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     (``category == books``, not tweets) create or append
     ``Title by Author`` under ``### Book highlights``. Article highlights
     (not tweets, not books, not YouTube/video) create or append the same
-    stem under ``### Article highlights``. Reader document events,
-    share-link, YouTube, and Raindrop do not write those pages. Child
-    annotation documents are ignored.
+    stem under ``### Article highlights``. YouTube / Reader
+    ``category=video`` highlights append ``### Transcript Highlights`` on
+    the same stem note. Reader document events, share-link, YouTube share,
+    and Raindrop do not write highlight pages. Child annotation documents
+    are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)

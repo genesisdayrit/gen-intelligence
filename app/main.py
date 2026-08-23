@@ -38,6 +38,12 @@ from services.obsidian.add_shared_link import (
 )
 from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
 from services.raindrop.client import mirror_to_raindrop as _mirror_to_raindrop
+from services.readwise.reader import (
+    document_title_author,
+    get_document,
+    reader_permalink,
+    save_document,
+)
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -940,11 +946,62 @@ def _process_shared_link(url: str, title: str | None) -> None:
         logger.error("Failed to save link: %s - %s", url[:100], result["error"])
 
 
+def _save_youtube_reader_document(url: str) -> tuple[dict | None, str | None, str | None]:
+    """POST the YouTube URL to Reader and list title/author. Never raises.
+
+    Returns ``(extras, reader_title, reader_author)``. extras is None when
+    save failed. Title/author come from list (save only returns id/url).
+    """
+    try:
+        save_result = save_document(
+            url,
+            category="video",
+            saved_using="gen-intelligence",
+        )
+        if not save_result.get("success"):
+            logger.error(
+                "Failed to save YouTube to Reader: %s - %s",
+                url[:100],
+                save_result.get("error"),
+            )
+            return None, None, None
+
+        extras: dict[str, str] = {}
+        doc_id = save_result.get("id")
+        permalink = reader_permalink(doc_id, save_result.get("url"))
+        if doc_id:
+            extras["readwise_id"] = doc_id
+        if permalink:
+            extras["readwise_url"] = permalink
+        reader_title = None
+        reader_author = None
+        if doc_id:
+            listed = get_document(doc_id)
+            reader_title, reader_author = document_title_author(listed)
+        return extras or None, reader_title, reader_author
+    except Exception as exc:
+        logger.error(
+            "Unexpected error saving YouTube to Reader: %s - %s", url[:100], exc
+        )
+        return None, None, None
+
+
 def _process_youtube_link(url: str) -> None:
-    """Background task to save YouTube link to Obsidian and mirror to Raindrop.io."""
-    result = add_youtube_link(url)
+    """Background task: Reader save, then KH note named like Reader, then Raindrop."""
+    extras, reader_title, reader_author = _save_youtube_reader_document(url)
+    result = add_youtube_link(
+        url,
+        extra_frontmatter=extras,
+        note_title=reader_title,
+        note_author=reader_author,
+    )
     if result["success"]:
-        logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
+        logger.info(
+            "Saved YouTube link: %s (action=%s stem=%s)",
+            url[:100],
+            result.get("action"),
+            result.get("stem"),
+        )
         if result.get("action") == "created":
             _mirror_to_raindrop(url, result.get("title"), result.get("description"))
     else:

@@ -52,6 +52,9 @@ from services.obsidian.add_readwise_buffet import (
     _tweet_people_wikilink,
     _tweet_quote_for_page,
     _tweet_wikilink_target,
+    TRANSCRIPT_HIGHLIGHTS_HEADER,
+    _format_youtube_page_bullet,
+    _is_youtube_highlight,
     append_readwise_buffet,
     clear_book_cache,
     dedup_keys,
@@ -67,6 +70,7 @@ from services.obsidian.add_readwise_buffet import (
     insert_article_highlights_bullet,
     insert_book_highlights_bullet,
     insert_bookmarked_tweets_bullet,
+    insert_transcript_highlights_bullet,
     insert_content_buffet_bullet,
     is_document_event,
     is_highlight_event,
@@ -1161,6 +1165,7 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
 
 
 def test_append_youtube_document_uses_youtube_helper():
+    """YouTube Reader docs call add_youtube_link (YouTube stem), not Title by Author."""
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     payload = _reader_payload(
         title="Cool Video",
@@ -1182,6 +1187,7 @@ def test_append_youtube_document_uses_youtube_helper():
     mock_youtube.assert_called_once()
     assert mock_youtube.call_args.args[0] == "https://www.youtube.com/watch?v=abcdefghijk"
     assert mock_youtube.call_args.kwargs["journal_date"] == "Nov 28, 2025"
+    assert mock_youtube.call_args.kwargs["title"] == "Cool Video"
     extras = mock_youtube.call_args.kwargs["extra_frontmatter"]
     assert extras["readwise_id"] == "01kb5cap1wy21zp37bc2rjj"
     assert extras["URL"] == "https://www.youtube.com/watch?v=abcdefghijk"
@@ -3631,3 +3637,177 @@ def test_title_only_article_page_when_author_missing():
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
     assert "[[A long essay]]:" in store[JOURNAL_NOV_PATH]
+
+# ---------------------------------------------------------------------------
+# YouTube / Reader video transcript highlights
+# ---------------------------------------------------------------------------
+
+YOUTUBE_PAGE_PATH = f"{KH_FOLDER}/Cool Video by A Channel.md"
+
+
+def _youtube_highlight(**overrides):
+    data = {
+        "title": "Cool Video",
+        "author": "A Channel",
+        "category": "youtube",
+        "source": "reader",
+        "source_url": "https://www.youtube.com/watch?v=abcdefghijk",
+    }
+    data.update(overrides)
+    return _highlight_payload(**data)
+
+
+def test_is_youtube_highlight_treats_video_category_and_youtube_url():
+    clear_book_cache()
+    assert _is_youtube_highlight(_resolve_highlight_book(_youtube_highlight())) is True
+    video = _resolve_highlight_book(
+        _youtube_highlight(category="video", source="reader")
+    )
+    assert _is_youtube_highlight(video) is True
+    url_only = _resolve_highlight_book(
+        _highlight_payload(
+            title="Cool Video",
+            author="A Channel",
+            category="articles",
+            source_url="https://youtu.be/abcdefghijk",
+        )
+    )
+    assert _is_youtube_highlight(url_only) is True
+    assert _is_youtube_highlight(_resolve_highlight_book(_book_highlight())) is False
+    assert _is_youtube_highlight(_resolve_highlight_book(_tweet_highlight())) is False
+
+
+def test_format_youtube_page_bullet_omits_wikilink():
+    clear_book_cache()
+    payload = _youtube_highlight()
+    book = _resolve_highlight_book(payload)
+    journal = format_readwise_bullet(payload)
+    page = _format_youtube_page_bullet(payload, book)
+    assert journal == (
+        '- [[Cool Video by A Channel]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert page == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert "[[Cool Video by A Channel]]" not in page
+    assert _format_youtube_page_bullet(_book_highlight(), _resolve_highlight_book(_book_highlight())) is None
+
+
+def test_insert_transcript_highlights_at_top_of_body():
+    content = """---
+URL: https://www.youtube.com/watch?v=abcdefghijk
+---
+
+## Cool Video
+
+Kept description.
+"""
+    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    updated, action = insert_transcript_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    assert TRANSCRIPT_HIGHLIGHTS_HEADER in updated
+    assert updated.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < updated.index("## Cool Video")
+    assert "Kept description." in updated
+    assert bullet in updated
+
+
+def test_insert_transcript_highlights_dedups_open_url():
+    content = f"""# Cool Video by A Channel
+
+{TRANSCRIPT_HIGHLIGHTS_HEADER}
+- ["Old quote"](https://readwise.io/open/111)
+"""
+    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    updated, action = insert_transcript_highlights_bullet(
+        content, same_id, keys=["https://readwise.io/open/111"]
+    )
+    assert action == "skipped"
+    assert updated == content
+
+
+def test_youtube_highlight_appends_transcript_section_on_existing_note():
+    clear_book_cache()
+    existing = """---
+Journal:
+  - "[[Nov 27, 2025]]"
+URL: https://www.youtube.com/watch?v=abcdefghijk
+readwise_id: 01readerdoc
+Tags:
+  - youtube
+---
+
+## Cool Video
+
+Video description here.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        YOUTUBE_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_youtube_highlight(), now=now)
+
+    assert result["success"] is True
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[Cool Video by A Channel]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal
+    page = store[YOUTUBE_PAGE_PATH]
+    assert TRANSCRIPT_HIGHLIGHTS_HEADER in page
+    assert page.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < page.index("## Cool Video")
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "Video description here." in page
+    assert BOOK_HIGHLIGHTS_HEADER not in page
+    assert BOOKMARKED_TWEETS_HEADER not in page
+
+
+def test_youtube_highlight_finds_note_by_url_when_stem_drifts():
+    """Title drift still appends to the existing YouTube note, no second file."""
+    clear_book_cache()
+    old_path = f"{KH_FOLDER}/Cool Video.md"
+    existing = """---
+URL: https://www.youtube.com/watch?v=abcdefghijk
+readwise_id: 01readerdoc
+---
+
+## Cool Video
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        old_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _youtube_highlight(title="Cool Video (Reader)"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    assert YOUTUBE_PAGE_PATH not in store
+    page = store[old_path]
+    assert TRANSCRIPT_HIGHLIGHTS_HEADER in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert not any(item["path"].endswith("Cool Video (Reader) by A Channel.md") for item in uploaded)
+
+
+def test_youtube_highlight_does_not_write_book_or_tweet_pages():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        append_readwise_buffet(_youtube_highlight(), now=now)
+
+    assert BOOK_PAGE_PATH not in store
+    assert TWEET_PAGE_PATH not in store
+    assert all(
+        BOOKMARKED_TWEETS_HEADER not in item["content"]
+        and BOOK_HIGHLIGHTS_HEADER not in item["content"]
+        for item in uploaded
+        if item["path"] != JOURNAL_NOV_PATH
+    )
