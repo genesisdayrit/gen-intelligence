@@ -48,6 +48,8 @@ from services.obsidian.add_readwise_buffet import (
     is_highlight_event,
     journal_filename,
     knowledge_hub_note_stem,
+    reader_document_buffet_nested_lines,
+    reader_document_extra_frontmatter,
     standalone_wikilink_bullet,
 )
 from services.obsidian.add_shared_link import _sanitize_filename
@@ -1095,10 +1097,19 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
 
     assert result["success"] is True
     assert result["action"] == "created"
-    mock_share.assert_called_once_with(
-        "https://www.theverge.com/black-friday",
-        title=title,
-        journal_date="Nov 28, 2025",
+    mock_share.assert_called_once()
+    assert mock_share.call_args.args[0] == "https://www.theverge.com/black-friday"
+    assert mock_share.call_args.kwargs["title"] == title
+    assert mock_share.call_args.kwargs["journal_date"] == "Nov 28, 2025"
+    extras = mock_share.call_args.kwargs["extra_frontmatter"]
+    assert extras["URL"] == "https://www.theverge.com/black-friday"
+    assert extras["author"] == "The Verge"
+    assert extras["readwise_id"] == "01kb5cap1wy21zp37bc2rjj"
+    assert extras["readwise_url"] == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
+    assert extras["saved_at"] == "2025-11-28T14:02:02.213618+00:00"
+    assert "published" not in extras
+    assert mock_share.call_args.kwargs["buffet_nested"][0] == (
+        "  - [source](https://www.theverge.com/black-friday)"
     )
     mock_youtube.assert_not_called()
     mock_dbx.files_upload.assert_not_called()
@@ -1125,10 +1136,12 @@ def test_append_youtube_document_uses_youtube_helper():
 
     assert result["success"] is True
     assert result["action"] == "created"
-    mock_youtube.assert_called_once_with(
-        "https://www.youtube.com/watch?v=abcdefghijk",
-        journal_date="Nov 28, 2025",
-    )
+    mock_youtube.assert_called_once()
+    assert mock_youtube.call_args.args[0] == "https://www.youtube.com/watch?v=abcdefghijk"
+    assert mock_youtube.call_args.kwargs["journal_date"] == "Nov 28, 2025"
+    extras = mock_youtube.call_args.kwargs["extra_frontmatter"]
+    assert extras["readwise_id"] == "01kb5cap1wy21zp37bc2rjj"
+    assert extras["URL"] == "https://www.youtube.com/watch?v=abcdefghijk"
     mock_share.assert_not_called()
 
 
@@ -1514,3 +1527,119 @@ def test_locked_tweet_highlight_still_uses_handle_wikilink():
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert line != "- [[Tweets from @georgiedorothea]]"
+
+
+# ---------------------------------------------------------------------------
+# Reader document metadata (KH YAML + nested journal bullets)
+# ---------------------------------------------------------------------------
+
+
+def test_reader_extra_frontmatter_and_nested_lines_from_payload():
+    extras = reader_document_extra_frontmatter(_reader_payload())
+    assert extras == {
+        "URL": "https://www.theverge.com/black-friday",
+        "author": "The Verge",
+        "readwise_id": "01kb5cap1wy21zp37bc2rjj",
+        "readwise_url": "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj",
+        "saved_at": "2025-11-28T14:02:02.213618+00:00",
+    }
+    assert "published" not in extras
+    nested = reader_document_buffet_nested_lines(_reader_payload())
+    assert nested == [
+        "  - [source](https://www.theverge.com/black-friday)",
+        "  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`",
+        "  - The Verge",
+        "  - saved: 2025-11-28T14:02:02.213618+00:00",
+    ]
+
+
+def test_reader_extra_omits_missing_published_and_author():
+    payload = _reader_payload(author=None, creator=None)
+    del payload["author"]
+    extras = reader_document_extra_frontmatter(payload)
+    assert "author" not in extras
+    assert "published" not in extras
+    nested = reader_document_buffet_nested_lines(payload)
+    assert not any(line.startswith("  - published:") for line in nested)
+    assert "  - The Verge" not in nested
+    assert any(line.startswith("  - [source](") for line in nested)
+    assert any("[readwise]" in line for line in nested)
+
+
+def test_reader_extra_uses_published_date_and_creator():
+    payload = _reader_payload(
+        author=None,
+        creator="Casey Newton",
+        published_date="2025-11-20T08:15:00+00:00",
+    )
+    extras = reader_document_extra_frontmatter(payload)
+    assert extras["author"] == "Casey Newton"
+    assert extras["published"] == "2025-11-20"
+    nested = reader_document_buffet_nested_lines(payload)
+    assert "  - Casey Newton" in nested
+    assert "  - published: 2025-11-20" in nested
+
+
+def test_reader_extra_mailto_source_omits_public_url():
+    extras = reader_document_extra_frontmatter(OFFICIAL_DOCUMENT)
+    assert "URL" not in extras
+    assert extras["readwise_url"] == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
+    nested = reader_document_buffet_nested_lines(OFFICIAL_DOCUMENT)
+    assert not any("[source]" in line for line in nested)
+    assert any("[readwise]" in line for line in nested)
+
+
+def test_standalone_wikilink_with_nested_dedups_on_first_line_only():
+    prepared = standalone_wikilink_bullet(
+        "Deep Work",
+        nested_lines=[
+            "  - [source](https://example.com/deep-work)",
+            "  - Cal Newport",
+        ],
+    )
+    assert prepared is not None
+    bullet, keys = prepared
+    assert bullet.startswith("- [[Deep Work]]\n")
+    assert keys == ["- [[Deep Work]]"]
+    assert '"' not in bullet
+    content = """### Content Buffet:
+- [[Deep Work]]
+  - [source](https://example.com/deep-work)
+  - Cal Newport
+
+### Content Planning
+"""
+    updated, action = insert_content_buffet_bullet(
+        content, bullet, keys, exact_line=True
+    )
+    assert action == "skipped"
+    assert updated == content
+
+
+def test_highlight_append_does_not_add_another_metadata_block():
+    """Highlight.created appends a quote line; nested metadata stays once."""
+    content = """### Content Buffet:
+- [[Deep Work]]
+  - [source](https://calnewport.com/deep-work)
+  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`
+  - Cal Newport
+  - saved: 2025-11-28T14:02:02.213618+00:00
+
+### Content Planning
+"""
+    payload = _highlight_payload(title="Deep Work", author="Cal Newport")
+    bullet = format_readwise_bullet(payload)
+    updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
+    assert action == "inserted"
+    lines = _buffet_lines(updated)
+    assert lines == [
+        "- [[Deep Work]]",
+        "  - [source](https://calnewport.com/deep-work)",
+        "  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`",
+        "  - Cal Newport",
+        "  - saved: 2025-11-28T14:02:02.213618+00:00",
+        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+    ]
+    assert lines.count("  - Cal Newport") == 1
+    assert lines.count("  - [source](https://calnewport.com/deep-work)") == 1
+    assert not any(key in {"Cal Newport", "https://calnewport.com/deep-work"} for key in dedup_keys(payload))

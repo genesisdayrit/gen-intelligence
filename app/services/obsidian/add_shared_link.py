@@ -246,6 +246,51 @@ def _update_journal_date(frontmatter: dict, today_date: str) -> dict:
     return frontmatter
 
 
+def _frontmatter_empty(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (list, dict)) and not value:
+        return True
+    return False
+
+
+def _merge_extra_frontmatter(frontmatter: dict, extra: dict | None) -> bool:
+    """Set extra keys when missing or empty. Does not overwrite People or body."""
+    if not extra:
+        return False
+    changed = False
+    for key, value in extra.items():
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        if _frontmatter_empty(frontmatter.get(key)):
+            frontmatter[key] = value
+            changed = True
+    return changed
+
+
+def _extra_frontmatter_yaml(
+    extra: dict | None,
+    *,
+    skip_keys: set[str] | None = None,
+) -> str:
+    """YAML lines for optional extras. Empty string when omitted (iOS share-link)."""
+    if not extra:
+        return ""
+    skip = skip_keys or set()
+    lines: list[str] = []
+    for key, value in extra.items():
+        if key in skip:
+            continue
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        lines.append(f"{key}: {value}")
+    if not lines:
+        return ""
+    return "\n" + "\n".join(lines)
+
+
 def _rebuild_markdown(frontmatter: dict, body: str) -> str:
     """Rebuild markdown content with updated frontmatter.
 
@@ -383,6 +428,8 @@ def add_shared_link(
     title: str | None = None,
     *,
     journal_date: str | None = None,
+    extra_frontmatter: dict | None = None,
+    buffet_nested: list[str] | None = None,
 ) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
@@ -394,6 +441,10 @@ def add_shared_link(
         title: Optional title for the link. Uses extracted or URL-derived title if not provided.
         journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
             When omitted, uses today in SYSTEM_TIMEZONE.
+        extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
+            Omitted on regular iOS share-link. On create they are written;
+            on update they are set only when the existing key is empty.
+        buffet_nested: Optional nested Content Buffet lines under ``- [[stem]]``.
 
     Returns:
         dict with keys:
@@ -505,6 +556,10 @@ def add_shared_link(
                 backfill_performed = True
                 logger.info("Backfilled author field for existing file: %s", file_path)
 
+            if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+                backfill_performed = True
+                logger.info("Backfilled extra frontmatter for existing file: %s", file_path)
+
             # Also update modified_time
             frontmatter["modified time"] = now_utc.isoformat()
 
@@ -517,7 +572,9 @@ def add_shared_link(
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+            append_wikilink_to_journal_buffet(
+                note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
+            )
             result["success"] = True
             result["action"] = "updated"
             return result
@@ -529,6 +586,16 @@ def add_shared_link(
 
         # Build author field (empty string if not available)
         author_value = author if author else ""
+        url_value = url
+        if extra_frontmatter:
+            extra_url = extra_frontmatter.get("URL")
+            if extra_url:
+                url_value = extra_url
+            extra_author = extra_frontmatter.get("author")
+            if extra_author:
+                author_value = extra_author
+
+        extra_yaml = _extra_frontmatter_yaml(extra_frontmatter, skip_keys={"URL", "author"})
 
         # Extract people/entities using AI
         people = _extract_people_from_article(link_title, author, body_text)
@@ -548,8 +615,8 @@ created time: {now_utc.isoformat()}
 modified time: {now_utc.isoformat()}
 key words:
 People:{people_yaml}
-URL: {url}
-author: {author_value}
+URL: {url_value}
+author: {author_value}{extra_yaml}
 Notes+Ideas:
 Experiences:
 Tags:
@@ -567,7 +634,9 @@ Tags:
         )
 
         logger.info("Created shared link file: %s", file_path)
-        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+        append_wikilink_to_journal_buffet(
+            note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
+        )
         result["success"] = True
         result["action"] = "created"
 

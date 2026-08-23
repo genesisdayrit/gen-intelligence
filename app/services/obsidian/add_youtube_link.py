@@ -21,6 +21,8 @@ from .add_shared_link import (
     _extract_frontmatter,
     _update_journal_date,
     _rebuild_markdown,
+    _merge_extra_frontmatter,
+    _extra_frontmatter_yaml,
 )
 from .utils.date_helpers import get_effective_date
 
@@ -541,7 +543,13 @@ def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
         return None
 
 
-def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
+def add_youtube_link(
+    url: str,
+    *,
+    journal_date: str | None = None,
+    extra_frontmatter: dict | None = None,
+    buffet_nested: list[str] | None = None,
+) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
     If the file already exists, appends the journal date if not already present.
@@ -551,6 +559,9 @@ def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
         url: The YouTube URL to save
         journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
             When omitted, uses today in SYSTEM_TIMEZONE.
+        extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
+            Omitted on regular iOS YouTube shares.
+        buffet_nested: Optional nested Content Buffet lines under ``- [[stem]]``.
 
     Returns:
         dict with keys:
@@ -660,6 +671,10 @@ def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
                 backfill_performed = True
                 logger.info("Backfilled Channel field for existing file: %s", file_path)
 
+            if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+                backfill_performed = True
+                logger.info("Backfilled extra frontmatter for existing YouTube file: %s", file_path)
+
             # Also update modified_time
             frontmatter["modified time"] = now_utc.isoformat()
 
@@ -672,7 +687,9 @@ def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+            append_wikilink_to_journal_buffet(
+                note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
+            )
             result["success"] = True
             result["action"] = "updated"
             result["title"] = video_title
@@ -697,6 +714,11 @@ def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
             people_links = [f'  - "[[{_sanitize_obsidian_link(p)}]]"' for p in people]
             people_yaml = "\nPeople:\n" + "\n".join(people_links)
 
+        url_value = url
+        if extra_frontmatter and extra_frontmatter.get("URL"):
+            url_value = extra_frontmatter["URL"]
+        extra_yaml = _extra_frontmatter_yaml(extra_frontmatter, skip_keys={"URL"})
+
         # Generate markdown content with YAML frontmatter
         markdown_content = f"""---
 Journal:
@@ -704,7 +726,7 @@ Journal:
 created time: {now_utc.isoformat()}
 modified time: {now_utc.isoformat()}
 key words:
-URL: {url}{channel_yaml}{people_yaml}
+URL: {url_value}{channel_yaml}{people_yaml}{extra_yaml}
 Notes+Ideas:
 Experiences:
 Tags:
@@ -723,7 +745,9 @@ Tags:
         )
 
         logger.info("Created YouTube link file: %s", file_path)
-        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+        append_wikilink_to_journal_buffet(
+            note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
+        )
         result["success"] = True
         result["action"] = "created"
         result["title"] = video_title
