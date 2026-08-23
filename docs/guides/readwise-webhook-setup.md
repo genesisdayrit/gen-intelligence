@@ -11,7 +11,9 @@ When a parent Reader document is created, the webhook creates or updates a Knowl
 
 Reader-created Knowledge Hub notes also write `URL`, `author`, `readwise_id`, `readwise_url`, `published`, and `saved_at` when those fields exist on the document payload. Regular iOS share-link / YouTube saves omit the Readwise keys and stay title-only (`My Article.md` / `- [[My Article]]`) — no ` by ` in the filename.
 
-YAML `author` is a quoted Obsidian wikilink so the brackets survive: `author: "[[W. Brian Arthur]]"`. Multiple people stay on the same `author` key as comma-separated links (`"[[Alice Smith]], [[Bob Jones]]"`). Tweet `@handle on Twitter` authors are left as plain text. The filename / buffet stem stays title-only (or a plain `Title by Author` if that stem is used) — never put `[[` in a filename. Nested Content Buffet metadata keeps the author as plain text; do not nest author wikilinks under `- [[stem]]`.
+Wikilink authors **only** in Knowledge Hub YAML metadata: `author: "[[W. Brian Arthur]]"`. Multiple people stay on the same `author` key as comma-separated links (`"[[Alice Smith]], [[Bob Jones]]"`). Tweet `@handle on Twitter` authors are left as plain text.
+
+Do **not** wikilink authors in Content Buffet, journal lines, highlight bullets, or the note filename/stem. Buffet is only a standalone `- [[Title by Author]]` or `- [[Title]]` (plain stem, never `Title by [[Author]]`). Do not nest source / readwise / author / published / saved under that line. Metadata stays YAML-only.
 
 Locked Content Buffet shape:
 

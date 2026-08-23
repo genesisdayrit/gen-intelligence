@@ -30,9 +30,12 @@ def _force_la_timezone(monkeypatch):
 
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
+    append_readwise_buffet,
+    format_readwise_bullet,
     journal_filename,
     knowledge_hub_note_stem,
     reader_document_extra_frontmatter,
+    reader_knowledge_hub_note_stem,
 )
 from services.obsidian.add_shared_link import (  # noqa: E402
     _merge_extra_frontmatter,
@@ -44,6 +47,7 @@ from services.obsidian.utils.author_yaml import (  # noqa: E402
     author_frontmatter_value,
     author_yaml_literal,
     is_plain_to_wikilink_author_upgrade,
+    plain_author_label,
     split_author_names,
 )
 from services.obsidian.utils.date_helpers import get_effective_date  # noqa: E402
@@ -169,6 +173,11 @@ def _kh_upload(uploads: list[dict]) -> dict:
     return matches[-1]
 
 
+def _journal_upload(uploads: list[dict]) -> dict | None:
+    matches = [u for u in uploads if JOURNAL_FOLDER in u["path"]]
+    return matches[-1] if matches else None
+
+
 # ---------------------------------------------------------------------------
 # Helper unit tests
 # ---------------------------------------------------------------------------
@@ -213,6 +222,41 @@ def test_tweet_handle_author_stays_plain():
 def test_tweet_book_author_left_alone_when_flagged():
     assert author_frontmatter_value("Klaas", is_tweet=True) == "Klaas"
     assert "[[" not in author_frontmatter_value("Klaas", is_tweet=True)
+
+
+def test_plain_author_label_never_includes_brackets():
+    assert plain_author_label("W. Brian Arthur") == "W. Brian Arthur"
+    assert plain_author_label("[[W. Brian Arthur]]") == "W. Brian Arthur"
+    assert plain_author_label("[[Alice Smith]], [[Bob Jones]]") == "Alice Smith, Bob Jones"
+    assert "[[" not in (plain_author_label("[[Jane Doe]]") or "")
+
+
+def test_reader_stem_title_by_author_stays_plain():
+    stem = reader_knowledge_hub_note_stem("Increasing Returns", "W. Brian Arthur")
+    assert stem == "Increasing Returns by W. Brian Arthur"
+    assert "[[" not in stem
+    assert reader_knowledge_hub_note_stem(
+        "Increasing Returns", "[[W. Brian Arthur]]"
+    ) == "Increasing Returns by W. Brian Arthur"
+
+
+def test_highlight_bullet_does_not_wikilink_author():
+    line = format_readwise_bullet(
+        {
+            "id": 954480,
+            "text": "A quote",
+            "title": "Increasing Returns",
+            "author": "W. Brian Arthur",
+            "event_type": "readwise.highlight.created",
+            "book_id": 8237,
+        }
+    )
+    assert line == (
+        '- [[Increasing Returns by W. Brian Arthur]]: '
+        '["A quote"](https://readwise.io/open/954480)'
+    )
+    assert "by [[W. Brian Arthur]]" not in line
+    assert "[[W. Brian Arthur]]" not in line
 
 
 def test_junk_and_empty_author_skipped():
@@ -427,3 +471,47 @@ def test_ios_share_link_filename_stays_title_only():
     kh = _kh_upload(uploads)
     assert kh["path"].endswith("My Article.md")
     assert "Alice" not in kh["path"]
+
+
+def test_wikilink_authors_only_in_kh_yaml_not_buffet_or_stem():
+    """Hard constraint: [[Author]] belongs on YAML author only."""
+    payload = {
+        "id": "01kb5cap1wy21zp37bc2rjj",
+        "url": "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj",
+        "title": "Increasing Returns",
+        "author": "W. Brian Arthur",
+        "source_url": "https://example.com/essay",
+        "category": "article",
+        "parent_id": None,
+        "created_at": "2025-11-28T14:02:02.213618+00:00",
+        "saved_at": "2025-11-28T14:02:02.173000+00:00",
+        "event_type": "reader.any_document.created",
+    }
+    stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
+    assert stem == "Increasing Returns by W. Brian Arthur"
+    assert "[[" not in stem
+    assert "by [[W. Brian Arthur]]" not in stem
+
+    mock_dbx, uploads = _mock_dbx()
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _patched(
+        _shared_patches(mock_dbx, title=payload["title"], author=payload["author"]),
+        "services.obsidian.add_shared_link.datetime",
+    ):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert 'author: "[[W. Brian Arthur]]"' in kh["content"]
+    assert kh["path"].endswith(f"{stem}.md")
+    assert "[[" not in kh["path"]
+    section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
+    lines = [line for line in section.splitlines() if line.strip()]
+    assert lines == [f"- [[{stem}]]"]
+    assert "by [[W. Brian Arthur]]" not in section
+    assert "  - W. Brian Arthur" not in lines
+    assert "  - [[W. Brian Arthur]]" not in lines
+    assert "[source]" not in section
+    assert "readwise.io" not in section

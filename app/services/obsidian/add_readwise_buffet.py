@@ -11,7 +11,7 @@ import pytz
 import requests
 from dotenv import load_dotenv
 
-from services.obsidian.utils.author_yaml import author_frontmatter_value
+from services.obsidian.utils.author_yaml import author_frontmatter_value, plain_author_label
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.raindrop.client import create_bookmark
 
@@ -316,8 +316,8 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
 
     Applies ``_sanitize_filename`` then ``_wikilink_from_note_stem`` so
     highlight wikilinks resolve to the same note a share/document save created.
-    Returns None when the title is empty or sanitizes to junk.
     Title-only — regular iOS share-link / YouTube saves use this shape.
+    Returns None when the title is empty or sanitizes to junk.
     """
     text = _nonempty(title)
     if not text:
@@ -336,11 +336,12 @@ def reader_knowledge_hub_note_stem(
 
     Same sanitizing as share-link (``_sanitize_filename`` then wikilink
     sanitize). No usable author → title-only stem. Empty/junk title → None.
+    Author is always plain text — never ``Title by [[Author]]``.
     """
     base = knowledge_hub_note_stem(title)
     if not base:
         return None
-    author_text = _nonempty(author)
+    author_text = plain_author_label(author)
     if author_text and knowledge_hub_note_stem(author_text):
         return knowledge_hub_note_stem(f"{_nonempty(title)} by {author_text}")
     return base
@@ -868,6 +869,9 @@ def append_wikilink_to_journal_buffet(
     wikilink so highlight quote lines are not treated as the same entry.
     Optional ``nested_lines`` are written under the wikilink on first insert
     only; a same-day skip does not duplicate them.
+
+    The first line is ``- [[Title]]`` or ``- [[Title by Author]]`` with a
+    plain stem — never ``Title by [[Author]]``. Do not nest author wikilinks.
     """
     result: dict = {"success": True, "action": None, "error": None, "file_path": None}
     prepared = standalone_wikilink_bullet(note_title, nested_lines=nested_lines)

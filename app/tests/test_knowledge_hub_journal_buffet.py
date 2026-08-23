@@ -591,7 +591,7 @@ def test_reader_document_uses_creator_for_title_by_author_stem():
     kh = _kh_upload(uploads)
     journal = _journal_upload(uploads)
     assert kh["path"].endswith(f"{stem}.md")
-    assert "author: Casey Newton" in kh["content"]
+    assert 'author: "[[Casey Newton]]"' in kh["content"]
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
     assert lines == [f"- [[{stem}]]"]

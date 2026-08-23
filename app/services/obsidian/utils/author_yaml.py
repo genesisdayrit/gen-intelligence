@@ -110,12 +110,27 @@ def _split_author_names(text: str) -> list[str]:
     return [text]
 
 
+def plain_author_label(raw: object) -> str | None:
+    """Author text for buffet, journal, highlights, or a ``Title by Author`` stem.
+
+    Never includes ``[[`` / ``]]``. Wikilink brackets belong only on Knowledge
+    Hub YAML ``author``.
+    """
+    text = _nonempty(raw)
+    if not text:
+        return None
+    return _collapse(_unwrap_wikilinks(text)) or None
+
+
 def author_frontmatter_value(raw: object, *, is_tweet: bool = False) -> str | None:
     """Turn an author/creator string into a YAML ``author`` value (unquoted).
 
     One author: ``[[W. Brian Arthur]]``.
     Several: ``[[Alice Smith]], [[Bob Jones]]`` (same ``author`` key).
     Tweet ``@handle on Twitter`` strings stay plain. Empty/junk returns None.
+
+    Use this only for Knowledge Hub YAML. Buffet / journal / highlight / filename
+    stems must stay plain via ``plain_author_label``.
     """
     text = _nonempty(raw)
     if not text:
