@@ -378,15 +378,22 @@ def check_save_readiness() -> dict:
     return {"ready": ready, "checks": checks}
 
 
-def add_shared_link(url: str, title: str | None = None) -> dict:
+def add_shared_link(
+    url: str,
+    title: str | None = None,
+    *,
+    journal_date: str | None = None,
+) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
-    If the file already exists, appends today's journal date if not already present.
+    If the file already exists, appends the journal date if not already present.
     Also backfills missing People and author fields if they are empty.
 
     Args:
         url: The URL to save
         title: Optional title for the link. Uses extracted or URL-derived title if not provided.
+        journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
+            When omitted, uses today in SYSTEM_TIMEZONE.
 
     Returns:
         dict with keys:
@@ -439,7 +446,10 @@ def add_shared_link(url: str, title: str | None = None) -> dict:
         now_utc = datetime.now(timezone.utc)
 
         # Format date for Journal link (e.g., "Jan 19, 2026"); 3am-aware
-        formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
+        if journal_date:
+            formatted_local_date = str(journal_date).removesuffix(".md").strip()
+        else:
+            formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
         note_stem = filename.removesuffix(".md")
 
         # Check if file already exists

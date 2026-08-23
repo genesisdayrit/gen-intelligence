@@ -541,14 +541,16 @@ def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
         return None
 
 
-def add_youtube_link(url: str) -> dict:
+def add_youtube_link(url: str, *, journal_date: str | None = None) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
-    If the file already exists, appends today's journal date if not already present.
+    If the file already exists, appends the journal date if not already present.
     Also backfills missing People and Channel fields if they are empty.
 
     Args:
         url: The YouTube URL to save
+        journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
+            When omitted, uses today in SYSTEM_TIMEZONE.
 
     Returns:
         dict with keys:
@@ -600,7 +602,10 @@ def add_youtube_link(url: str) -> dict:
         now_utc = datetime.now(timezone.utc)
 
         # Format date for Journal link (e.g., "Jan 19, 2026"); 3am-aware
-        formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
+        if journal_date:
+            formatted_local_date = str(journal_date).removesuffix(".md").strip()
+        else:
+            formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
         note_stem = sanitized_title
 
         # Check if file already exists

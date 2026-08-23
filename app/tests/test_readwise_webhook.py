@@ -35,6 +35,8 @@ from services.obsidian.add_readwise_buffet import (
     clear_book_cache,
     dedup_keys,
     document_dedup_keys,
+    document_journal_date,
+    document_page_url,
     fetch_book,
     format_document_bullet,
     format_readwise_bullet,
@@ -45,7 +47,9 @@ from services.obsidian.add_readwise_buffet import (
     is_document_event,
     is_highlight_event,
     journal_filename,
+    knowledge_hub_note_stem,
 )
+from services.obsidian.add_shared_link import _sanitize_filename
 
 client = TestClient(app)
 LA = pytz.timezone("America/Los_Angeles")
@@ -472,14 +476,15 @@ def test_highlight_dedup_skips_old_title_dash_author_via_open_url():
 """
     payload = _highlight_payload(title="Deep Work", author="Cal Newport")
     bullet = format_readwise_bullet(payload)
-    assert "[[Deep Work by Cal Newport]]" in bullet
+    assert "[[Deep Work]]" in bullet
+    assert " by " not in bullet
     keys = dedup_keys(payload)
     assert "https://readwise.io/open/954480" in keys
     assert not any(key in {"Deep Work", "Cal Newport"} for key in keys)
     updated, action = insert_content_buffet_bullet(content, bullet, keys=keys)
     assert action == "skipped"
     assert updated == content
-    assert "[[Deep Work by Cal Newport]]" not in updated
+    assert "[[Deep Work]]:" not in updated
 
 
 def test_highlight_dedup_does_not_match_bare_title_or_author():
@@ -548,9 +553,10 @@ def test_format_official_sample_attaches_book_title(mock_get):
 
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
-        '- [[Deep Work by Cal Newport]]: '
+        '- [[Deep Work]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
     assert "bookreview" not in line
     assert "(Book)" not in line
     mock_get.assert_called_once_with(
@@ -576,30 +582,32 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
 
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
-        '- [[Deep Work by Cal Newport]]: '
+        '- [[Deep Work]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
     )
+    assert " by " not in line
 
 
-def test_format_uses_payload_title_and_author():
-    """Export payloads include title and author; both go inside the wikilink."""
+def test_format_uses_payload_title_as_kh_stem():
+    """Export payloads include title; wikilink is the KH filename stem, not Title by Author."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(title="Deep Work", author="Cal Newport")
     )
     assert line == (
-        '- [[Deep Work by Cal Newport]]: '
+        '- [[Deep Work]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "bookreview" not in line
+    assert "read.readwise.io" not in line
     assert "(Book)" not in line
-    assert "]] by " not in line
-    assert "[[Deep Work by Cal Newport]]" in line
+    assert " by " not in line
+    assert "[[Deep Work by Cal Newport]]" not in line
     assert "[[Deep Work - Cal Newport]]" not in line
 
 
-def test_format_keeps_readwise_author_string_verbatim():
-    """Do not sort, rewrite First/Last, or split/rejoin the author field."""
+def test_format_highlight_title_is_kh_stem_not_title_by_author():
+    """Author stays off the wikilink once a KH stem exists."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -608,11 +616,11 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        '- [[Zero to One by Peter Thiel, Blake Masters]]: '
+        '- [[Zero to One]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
-    assert line.count(" by ") == 1
-    assert "[[Zero to One - Peter Thiel, Blake Masters]]" not in line
+    assert " by " not in line
+    assert "Peter Thiel" not in line
 
     line = format_readwise_bullet(
         _highlight_payload(
@@ -621,10 +629,10 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        "- [[Surely You're Joking, Mr. Feynman! by Richard P. Feynman, "
-        "Ralph Leighton, Edward Hutchings, and Albert R. Hibbs]]: "
+        "- [[Surely You're Joking, Mr. Feynman!]]: "
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
 
     line = format_readwise_bullet(
         _highlight_payload(
@@ -633,7 +641,7 @@ def test_format_keeps_readwise_author_string_verbatim():
         )
     )
     assert line == (
-        '- [[Zero to One by Peter Thiel, Blake Masters]]: '
+        '- [[Zero to One]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
 
@@ -660,16 +668,21 @@ def test_format_author_only_when_title_missing():
     assert "[[" not in line
 
 
-def test_format_wikilink_strips_breaking_characters():
-    """Strip |, #, ^, and ]] from the wikilink target only."""
+def test_format_wikilink_uses_sanitized_filename_stem():
+    """KH stem: _sanitize_filename then strip |, #, ^, and ]] from the wikilink."""
     clear_book_cache()
+    title = "Foo|Bar #1 ^block]] extra"
+    expected_stem = knowledge_hub_note_stem(title)
+    assert expected_stem == "Foo_Bar 1 block extra"
     line = format_readwise_bullet(
-        _highlight_payload(title="Foo|Bar #1 ^block]] extra", author="Cal | Newport")
+        _highlight_payload(title=title, author="Cal | Newport")
     )
     assert line == (
-        '- [[FooBar 1 block extra by Cal Newport]]: '
+        f'- [[{expected_stem}]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
+    assert "Cal Newport" not in line
 
 
 def test_format_skips_empty_wikilink_after_sanitize():
@@ -692,7 +705,8 @@ def test_format_wikilink_title_and_unlinked_quote_when_id_missing():
     line = format_readwise_bullet(
         _highlight_payload(id=None, title="Deep Work", author="Cal Newport")
     )
-    assert line == '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever"'
+    assert line == '- [[Deep Work]]: "Most Amazing Highlight Ever"'
+    assert " by " not in line
     assert "bookreview" not in line
     assert "readwise.io/open" not in line
 
@@ -871,8 +885,8 @@ def test_format_tweet_falls_back_to_x_com_url_handle():
     assert " by " not in line
 
 
-def test_format_tweet_missing_handle_falls_back_to_title_author():
-    """Tweet book with no extractable handle keeps the Title by Author rule."""
+def test_format_tweet_missing_handle_falls_back_to_kh_stem():
+    """Tweet book with no extractable handle uses the KH title stem."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -882,13 +896,14 @@ def test_format_tweet_missing_handle_falls_back_to_title_author():
         )
     )
     assert line == (
-        '- [[Tweets From Klaas by Klaas]]: '
+        '- [[Tweets From Klaas]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
+    assert " by " not in line
 
 
-def test_format_non_tweet_still_uses_title_author():
-    """Ordinary books are unchanged even if the author string looks unusual."""
+def test_format_non_tweet_uses_kh_stem_not_title_by_author():
+    """Ordinary books wikilink the KH stem even if the author string looks unusual."""
     clear_book_cache()
     line = format_readwise_bullet(
         _highlight_payload(
@@ -900,11 +915,13 @@ def test_format_non_tweet_still_uses_title_author():
         )
     )
     assert line == (
-        '- [[Deep Work by Cal Newport]]: '
+        '- [[Deep Work]]: '
         '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
     )
     assert "Tweets from" not in line
+    assert " by " not in line
     assert "[[Deep Work - Cal Newport]]" not in line
+    assert "read.readwise.io" not in line
 
 
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
@@ -1052,38 +1069,181 @@ def _mock_journal_dbx(journal_content: str = SAMPLE_JOURNAL):
     return mock_dbx, uploaded
 
 
-def test_append_writes_document_permalink_without_book_lookup():
-    mock_dbx, uploaded = _mock_journal_dbx()
+def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
+    """Parent document created → KH helper + [[stem]] buffet, no Reader URL bullet."""
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _reader_payload()
+    title = payload["title"]
+    stem = knowledge_hub_note_stem(title)
+    mock_dbx, uploaded = _mock_journal_dbx()
 
-    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
-         patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
-             "/obsidian/personal/01_daily",
-             "/obsidian/personal/01_daily/_journal",
-         ]), \
-         patch("services.obsidian.add_readwise_buffet.requests.get") as mock_get:
-        result = append_readwise_buffet(_reader_payload(), now=now)
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": f"_Knowledge-Hub/{stem}.md",
+        },
+    ) as mock_share, patch(
+        "services.obsidian.add_readwise_buffet._create_youtube_link"
+    ) as mock_youtube, patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx
+    ):
+        result = append_readwise_buffet(payload, now=now)
 
     assert result["success"] is True
-    assert result["action"] == "replaced"
-    assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Nov 28, 2025.md"
-    assert (
-        "- [Our Black Friday sale ends soon]"
-        "(https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj)"
-    ) in uploaded["content"]
-    assert "[[" not in uploaded["content"]
-    assert "bookreview" not in uploaded["content"]
-    assert "Long article body" not in uploaded["content"]
-    mock_get.assert_not_called()
+    assert result["action"] == "created"
+    mock_share.assert_called_once_with(
+        "https://www.theverge.com/black-friday",
+        title=title,
+        journal_date="Nov 28, 2025",
+    )
+    mock_youtube.assert_not_called()
+    mock_dbx.files_upload.assert_not_called()
+    assert uploaded == {}
+    assert "read.readwise.io" not in str(result)
 
 
-def test_document_missing_journal_file_does_not_write_today():
-    mock_dbx = MagicMock()
-    mock_dbx.files_download.side_effect = FileNotFoundError("Journal not found")
+def test_append_youtube_document_uses_youtube_helper():
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _reader_payload(
+        title="Cool Video",
+        source_url="https://www.youtube.com/watch?v=abcdefghijk",
+        category="video",
+        source="youtube",
+    )
+
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_youtube_link",
+        return_value={"success": True, "action": "created", "error": None, "title": "Cool Video"},
+    ) as mock_youtube, patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link"
+    ) as mock_share:
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_youtube.assert_called_once_with(
+        "https://www.youtube.com/watch?v=abcdefghijk",
+        journal_date="Nov 28, 2025",
+    )
+    mock_share.assert_not_called()
+
+
+def test_append_child_document_does_not_call_kh_helpers():
+    with patch("services.obsidian.add_readwise_buffet._create_shared_link") as mock_share, \
+         patch("services.obsidian.add_readwise_buffet._create_youtube_link") as mock_youtube, \
+         patch("services.obsidian.add_readwise_buffet._get_dropbox_client") as mock_client:
+        result = append_readwise_buffet(_reader_payload(category="highlight"))
+
+    assert result["action"] == "ignored"
+    mock_share.assert_not_called()
+    mock_youtube.assert_not_called()
+    mock_client.assert_not_called()
+
+
+def test_document_missing_journal_does_not_fail_kh_save():
+    """Share helper still reports created when the journal file is missing."""
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     payload = _reader_payload(created_at="2019-03-15T18:00:00Z")
 
-    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Our Black Friday sale ends soon.md",
+        },
+    ) as mock_share, patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client"
+    ) as mock_client:
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    assert result["error"] is None
+    mock_share.assert_called_once()
+    assert mock_share.call_args.kwargs["journal_date"] == "Mar 15, 2019"
+    mock_client.assert_not_called()
+
+
+def test_same_day_document_does_not_double_buffet_wikilink():
+    payload = _reader_payload()
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        side_effect=[
+            {"success": True, "action": "created", "error": None, "file_path": "_Knowledge-Hub/x.md"},
+            {"success": True, "action": "skipped", "error": None, "file_path": "_Knowledge-Hub/x.md"},
+        ],
+    ) as mock_share:
+        first = append_readwise_buffet(payload)
+        second = append_readwise_buffet(payload)
+
+    assert first["action"] == "created"
+    assert second["action"] == "skipped"
+    assert mock_share.call_count == 2
+    assert mock_share.call_args_list[0] == mock_share.call_args_list[1]
+
+
+def test_document_late_night_uses_3am_aware_journal_date():
+    """UTC 07:30 on Aug 22 is 00:30 PT → previous journal day."""
+    payload = _reader_payload(created_at="2026-08-22T07:30:00Z")
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    assert document_journal_date(payload, now=now) == "Aug 21, 2026"
+
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={"success": True, "action": "created", "error": None},
+    ) as mock_share:
+        append_readwise_buffet(payload, now=now)
+
+    mock_share.assert_called_once()
+    assert mock_share.call_args.kwargs["journal_date"] == "Aug 21, 2026"
+
+
+def test_kh_failure_does_not_write_markdown_reader_fallback():
+    mock_dbx, uploaded = _mock_journal_dbx()
+
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={"success": False, "action": None, "error": "dropbox down"},
+    ), patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx
+    ):
+        result = append_readwise_buffet(_reader_payload())
+
+    assert result["success"] is True
+    assert result["error"] == "dropbox down"
+    mock_dbx.files_upload.assert_not_called()
+    assert uploaded == {}
+
+
+def test_kh_exception_does_not_crash_or_write_markdown_fallback():
+    mock_dbx, uploaded = _mock_journal_dbx()
+
+    with patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        side_effect=RuntimeError("boom"),
+    ), patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx
+    ):
+        result = append_readwise_buffet(_reader_payload())
+
+    assert result["success"] is True
+    assert result["action"] == "kh_error"
+    mock_dbx.files_upload.assert_not_called()
+    assert uploaded == {}
+
+
+def test_junk_title_skips_kh_and_writes_markdown_fallback():
+    mock_dbx, uploaded = _mock_journal_dbx()
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _reader_payload(title="|#^]]")
+
+    with patch("services.obsidian.add_readwise_buffet._create_shared_link") as mock_share, \
+         patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
          patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
              "/obsidian/personal/01_daily",
              "/obsidian/personal/01_daily/_journal",
@@ -1091,32 +1251,35 @@ def test_document_missing_journal_file_does_not_write_today():
         result = append_readwise_buffet(payload, now=now)
 
     assert result["success"] is True
-    assert result["action"] == "skipped_missing_journal"
-    assert result["file_path"] == "/obsidian/personal/01_daily/_journal/Mar 15, 2019.md"
-    mock_dbx.files_upload.assert_not_called()
-    assert "Aug 22, 2026" not in (result["file_path"] or "")
+    assert result["action"] == "replaced"
+    mock_share.assert_not_called()
+    assert "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in uploaded["content"]
+    assert "[[" not in uploaded["content"]
 
 
-def test_document_append_dedups_on_reader_url():
-    existing = """---
-date: 2025-11-28
----
+def test_document_page_url_prefers_http_source_url():
+    assert document_page_url(_reader_payload()) == "https://www.theverge.com/black-friday"
+    official = document_page_url(OFFICIAL_DOCUMENT)
+    assert official == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
+    assert not official.startswith("mailto:")
 
-### Content Buffet:
-- [Our Black Friday sale ends soon](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) — The Verge
 
-### Content Planning
-- plan something
-"""
-    mock_dbx, uploaded = _mock_journal_dbx(existing)
+def test_knowledge_hub_note_stem_matches_shared_link_filename():
+    title = 'What is AI? A "deep" look / part 1'
+    assert knowledge_hub_note_stem(title) == _sanitize_filename(title)
+    assert knowledge_hub_note_stem(None) is None
+    assert knowledge_hub_note_stem("|#^]]") is None
 
-    with patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
-         patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
-             "/obsidian/personal/01_daily",
-             "/obsidian/personal/01_daily/_journal",
-         ]):
-        result = append_readwise_buffet(_reader_payload())
 
-    assert result["action"] == "skipped"
-    mock_dbx.files_upload.assert_not_called()
-    assert uploaded == {}
+def test_format_highlight_special_filename_chars_match_kh_stem():
+    clear_book_cache()
+    title = 'What is AI? A "deep" look / part 1'
+    stem = knowledge_hub_note_stem(title)
+    line = format_readwise_bullet(_highlight_payload(title=title, author="Someone"))
+    assert line == (
+        f'- [[{stem}]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    assert " by " not in line
+    assert "read.readwise.io" not in line
+    assert "readwise.io/bookreview" not in line
