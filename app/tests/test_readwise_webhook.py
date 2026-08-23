@@ -2,6 +2,7 @@
 
 import os
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +31,16 @@ from fastapi.testclient import TestClient
 
 from main import app
 from services.obsidian.add_readwise_buffet import (
+    BOOKMARKED_TWEETS_HEADER,
+    _format_tweet_page_bullet,
     _get_dropbox_client,
+    _is_tweet_book,
+    _new_tweet_page_markdown,
+    _resolve_highlight_book,
+    _strip_tweet_image_embeds,
+    _tweet_handle,
+    _tweet_quote_for_page,
+    _tweet_wikilink_target,
     append_readwise_buffet,
     clear_book_cache,
     dedup_keys,
@@ -43,6 +53,7 @@ from services.obsidian.add_readwise_buffet import (
     get_document_journal_path,
     get_highlight_journal_path,
     get_today_journal_path,
+    insert_bookmarked_tweets_bullet,
     insert_content_buffet_bullet,
     is_document_event,
     is_highlight_event,
@@ -1840,3 +1851,720 @@ def test_highlight_append_does_not_add_another_metadata_block():
     assert "published:" not in "\n".join(lines)
     assert "saved:" not in "\n".join(lines)
     assert not any(key in {"Cal Newport", "https://calnewport.com/deep-work"} for key in dedup_keys(payload))
+
+
+# ---------------------------------------------------------------------------
+# Tweets from @handle Knowledge Hub page
+# ---------------------------------------------------------------------------
+
+KH_FOLDER = "/obsidian/personal/01_knowledge-hub"
+TWEET_PAGE_PATH = f"{KH_FOLDER}/Tweets from @georgiedorothea.md"
+JOURNAL_NOV_PATH = "/obsidian/personal/01_daily/_journal/Nov 27, 2025.md"
+
+
+def _tweet_highlight(**overrides):
+    data = _highlight_payload(
+        title="Tweets From Georgie Dorothea 🫩",
+        author="@georgiedorothea on Twitter",
+        category="tweets",
+        source="twitter",
+        source_url="https://twitter.com/georgiedorothea",
+    )
+    data.update(overrides)
+    return data
+
+
+def _mock_vault_dbx(files_by_path=None):
+    store = dict(files_by_path or {})
+    uploaded = []
+    mock_dbx = MagicMock()
+
+    def download(path):
+        if path not in store:
+            raise FileNotFoundError(f"not found: {path}")
+        response = MagicMock()
+        response.content = store[path].encode("utf-8")
+        return None, response
+
+    def upload(data, path, mode=None):
+        text = data.decode("utf-8")
+        store[path] = text
+        uploaded.append({"path": path, "content": text})
+
+    def list_folder(path, recursive=False):
+        result = MagicMock()
+        result.has_more = False
+        prefix = path.rstrip("/") + "/"
+        entries = []
+        for file_path in store:
+            if not file_path.startswith(prefix):
+                continue
+            name = file_path[len(prefix) :]
+            if "/" in name:
+                continue
+            entry = MagicMock()
+            entry.name = name
+            entry.path_lower = file_path
+            entry.path_display = file_path
+            entries.append(entry)
+        result.entries = entries
+        return result
+
+    mock_dbx.files_download.side_effect = download
+    mock_dbx.files_upload.side_effect = upload
+    mock_dbx.files_list_folder.side_effect = list_folder
+    return mock_dbx, uploaded, store
+
+
+def _folder_by_suffix(_dbx, _parent, suffix):
+    return {
+        "_Daily": "/obsidian/personal/01_daily",
+        "_Journal": "/obsidian/personal/01_daily/_journal",
+        "_Knowledge-Hub": KH_FOLDER,
+    }[suffix]
+
+
+@contextmanager
+def _journal_and_hub(mock_dbx):
+    with patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client",
+        return_value=mock_dbx,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=_folder_by_suffix,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder",
+        return_value=KH_FOLDER,
+    ):
+        yield
+
+
+def test_insert_bookmarked_tweets_appends_missing_heading():
+    content = """---
+title: "Tweets from @georgiedorothea"
+---
+
+# Tweets from @georgiedorothea
+
+## People
+- [[Someone]]
+
+Kept body text.
+"""
+    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    updated, action = insert_bookmarked_tweets_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    assert "## People" in updated
+    assert "- [[Someone]]" in updated
+    assert "Kept body text." in updated
+    assert BOOKMARKED_TWEETS_HEADER in updated
+    assert updated.index("Kept body text.") < updated.index(BOOKMARKED_TWEETS_HEADER)
+    assert bullet in updated
+    assert "[[Tweets from @georgiedorothea]]" not in updated
+
+
+def test_insert_bookmarked_tweets_dedups_open_url_not_handle():
+    content = f"""# Tweets from @georgiedorothea
+
+{BOOKMARKED_TWEETS_HEADER}
+- ["Old quote"](https://readwise.io/open/111)
+"""
+    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    updated, action = insert_bookmarked_tweets_bullet(
+        content, same_id, keys=["https://readwise.io/open/111"]
+    )
+    assert action == "skipped"
+    assert updated == content
+
+    other = '- ["New quote"](https://readwise.io/open/222)'
+    updated, action = insert_bookmarked_tweets_bullet(
+        content, other, keys=["https://readwise.io/open/222"]
+    )
+    assert action == "inserted"
+    assert "Old quote" in updated
+    assert "New quote" in updated
+    assert updated.count("georgiedorothea") == 1
+
+
+def test_format_tweet_page_bullet_omits_wikilink_and_keeps_note():
+    clear_book_cache()
+    payload = _tweet_highlight(note="worth revisiting")
+    book = _resolve_highlight_book(payload)
+    journal = format_readwise_bullet(payload)
+    page = _format_tweet_page_bullet(payload, book)
+    assert journal == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert page == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert "[[Tweets from @georgiedorothea]]" not in page
+    assert _tweet_wikilink_target(book) == "Tweets from @georgiedorothea"
+
+
+def test_strip_tweet_image_embeds_matches_journal_rules():
+    assert _strip_tweet_image_embeds(
+        "New York is now the #1 market for tech talent, dethroning "
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+        "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+        "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+    ) == (
+        "New York is now the #1 market for tech talent, dethroning "
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            'Quote text <img src="https://pbs.twimg.com/media/foo.jpg" alt="pic">'
+        )
+        == "Quote text"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            "Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc123"
+        )
+        == "Quote text"
+    )
+    assert (
+        _strip_tweet_image_embeds(
+            "Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
+        )
+        == "Quote text"
+    )
+    assert _strip_tweet_image_embeds("![](https://pbs.twimg.com/media/foo.jpg)") is None
+    assert _tweet_quote_for_page("Quote text ![](https://pbs.twimg.com/media/foo.jpg)") == (
+        "Quote text"
+    )
+
+
+def test_format_tweet_page_bullet_strips_images_keeps_quote_and_open_id():
+    clear_book_cache()
+    payload = _tweet_highlight(
+        text=(
+            "New York is now the #1 market for tech talent, dethroning "
+            "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+            "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+            "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+        )
+    )
+    book = _resolve_highlight_book(payload)
+    page = _format_tweet_page_bullet(payload, book)
+    assert page == (
+        '- ["New York is now the #1 market for tech talent, dethroning '
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+        '"](https://readwise.io/open/954480)'
+    )
+    assert "![]" not in page
+    assert "<img" not in page
+    assert "pbs.twimg.com" not in page
+    assert "pic.twitter.com" not in page
+    assert "video.twimg.com" not in page
+    assert "https://readwise.io/open/954480" in page
+
+
+def test_format_tweet_page_bullet_strips_html_and_bare_twimg():
+    clear_book_cache()
+    book = _resolve_highlight_book(_tweet_highlight())
+    html = _format_tweet_page_bullet(
+        _tweet_highlight(text='Quote text <img src="https://pbs.twimg.com/media/foo.jpg">'),
+        book,
+    )
+    assert html == '- ["Quote text"](https://readwise.io/open/954480)'
+    bare = _format_tweet_page_bullet(
+        _tweet_highlight(
+            text="Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc"
+        ),
+        book,
+    )
+    assert bare == '- ["Quote text"](https://readwise.io/open/954480)'
+    video = _format_tweet_page_bullet(
+        _tweet_highlight(
+            text="Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
+        ),
+        book,
+    )
+    assert video == '- ["Quote text"](https://readwise.io/open/954480)'
+
+
+def test_format_tweet_page_bullet_image_only_is_none():
+    clear_book_cache()
+    book = _resolve_highlight_book(_tweet_highlight())
+    assert (
+        _format_tweet_page_bullet(
+            _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)"),
+            book,
+        )
+        is None
+    )
+
+
+def test_format_tweet_page_bullet_skips_missing_handle_or_text():
+    clear_book_cache()
+    no_handle = _resolve_highlight_book(
+        _highlight_payload(title="Tweets From Klaas", author="Klaas", category="tweets")
+    )
+    assert _tweet_wikilink_target(no_handle) is None
+    assert _format_tweet_page_bullet(
+        _highlight_payload(title="Tweets From Klaas", author="Klaas", category="tweets"),
+        no_handle,
+    ) is None
+
+    book = _resolve_highlight_book(_tweet_highlight())
+    assert _format_tweet_page_bullet(_tweet_highlight(text=""), book) is None
+    assert _format_tweet_page_bullet(_tweet_highlight(text="   "), book) is None
+    article = _resolve_highlight_book(
+        _highlight_payload(title="Deep Work", author="Cal Newport", category="books")
+    )
+    assert _format_tweet_page_bullet(
+        _highlight_payload(title="Deep Work", author="Cal Newport", category="books"),
+        article,
+    ) is None
+
+
+def test_new_tweet_page_markdown_is_minimal():
+    markdown = _new_tweet_page_markdown(
+        "Tweets from @georgiedorothea",
+        '- ["quote"](https://readwise.io/open/954480)',
+    )
+    assert markdown.startswith("---\ntitle: \"Tweets from @georgiedorothea\"\n---\n")
+    assert "# Tweets from @georgiedorothea" in markdown
+    assert BOOKMARKED_TWEETS_HEADER in markdown
+    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert "People" not in markdown
+    assert "Journal:" not in markdown
+    assert "[[Tweets from @georgiedorothea]]" not in markdown
+
+
+def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal
+    page = store[TWEET_PAGE_PATH]
+    assert 'title: "Tweets from @georgiedorothea"' in page
+    assert "# Tweets from @georgiedorothea" in page
+    assert BOOKMARKED_TWEETS_HEADER in page
+    assert (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        in page
+    )
+    assert "- [[Tweets from @georgiedorothea]]:" not in page
+    assert "People" not in page
+    assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
+
+
+def test_second_tweet_for_handle_appends_and_same_open_id_is_skipped():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        first = append_readwise_buffet(_tweet_highlight(), now=now)
+        assert first["success"] is True
+        assert store[TWEET_PAGE_PATH].count("readwise.io/open/") == 1
+
+        second = append_readwise_buffet(
+            _tweet_highlight(id=954481, text="Another banger"), now=now
+        )
+        assert second["success"] is True
+        page = store[TWEET_PAGE_PATH]
+        assert "Most Amazing Highlight Ever" in page
+        assert "Another banger" in page
+        assert page.index("Most Amazing Highlight Ever") < page.index("Another banger")
+        assert page.count("https://readwise.io/open/954480") == 1
+        assert page.count("https://readwise.io/open/954481") == 1
+
+        before = page
+        third = append_readwise_buffet(_tweet_highlight(), now=now)
+        assert third["success"] is True
+        assert store[TWEET_PAGE_PATH] == before
+        assert store[TWEET_PAGE_PATH].count("https://readwise.io/open/954480") == 1
+
+
+def test_missing_bookmarked_tweets_heading_is_created_body_kept():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @georgiedorothea"
+---
+
+# Tweets from @georgiedorothea
+
+## People
+- [[Georgie Dorothea]]
+
+A paragraph that must survive.
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        TWEET_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    assert "## People" in page
+    assert "- [[Georgie Dorothea]]" in page
+    assert "A paragraph that must survive." in page
+    assert BOOKMARKED_TWEETS_HEADER in page
+    assert page.index("A paragraph that must survive.") < page.index(BOOKMARKED_TWEETS_HEADER)
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+
+
+def test_reader_document_created_does_not_write_tweet_page():
+    """reader.*_document.created must not create Tweets from @handle pages."""
+    with patch(
+        "services.obsidian.add_readwise_buffet._append_tweet_pages_after_journal"
+    ) as mock_tweets, patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Tweets From Georgie.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": True, "bookmark_id": "rd-1", "error": None},
+    ):
+        result = append_readwise_buffet(
+            _reader_payload(
+                title="Tweets From Georgie Dorothea",
+                author="@georgiedorothea on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/georgiedorothea",
+            )
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_tweets.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"title": "Deep Work", "author": "Cal Newport", "category": "books", "source": "kindle"},
+        {"title": "A long essay", "author": "The Verge", "category": "articles", "source": "reader"},
+        {"title": "Weekly notes", "author": "Casey Newton", "category": "articles"},
+        {"title": "Invoice.pdf", "author": None, "category": "pdfs"},
+    ],
+)
+def test_non_tweet_highlights_never_touch_bookmarked_tweets_or_hub(overrides):
+    """Articles, books, and other highlights stay journal-only."""
+    clear_book_cache()
+    payload = _highlight_payload(**overrides)
+    book = _resolve_highlight_book(payload)
+    assert _is_tweet_book(book) is False
+    assert _tweet_handle(book) is None
+    assert _format_tweet_page_bullet(payload, book) is None
+
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder"
+    ) as mock_hub, patch(
+        "services.obsidian.add_readwise_buffet._append_tweet_page"
+    ) as mock_page:
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    mock_hub.assert_not_called()
+    mock_page.assert_not_called()
+    assert TWEET_PAGE_PATH not in store
+    assert not any("Tweets from" in item["path"] for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
+    assert "### Content Buffet:" in store[JOURNAL_NOV_PATH]
+    assert "Most Amazing Highlight Ever" in store[JOURNAL_NOV_PATH]
+
+
+def test_non_tweet_highlight_does_not_create_tweet_page_or_section():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(title="Deep Work", author="Cal Newport", category="books"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    assert TWEET_PAGE_PATH not in store
+    assert not any("Tweets from" in item["path"] for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
+    assert "[[Deep Work" in store[JOURNAL_NOV_PATH]
+    assert "Tweets from" not in store[JOURNAL_NOV_PATH]
+
+
+def test_journal_buffet_line_still_uses_tweets_from_handle_wikilink():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        append_readwise_buffet(_tweet_highlight(note="clip this"), now=now)
+
+    journal_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert journal_line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+    page_line = [
+        ln for ln in store[TWEET_PAGE_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert page_line == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+
+
+def test_missing_journal_does_not_create_tweet_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx()
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["action"] == "skipped_missing_journal"
+    mock_dbx.files_upload.assert_not_called()
+    assert uploaded == []
+    assert TWEET_PAGE_PATH not in store
+
+
+def test_tweet_page_failure_does_not_undo_journal_write():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client",
+        return_value=mock_dbx,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=_folder_by_suffix,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder",
+        side_effect=RuntimeError("kh down"),
+    ):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    assert result["error"] is None
+    assert "[[Tweets from @georgiedorothea]]:" in store[JOURNAL_NOV_PATH]
+    assert TWEET_PAGE_PATH not in store
+    assert all(item["path"] == JOURNAL_NOV_PATH for item in uploaded)
+
+
+def test_tweet_without_handle_does_not_create_handle_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                title="Tweets From Klaas",
+                author="Klaas",
+                category="tweets",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    assert "[[Tweets From Klaas]]:" in store[JOURNAL_NOV_PATH]
+    assert not any("Tweets from @" in item["path"] for item in uploaded)
+    assert TWEET_PAGE_PATH not in store
+
+
+def test_non_tweet_does_not_write_bookmarked_section_on_book_note():
+    clear_book_cache()
+    book_path = f"{KH_FOLDER}/Deep Work.md"
+    existing = """---
+title: Deep Work
+---
+
+# Deep Work
+
+Body stays.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        book_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        append_readwise_buffet(
+            _highlight_payload(title="Deep Work", author="Cal Newport", category="books"),
+            now=now,
+        )
+
+    assert store[book_path] == existing
+    assert BOOKMARKED_TWEETS_HEADER not in store[book_path]
+    assert not any(item["path"] == book_path for item in uploaded)
+
+
+def test_existing_tweet_page_found_case_insensitive_filename():
+    clear_book_cache()
+    alt_path = f"{KH_FOLDER}/tweets from @georgiedorothea.md"
+    existing = """# Tweets from @georgiedorothea
+
+Some intro.
+
+### Bookmarked Tweets
+- ["old"](https://readwise.io/open/1)
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        alt_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    assert alt_path in store
+    assert TWEET_PAGE_PATH not in store
+    page = store[alt_path]
+    assert "Some intro." in page
+    assert "old" in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert any(item["path"] == alt_path for item in uploaded)
+
+
+# Aug 23, 2026 journal — empty-alt twimg images after t.co, stripped by hand.
+LIVE_INTERNET_HOF_TEXT = (
+    "New York is now the #1 market for tech talent, dethroning "
+    "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+    "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+    "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+)
+LIVE_FLOWER_ALICEE_TEXT = (
+    "...but then when https://t.co/p3GyToJO6M "
+    "![](https://pbs.twimg.com/media/HQWvI2ZbIAA4WBd.jpg) "
+    "![](https://pbs.twimg.com/media/HQWvI2ZaoAAdqfb.jpg)"
+)
+
+
+def test_bookmarked_tweets_live_interneth0f_keeps_tco_and_open_id():
+    """Today's journal: two space-separated empty-alt ![](pbs.twimg.com/media/...) after t.co."""
+    clear_book_cache()
+    page_path = f"{KH_FOLDER}/Tweets from @InternetH0F.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167879,
+                text=LIVE_INTERNET_HOF_TEXT,
+                title="Tweets From InternetH0F",
+                author="@InternetH0F on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/InternetH0F",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    line = [ln for ln in page.splitlines() if "New York is now" in ln][0]
+    assert line == (
+        '- ["New York is now the #1 market for tech talent, dethroning '
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+        '"](https://readwise.io/open/1047167879)'
+    )
+    assert line.startswith("- [\"")
+    assert "https://t.co/L3eHRbgQyG" in line
+    assert "https://readwise.io/open/1047167879" in line
+    assert "![]" not in page
+    assert "pbs.twimg.com" not in page
+    assert "HQYkftsXEAAsKdm" not in page
+    assert "HQYkgifXEAAfKbH" not in page
+
+
+def test_bookmarked_tweets_live_flower_alicee_keeps_tco_and_open_id():
+    """Today's journal: two space-separated empty-alt ![](pbs.twimg.com/media/...) after t.co."""
+    clear_book_cache()
+    page_path = f"{KH_FOLDER}/Tweets from @flower_alicee.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167880,
+                text=LIVE_FLOWER_ALICEE_TEXT,
+                title="Tweets From flower_alicee",
+                author="@flower_alicee on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/flower_alicee",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    line = [ln for ln in page.splitlines() if "but then when" in ln][0]
+    assert line == (
+        '- ["...but then when https://t.co/p3GyToJO6M"]'
+        "(https://readwise.io/open/1047167880)"
+    )
+    assert "https://t.co/p3GyToJO6M" in line
+    assert "https://readwise.io/open/1047167880" in line
+    assert "![]" not in page
+    assert "pbs.twimg.com" not in page
+
+
+def test_tweet_page_write_strips_images_keeps_quote_and_open_id():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _tweet_highlight(
+                text=(
+                    "Quote text https://t.co/abc "
+                    "![](https://pbs.twimg.com/media/foo.jpg) "
+                    "<img src='https://pbs.twimg.com/media/bar.jpg'>"
+                )
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    line = [ln for ln in page.splitlines() if "Quote text" in ln][0]
+    assert line == '- ["Quote text https://t.co/abc"](https://readwise.io/open/954480)'
+    assert "![]" not in page
+    assert "<img" not in page
+    assert "pbs.twimg.com" not in page
+    assert "https://readwise.io/open/954480" in page
+
+
+def test_tweet_page_image_only_does_not_create_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _tweet_highlight(text="![](https://pbs.twimg.com/media/foo.jpg)"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    assert TWEET_PAGE_PATH not in store
+    assert not any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)

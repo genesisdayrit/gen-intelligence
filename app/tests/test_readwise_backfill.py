@@ -59,6 +59,7 @@ date: 2026-08-22
 """
 
 JOURNAL_FOLDER = "/obsidian/personal/01_daily/_journal"
+KH_FOLDER = "/obsidian/personal/01_knowledge-hub"
 
 
 def _book(user_book_id=8237, title="Deep Work", author="Cal Newport", highlights=None, **overrides):
@@ -145,7 +146,11 @@ def _run_backfill(pages, contents_by_path=None, missing_paths=None, **kwargs):
          patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
              "/obsidian/personal/01_daily",
              JOURNAL_FOLDER,
-         ]):
+         ]), \
+         patch(
+             "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder",
+             return_value=KH_FOLDER,
+         ):
         result = backfill_readwise_highlights(**kwargs)
     return result, uploaded, store, mock_get
 
@@ -448,6 +453,39 @@ def test_export_tweet_highlight_uses_handle_wikilink():
     )
     assert " by " not in line
     assert "bookreview" not in uploaded[0]["content"]
+
+
+def test_export_tweet_highlight_creates_handle_page():
+    """Backfill writes the journal wikilink and the handle page bookmark."""
+    pages = [
+        _export_page([
+            _book(
+                title="Tweets From Georgie Dorothea 🫩",
+                author="@georgiedorothea on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/georgiedorothea",
+                highlights=[_hl()],
+            ),
+        ]),
+    ]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    tweet_page = f"{KH_FOLDER}/Tweets from @georgiedorothea.md"
+    result, uploaded, store, _ = _run_backfill(
+        pages,
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+    )
+    assert result["files_written"] == 1
+    journal = next(item for item in uploaded if item["path"] == nov_path)
+    assert (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal["content"]
+    page = store[tweet_page]
+    assert "### Bookmarked Tweets" in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "- [[Tweets from @georgiedorothea]]:" not in page
+    assert any(item["path"] == tweet_page for item in uploaded)
 
 
 # ---------------------------------------------------------------------------

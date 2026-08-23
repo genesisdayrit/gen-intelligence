@@ -21,6 +21,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 CONTENT_BUFFET_HEADER = "### Content Buffet:"
+BOOKMARKED_TWEETS_HEADER = "### Bookmarked Tweets"
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
 EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
@@ -50,6 +51,23 @@ _AUTHOR_TWITTER_SUFFIX = re.compile(r"\s+on twitter\s*$", re.I)
 _AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
 _TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
+
+# Same image-embed rules as the journal tweet strip (separate PR). Used
+# locally for Bookmarked Tweets until ``tweet_highlight_quote`` is on main.
+# Live Aug 23, 2026 journal: t.co then one or more space-separated
+# ``![](https://pbs.twimg.com/media/....jpg)``.
+_EMPTY_ALT_TWIMG_MEDIA = re.compile(
+    r"(?:!\[\]\(\s*https?://pbs\.twimg\.com/media/[^)\s]+\s*\)(?:\s+)?)+",
+    re.IGNORECASE,
+)
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_HTML_IMG_TAG = re.compile(r"<img\b[^>]*>", re.IGNORECASE | re.DOTALL)
+_HTML_IMG_CLOSE = re.compile(r"</img\s*>", re.IGNORECASE)
+_TWEET_MEDIA_URL = re.compile(
+    r"(?:https?://)?(?:pbs\.twimg\.com|pic\.twitter\.com|video\.twimg\.com)"
+    r"/[^\s<>)\]'\"]+",
+    re.IGNORECASE,
+)
 
 
 def _system_tz() -> pytz.BaseTzInfo:
@@ -576,6 +594,14 @@ def _highlight_permalink(payload: dict) -> str | None:
     return _http_url(payload.get("readwise_url"))
 
 
+def _resolve_highlight_book(payload: dict) -> dict | None:
+    """Book identity from the payload, else GET /api/v2/books/{id}/."""
+    book = _book_from_payload(payload)
+    if not _has_book_identity(book):
+        book = fetch_book(payload.get("book_id"))
+    return book
+
+
 def format_readwise_bullet(payload: dict) -> str | None:
     """Build a compact highlight bullet. Looks up book title/author when possible.
 
@@ -585,10 +611,7 @@ def format_readwise_bullet(payload: dict) -> str | None:
     """
     if not is_highlight_event(payload):
         return None
-    book = _book_from_payload(payload)
-    if not _has_book_identity(book):
-        book = fetch_book(payload.get("book_id"))
-    return _format_highlight(payload, book)
+    return _format_highlight(payload, _resolve_highlight_book(payload))
 
 
 def _host_from_url(value: object) -> str | None:
@@ -694,6 +717,65 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     return line
 
 
+def _strip_tweet_image_embeds(text: object) -> str | None:
+    """Remove markdown/HTML/twimg image embeds from tweet highlight text.
+
+    Same rules as the journal buffet strip: no ``![]()``, ``<img>``, or
+    bare ``pbs.twimg.com`` / ``pic.twitter.com`` / ``video.twimg.com``.
+    Keeps quote text (including t.co links). Returns None if nothing remains.
+    """
+    if text is None:
+        return None
+    raw = str(text)
+    if not raw.strip():
+        return None
+    cleaned = _EMPTY_ALT_TWIMG_MEDIA.sub("", raw)
+    cleaned = _MARKDOWN_IMAGE.sub("", cleaned)
+    cleaned = _HTML_IMG_TAG.sub("", cleaned)
+    cleaned = _HTML_IMG_CLOSE.sub("", cleaned)
+    cleaned = _TWEET_MEDIA_URL.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
+def _tweet_quote_for_page(text: object) -> str | None:
+    """Tweet quote for the handle page. Prefer the shared helper when present."""
+    try:
+        from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
+    except ImportError:
+        return _strip_tweet_image_embeds(text)
+    return tweet_highlight_quote(text)
+
+
+def _format_tweet_page_bullet(payload: dict, book: dict | None = None) -> str | None:
+    """Quote line for the handle page: stripped quote + open/id, no wikilink.
+
+    Journal keeps ``- [[Tweets from @handle]]: ["quote"](open/id)``.
+    The handle page is already that note, so this is ``- ["quote"](open/id)``.
+    Tweets only: requires ``_is_tweet_book`` and ``_tweet_handle``.
+    Image embeds are stripped (same rule as the journal buffet).
+    """
+    if not _is_tweet_book(book) or not _tweet_handle(book):
+        return None
+    if not _tweet_wikilink_target(book):
+        return None
+    text = _nonempty(payload.get("text"))
+    if not text:
+        return None
+    text = _tweet_quote_for_page(text)
+    if not text:
+        return None
+    note = _nonempty(payload.get("note"))
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{text}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+    line = f"- {quote}"
+    if note:
+        line += f" — {_collapse(note)}"
+    return line
+
+
 def dedup_keys(payload: dict) -> list[str]:
     """Per-highlight identifiers. Do not include book_id (shared across highlights).
 
@@ -723,9 +805,12 @@ def document_dedup_keys(payload: dict) -> list[str]:
     return keys
 
 
-def _section_bounds(lines: list[str]) -> tuple[int | None, int]:
+def _section_bounds(
+    lines: list[str],
+    header: str = CONTENT_BUFFET_HEADER,
+) -> tuple[int | None, int]:
     header_idx = next(
-        (i for i, line in enumerate(lines) if line.strip() == CONTENT_BUFFET_HEADER),
+        (i for i, line in enumerate(lines) if line.strip() == header),
         None,
     )
     if header_idx is None:
@@ -801,6 +886,54 @@ def insert_content_buffet_bullet(
 
     section_body = lines[header_idx + 1 : section_end]
     if _section_has_dedup_key(section_body, keys, exact_line=exact_line):
+        return content, "skipped"
+
+    nonempty = [line for line in section_body if line.strip()]
+    if len(nonempty) == 1 and EMPTY_PLACEHOLDER.match(nonempty[0].strip()):
+        replaced = False
+        new_body: list[str] = []
+        for line in section_body:
+            if not replaced and EMPTY_PLACEHOLDER.match(line.strip()):
+                new_body.extend(bullet_lines)
+                replaced = True
+            else:
+                new_body.append(line)
+        return "\n".join(lines[: header_idx + 1] + new_body + lines[section_end:]), "replaced"
+
+    insert_at = header_idx + 1
+    for i, line in enumerate(section_body):
+        if line.strip() and not EMPTY_PLACEHOLDER.match(line.strip()):
+            insert_at = header_idx + 1 + i + 1
+    updated = lines[:insert_at] + bullet_lines + lines[insert_at:]
+    return "\n".join(updated), "inserted"
+
+
+def insert_bookmarked_tweets_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Bookmarked Tweets``. Returns (content, action).
+
+    Sibling of ``insert_content_buffet_bullet``. If the heading is missing, it
+    is appended at the end of the note — existing People/body/other headings
+    are left alone. Dedup uses ``_section_has_dedup_key`` on the open URL
+    (not the handle or title).
+    """
+    lines = content.split("\n")
+    header_idx, section_end = _section_bounds(lines, BOOKMARKED_TWEETS_HEADER)
+    bullet_lines = _buffet_bullet_lines(bullet)
+
+    if header_idx is None:
+        updated = list(lines)
+        if updated and updated[-1].strip():
+            updated.append("")
+        updated.append(BOOKMARKED_TWEETS_HEADER)
+        updated.extend(bullet_lines)
+        return "\n".join(updated), "inserted"
+
+    section_body = lines[header_idx + 1 : section_end]
+    if _section_has_dedup_key(section_body, keys, exact_line=False):
         return content, "skipped"
 
     nonempty = [line for line in section_body if line.strip()]
@@ -946,6 +1079,166 @@ def _empty_write_summary(selected: int = 0) -> dict:
     }
 
 
+def _resolve_knowledge_hub_folder(dbx: dropbox.Dropbox) -> str:
+    """Knowledge Hub folder (``*_Knowledge-Hub``) via the share-link helper."""
+    vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
+    if not vault_path:
+        raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
+    from services.obsidian.add_shared_link import _find_knowledge_hub_path
+
+    return _find_knowledge_hub_path(dbx, vault_path)
+
+
+def _tweet_page_filename(target: str) -> str:
+    return _sanitize_note_filename(target) + ".md"
+
+
+def _new_tweet_page_markdown(title: str, bullet: str) -> str:
+    """Minimal handle page: YAML title, H1, Bookmarked Tweets, first bullet."""
+    return (
+        f"---\n"
+        f'title: "{title}"\n'
+        f"---\n"
+        f"\n"
+        f"# {title}\n"
+        f"\n"
+        f"{BOOKMARKED_TWEETS_HEADER}\n"
+        f"{bullet}\n"
+    )
+
+
+def _find_hub_note_by_filename(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    filename: str,
+) -> str | None:
+    """Case-insensitive filename match in the Knowledge Hub folder (non-recursive).
+
+    Share-link lookup is a constructed path; Dropbox path reads are
+    case-insensitive. This scan covers an existing file whose displayed
+    casing differs. ``entries`` must be a real list so MagicMock clients
+    used in journal-only tests do not iterate forever.
+    """
+    want = filename.casefold()
+    result = dbx.files_list_folder(hub_path)
+    while True:
+        entries = getattr(result, "entries", None)
+        if not isinstance(entries, (list, tuple)):
+            return None
+        for entry in entries:
+            name = getattr(entry, "name", None)
+            if not isinstance(name, str) or name.casefold() != want:
+                continue
+            path = getattr(entry, "path_display", None) or getattr(entry, "path_lower", None)
+            if path:
+                return path
+        if getattr(result, "has_more", False) is not True:
+            break
+        result = dbx.files_list_folder_continue(result.cursor)
+    return None
+
+
+def _download_tweet_page(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    filename: str,
+) -> tuple[str, str] | None:
+    """Return ``(path, content)`` for an existing handle page, or None."""
+    constructed = f"{hub_path}/{filename}"
+    try:
+        return constructed, _get_file_content(dbx, constructed)
+    except FileNotFoundError:
+        pass
+    alt = _find_hub_note_by_filename(dbx, hub_path, filename)
+    if not alt:
+        return None
+    try:
+        return alt, _get_file_content(dbx, alt)
+    except FileNotFoundError:
+        return None
+
+
+def _append_tweet_page(
+    dbx: dropbox.Dropbox,
+    payload: dict,
+    hub_path: str,
+) -> str | None:
+    """Create or append one tweet bookmark on the handle's Knowledge Hub note.
+
+    Tweets only — gated on ``_is_tweet_book`` and ``_tweet_handle``. Returns
+    the Dropbox action (``created``, ``inserted``, ``replaced``, ``skipped``)
+    or None when this highlight is not a tweet with a handle.
+    """
+    book = _resolve_highlight_book(payload)
+    if not _is_tweet_book(book) or not _tweet_handle(book):
+        return None
+    target = _tweet_wikilink_target(book)
+    if not target:
+        return None
+    bullet = _format_tweet_page_bullet(payload, book)
+    if not bullet:
+        return None
+    keys = dedup_keys(payload)
+    filename = _tweet_page_filename(target)
+    existing = _download_tweet_page(dbx, hub_path, filename)
+    if existing is None:
+        file_path = f"{hub_path}/{filename}"
+        markdown = _new_tweet_page_markdown(target, bullet)
+        dbx.files_upload(
+            markdown.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("Tweet page created path=%s", file_path)
+        return "created"
+
+    file_path, content = existing
+    updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
+    if action != "skipped" and updated != content:
+        dbx.files_upload(
+            updated.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("Tweet page %s path=%s", action, file_path)
+    elif action == "skipped":
+        logger.info("Tweet page skipped (duplicate) path=%s", file_path)
+    return action
+
+
+def _append_tweet_pages_after_journal(
+    dbx: dropbox.Dropbox,
+    payloads: list[dict],
+) -> None:
+    """Best-effort handle-page writes after a successful highlight journal pass.
+
+    ``readwise.highlight.created`` only (the same ``format_readwise_bullet``
+    writer the journal tweet line uses). Gated on ``_is_tweet_book`` and
+    ``_tweet_handle`` — articles, books, Reader docs, and other highlights
+    stay journal-only (no page create, no ``### Bookmarked Tweets``, no
+    append). Not used for Reader ``*_document.created``, share-link,
+    YouTube, or Raindrop. Resolves the Knowledge Hub folder only when the
+    payload is a tweet with a handle. Failures are logged and never raised
+    — the journal write already happened.
+    """
+    hub_path: str | None = None
+    for payload in payloads:
+        if not is_highlight_event(payload):
+            continue
+        book = _resolve_highlight_book(payload)
+        if not _is_tweet_book(book) or not _tweet_handle(book):
+            continue
+        try:
+            if hub_path is None:
+                hub_path = _resolve_knowledge_hub_folder(dbx)
+            _append_tweet_page(dbx, payload, hub_path)
+        except Exception:
+            logger.exception(
+                "Tweet page write failed; journal write kept (highlight %s)",
+                payload.get("id"),
+            )
+
+
 def write_highlights_by_journal(
     payloads: list[dict],
     now: datetime | None = None,
@@ -959,7 +1252,12 @@ def write_highlights_by_journal(
 
     Defaults are the highlight formatter, highlight journal path, and
     highlight dedup keys. Missing journal files are skipped — never written
-    to today.
+    to today. After a successful journal pass, tweet *highlights* also
+    create or append the ``Tweets from @handle`` Knowledge Hub page when
+    ``format_fn`` is ``format_readwise_bullet`` (webhook
+    ``readwise.highlight.created`` and the existing highlight backfill,
+    which already calls this writer). Document fallback / other formatters
+    skip it. Page failures are logged and never undo the journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -996,6 +1294,7 @@ def write_highlights_by_journal(
             original = content
             file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
             last_action = None
+            buffet_payloads: list[dict] = []
             for payload in group:
                 bullet = format_fn(payload)
                 if not bullet:
@@ -1004,6 +1303,7 @@ def write_highlights_by_journal(
                     content, bullet, keys_fn(payload)
                 )
                 last_action = action
+                buffet_payloads.append(payload)
                 if action in file_counts:
                     file_counts[action] += 1
                     summary[action] += 1
@@ -1027,6 +1327,9 @@ def write_highlights_by_journal(
                     )
             elif last_action == "skipped":
                 logger.info("Readwise buffet skipped (duplicate) path=%s", file_path)
+
+            if format_fn is format_readwise_bullet:
+                _append_tweet_pages_after_journal(dbx, buffet_payloads)
         except Exception as exc:
             logger.exception("Readwise buffet failed for %s", file_path)
             if raise_errors:
@@ -1199,8 +1502,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     YAML extras when present) and write a standalone ``- [[Title by Author]]``
     (or ``- [[Title]]`` if no author) to that day's Content Buffet, then
     bookmark the document page URL in Raindrop Unsorted. Highlights wikilink
-    that same KH stem and are not bookmarked. Child annotation documents
-    are ignored.
+    that same KH stem and are not bookmarked. ``readwise.highlight.created``
+    tweet highlights also create or append ``Tweets from @handle`` under
+    ``### Bookmarked Tweets`` after the journal write. Reader document
+    events, share-link, YouTube, and Raindrop do not write that page.
+    Child annotation documents are ignored.
     """
     if is_highlight_event(payload):
         bullet = format_readwise_bullet(payload)
