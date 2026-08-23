@@ -3494,7 +3494,7 @@ def test_tweet_and_book_highlights_do_not_write_article_highlights():
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     with _journal_and_hub(mock_dbx):
         tweet = append_readwise_buffet(_tweet_highlight(), now=now)
-        book = append_readwise_buffet(_book_highlight(), now=now)
+        book = append_readwise_buffet(_book_highlight(id=954482, text="A book sentence"), now=now)
 
     assert tweet["success"] is True
     assert book["success"] is True
@@ -3514,7 +3514,7 @@ def test_tweet_and_book_highlights_do_not_write_article_highlights():
     ][0]
     assert book_line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '["A book sentence"](https://readwise.io/open/954482)'
     )
 
 
