@@ -336,13 +336,13 @@ def reader_knowledge_hub_note_stem(
     Same sanitizing as share-link (``_sanitize_filename`` then wikilink
     sanitize). No usable author → title-only stem. Empty/junk title → None.
     """
-    text = _nonempty(title)
-    if not text:
+    base = knowledge_hub_note_stem(title)
+    if not base:
         return None
     author_text = _nonempty(author)
     if author_text and knowledge_hub_note_stem(author_text):
-        text = f"{text} by {author_text}"
-    return knowledge_hub_note_stem(text)
+        return knowledge_hub_note_stem(f"{_nonempty(title)} by {author_text}")
+    return base
 
 
 def document_page_url(payload: dict) -> str | None:
