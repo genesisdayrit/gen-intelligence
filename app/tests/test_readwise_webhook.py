@@ -1112,7 +1112,7 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
     assert mock_share.call_args.kwargs["journal_date"] == "Nov 28, 2025"
     extras = mock_share.call_args.kwargs["extra_frontmatter"]
     assert extras["URL"] == "https://www.theverge.com/black-friday"
-    assert extras["author"] == "The Verge"
+    assert extras["author"] == "[[The Verge]]"
     assert extras["readwise_id"] == "01kb5cap1wy21zp37bc2rjj"
     assert extras["readwise_url"] == "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj"
     assert extras["saved_at"] == "2025-11-28T14:02:02.213618+00:00"
@@ -1562,7 +1562,7 @@ def test_reader_extra_frontmatter_from_payload():
     extras = reader_document_extra_frontmatter(_reader_payload())
     assert extras == {
         "URL": "https://www.theverge.com/black-friday",
-        "author": "The Verge",
+        "author": "[[The Verge]]",
         "readwise_id": "01kb5cap1wy21zp37bc2rjj",
         "readwise_url": "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj",
         "saved_at": "2025-11-28T14:02:02.213618+00:00",
@@ -1585,7 +1585,7 @@ def test_reader_extra_uses_published_date_and_creator():
         published_date="2025-11-20T08:15:00+00:00",
     )
     extras = reader_document_extra_frontmatter(payload)
-    assert extras["author"] == "Casey Newton"
+    assert extras["author"] == "[[Casey Newton]]"
     assert extras["published"] == "2025-11-20"
 
 

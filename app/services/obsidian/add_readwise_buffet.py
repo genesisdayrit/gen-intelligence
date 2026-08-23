@@ -11,6 +11,7 @@ import pytz
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.author_yaml import author_frontmatter_value
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.raindrop.client import create_bookmark
 
@@ -428,7 +429,11 @@ def reader_document_extra_frontmatter(payload: dict) -> dict:
         extra["URL"] = source
     author = _reader_author(payload)
     if author:
-        extra["author"] = author
+        formatted = author_frontmatter_value(
+            author, is_tweet=_is_tweet_book(_book_from_payload(payload))
+        )
+        if formatted:
+            extra["author"] = formatted
     doc_id = _reader_document_id(payload)
     if doc_id:
         extra["readwise_id"] = doc_id

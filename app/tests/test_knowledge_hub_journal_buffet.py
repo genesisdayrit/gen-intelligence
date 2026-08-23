@@ -518,7 +518,7 @@ def test_reader_document_writes_kh_note_and_buffet_wikilink():
     assert journal is not None
     assert journal["path"] == f"{JOURNAL_FOLDER}/Nov 28, 2025.md"
     assert "URL: https://www.theverge.com/black-friday" in kh["content"]
-    assert "author: The Verge" in kh["content"]
+    assert 'author: "[[The Verge]]"' in kh["content"]
     assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "saved_at: 2025-11-28T14:02:02.213618+00:00" in kh["content"]
@@ -632,7 +632,7 @@ Keep this body
     kh = _kh_upload(uploads)
     assert "[[Casey Newton]]" in kh["content"]
     assert "Keep this body" in kh["content"]
-    assert "The Verge" in kh["content"]
+    assert "[[The Verge]]" in kh["content"]
     assert "01kb5cap1wy21zp37bc2rjj" in kh["content"]
     assert "https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj" in kh["content"]
 
