@@ -31,14 +31,18 @@ from fastapi.testclient import TestClient
 
 from main import app
 from services.obsidian.add_readwise_buffet import (
+    ARTICLE_HIGHLIGHTS_HEADER,
     BOOK_HIGHLIGHTS_HEADER,
     BOOKMARKED_TWEETS_HEADER,
     _ensure_tweet_page_people,
+    _format_article_page_bullet,
     _format_book_page_bullet,
     _format_tweet_page_bullet,
     _get_dropbox_client,
+    _is_article_highlight,
     _is_book_highlight,
     _is_tweet_book,
+    _new_article_page_markdown,
     _new_book_page_markdown,
     _new_tweet_page_markdown,
     _people_entry_has_handle,
@@ -60,6 +64,7 @@ from services.obsidian.add_readwise_buffet import (
     get_document_journal_path,
     get_highlight_journal_path,
     get_today_journal_path,
+    insert_article_highlights_bullet,
     insert_book_highlights_bullet,
     insert_bookmarked_tweets_bullet,
     insert_content_buffet_bullet,
@@ -2280,7 +2285,7 @@ def test_reader_document_created_does_not_write_tweet_page():
     ],
 )
 def test_non_tweet_highlights_never_touch_bookmarked_tweets_or_hub(overrides):
-    """Articles and other non-book highlights stay journal-only."""
+    """Articles and other non-tweet highlights never write Bookmarked Tweets."""
     clear_book_cache()
     payload = _highlight_payload(**overrides)
     book = _resolve_highlight_book(payload)
@@ -2291,15 +2296,12 @@ def test_non_tweet_highlights_never_touch_bookmarked_tweets_or_hub(overrides):
     mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     with _journal_and_hub(mock_dbx), patch(
-        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder"
-    ) as mock_hub, patch(
         "services.obsidian.add_readwise_buffet._append_tweet_page"
     ) as mock_page:
         result = append_readwise_buffet(payload, now=now)
 
     assert result["success"] is True
     assert result["action"] == "replaced"
-    mock_hub.assert_not_called()
     mock_page.assert_not_called()
     assert TWEET_PAGE_PATH not in store
     assert not any("Tweets from" in item["path"] for item in uploaded)
@@ -3008,6 +3010,9 @@ def test_article_highlight_does_not_write_book_highlights():
     mock_page.assert_not_called()
     assert not any(BOOK_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
     assert "[[A long essay by The Verge]]:" in store[JOURNAL_NOV_PATH]
+    article_page = f"{KH_FOLDER}/A long essay by The Verge.md"
+    assert ARTICLE_HIGHLIGHTS_HEADER in store[article_page]
+    assert BOOK_HIGHLIGHTS_HEADER not in store[article_page]
 
 
 def test_journal_buffet_line_unchanged_for_book_highlight():
@@ -3169,3 +3174,460 @@ def test_title_only_book_page_when_author_missing():
     assert BOOK_HIGHLIGHTS_HEADER in page
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
     assert "[[Deep Work]]:" in store[JOURNAL_NOV_PATH]
+
+
+# ---------------------------------------------------------------------------
+# Title by Author Knowledge Hub article page
+# ---------------------------------------------------------------------------
+
+ARTICLE_PAGE_PATH = f"{KH_FOLDER}/A long essay by The Verge.md"
+
+
+def _article_highlight(**overrides):
+    data = {
+        "title": "A long essay",
+        "author": "The Verge",
+        "category": "articles",
+        "source": "reader",
+        "source_url": "https://www.theverge.com/long-essay",
+    }
+    data.update(overrides)
+    return _highlight_payload(**data)
+
+
+def test_is_article_highlight_excludes_tweet_book_and_video():
+    clear_book_cache()
+    article = _resolve_highlight_book(_article_highlight())
+    assert _is_article_highlight(article, _article_highlight()) is True
+    reader_article = _resolve_highlight_book(
+        _article_highlight(category="article")
+    )
+    assert _is_article_highlight(reader_article, _article_highlight(category="article")) is True
+    email = _resolve_highlight_book(
+        _highlight_payload(title="Friday note", author="Casey", category="email")
+    )
+    assert _is_article_highlight(
+        email, _highlight_payload(title="Friday note", author="Casey", category="email")
+    ) is True
+    pdf = _resolve_highlight_book(
+        _highlight_payload(title="Invoice.pdf", author=None, category="pdfs")
+    )
+    assert _is_article_highlight(
+        pdf, _highlight_payload(title="Invoice.pdf", author=None, category="pdfs")
+    ) is True
+
+    assert _is_article_highlight(_resolve_highlight_book(_book_highlight()), _book_highlight()) is False
+    assert _is_article_highlight(_resolve_highlight_book(_tweet_highlight()), _tweet_highlight()) is False
+    uncategorized = _resolve_highlight_book(
+        _highlight_payload(title="Deep Work", author="Cal Newport")
+    )
+    assert _is_article_highlight(
+        uncategorized, _highlight_payload(title="Deep Work", author="Cal Newport")
+    ) is False
+    video = _resolve_highlight_book(
+        _highlight_payload(
+            title="Talk",
+            author="Someone",
+            category="video",
+            source="youtube",
+            source_url="https://www.youtube.com/watch?v=abcdefghijk",
+        )
+    )
+    assert _is_article_highlight(
+        video,
+        _highlight_payload(
+            title="Talk",
+            author="Someone",
+            category="video",
+            source="youtube",
+            source_url="https://www.youtube.com/watch?v=abcdefghijk",
+        ),
+    ) is False
+    videos = _resolve_highlight_book(
+        _highlight_payload(title="Talk", author="Someone", category="videos")
+    )
+    assert _is_article_highlight(
+        videos, _highlight_payload(title="Talk", author="Someone", category="videos")
+    ) is False
+    youtube_url = _resolve_highlight_book(
+        _highlight_payload(
+            title="Talk",
+            author="Someone",
+            category="articles",
+            source_url="https://youtu.be/abcdefghijk",
+        )
+    )
+    assert _is_article_highlight(
+        youtube_url,
+        _highlight_payload(
+            title="Talk",
+            author="Someone",
+            category="articles",
+            source_url="https://youtu.be/abcdefghijk",
+        ),
+    ) is False
+
+
+def test_format_article_page_bullet_omits_wikilink_and_keeps_note():
+    clear_book_cache()
+    payload = _article_highlight(note="worth revisiting")
+    book = _resolve_highlight_book(payload)
+    journal = format_readwise_bullet(payload)
+    page = _format_article_page_bullet(payload, book)
+    assert journal == (
+        '- [[A long essay by The Verge]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert page == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert "[[A long essay by The Verge]]" not in page
+    assert _format_article_page_bullet(_tweet_highlight(), _resolve_highlight_book(_tweet_highlight())) is None
+    assert _format_article_page_bullet(_book_highlight(), _resolve_highlight_book(_book_highlight())) is None
+
+
+def test_insert_article_highlights_appends_missing_heading():
+    content = """---
+title: "A long essay by The Verge"
+---
+
+# A long essay by The Verge
+
+## Notes
+Kept body text.
+"""
+    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    updated, action = insert_article_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    assert "## Notes" in updated
+    assert "Kept body text." in updated
+    assert ARTICLE_HIGHLIGHTS_HEADER in updated
+    assert updated.index("Kept body text.") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert bullet in updated
+    assert "[[A long essay by The Verge]]:" not in updated
+
+
+def test_insert_article_highlights_dedups_open_url_only():
+    content = f"""# A long essay by The Verge
+
+{ARTICLE_HIGHLIGHTS_HEADER}
+- ["Old quote"](https://readwise.io/open/111)
+"""
+    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    updated, action = insert_article_highlights_bullet(
+        content, same_id, keys=["https://readwise.io/open/111"]
+    )
+    assert action == "skipped"
+    assert updated == content
+
+    other = '- ["New quote"](https://readwise.io/open/222)'
+    updated, action = insert_article_highlights_bullet(
+        content, other, keys=["https://readwise.io/open/222"]
+    )
+    assert action == "inserted"
+    assert "Old quote" in updated
+    assert "New quote" in updated
+
+
+def test_new_article_page_markdown_has_author_people_and_url():
+    markdown = _new_article_page_markdown(
+        "A long essay by The Verge",
+        '- ["quote"](https://readwise.io/open/954480)',
+        {
+            "author": "[[The Verge]]",
+            "URL": "https://www.theverge.com/long-essay",
+        },
+        ["[[The Verge]]"],
+    )
+    assert markdown.startswith("---\ntitle: \"A long essay by The Verge\"\n")
+    assert 'author: "[[The Verge]]"' in markdown
+    assert '  - "[[The Verge]]"' in markdown
+    frontmatter, _body = _extract_frontmatter(markdown)
+    assert frontmatter["author"] == "[[The Verge]]"
+    assert frontmatter["People"] == ["[[The Verge]]"]
+    assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
+    assert "readwise_id" not in frontmatter
+    assert "category" not in frontmatter
+    assert "source" not in frontmatter
+    assert ARTICLE_HIGHLIGHTS_HEADER in markdown
+    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert "[[A long essay by The Verge]]:" not in markdown
+    assert "[[@" not in markdown
+
+
+def test_article_highlight_creates_title_by_author_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_article_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[A long essay by The Verge]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal
+    page = store[ARTICLE_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["author"] == "[[The Verge]]"
+    assert frontmatter["People"] == ["[[The Verge]]"]
+    assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
+    assert "readwise_id" not in frontmatter
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        in page
+    )
+    assert "- [[A long essay by The Verge]]:" not in page
+    assert "[[@The" not in page
+    assert BOOKMARKED_TWEETS_HEADER not in page
+    assert BOOK_HIGHLIGHTS_HEADER not in page
+    assert any(item["path"] == ARTICLE_PAGE_PATH for item in uploaded)
+
+
+def test_article_highlight_reader_category_article_creates_page():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_article_highlight(category="article"), now=now)
+
+    assert result["success"] is True
+    assert ARTICLE_HIGHLIGHTS_HEADER in store[ARTICLE_PAGE_PATH]
+
+
+def test_second_article_highlight_appends_and_same_open_id_is_skipped():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        first = append_readwise_buffet(_article_highlight(), now=now)
+        assert first["success"] is True
+        assert store[ARTICLE_PAGE_PATH].count("readwise.io/open/") == 1
+
+        second = append_readwise_buffet(
+            _article_highlight(id=954481, text="Another clipped sentence"), now=now
+        )
+        assert second["success"] is True
+        page = store[ARTICLE_PAGE_PATH]
+        assert "Most Amazing Highlight Ever" in page
+        assert "Another clipped sentence" in page
+        assert page.index("Most Amazing Highlight Ever") < page.index("Another clipped sentence")
+        assert page.count("https://readwise.io/open/954480") == 1
+        assert page.count("https://readwise.io/open/954481") == 1
+
+        before = page
+        third = append_readwise_buffet(_article_highlight(), now=now)
+        assert third["success"] is True
+        assert store[ARTICLE_PAGE_PATH] == before
+        assert store[ARTICLE_PAGE_PATH].count("https://readwise.io/open/954480") == 1
+
+
+def test_article_highlight_finds_existing_share_link_note_and_does_not_rename():
+    clear_book_cache()
+    existing = """---
+title: "A long essay by The Verge"
+author: "Someone Else"
+People:
+  - "[[Existing Person]]"
+URL: https://already.example/essay
+---
+
+# A long essay by The Verge
+
+A paragraph that must survive.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        ARTICLE_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_article_highlight(), now=now)
+
+    assert result["success"] is True
+    assert ARTICLE_PAGE_PATH in store
+    assert not any(
+        item["path"] != JOURNAL_NOV_PATH and item["path"] != ARTICLE_PAGE_PATH
+        for item in uploaded
+    )
+    page = store[ARTICLE_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["author"] == "Someone Else"
+    assert frontmatter["People"] == ["[[Existing Person]]"]
+    assert frontmatter["URL"] == "https://already.example/essay"
+    assert "A paragraph that must survive." in body
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert page.index("A paragraph that must survive.") < page.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+
+
+def test_article_highlight_fills_empty_url_on_existing_note():
+    clear_book_cache()
+    existing = """---
+title: "A long essay by The Verge"
+---
+
+# A long essay by The Verge
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        ARTICLE_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_article_highlight(), now=now)
+
+    assert result["success"] is True
+    frontmatter, _body = _extract_frontmatter(store[ARTICLE_PAGE_PATH])
+    assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
+    assert "People" not in frontmatter
+
+
+def test_tweet_and_book_highlights_do_not_write_article_highlights():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        tweet = append_readwise_buffet(_tweet_highlight(), now=now)
+        book = append_readwise_buffet(_book_highlight(), now=now)
+
+    assert tweet["success"] is True
+    assert book["success"] is True
+    assert ARTICLE_PAGE_PATH not in store
+    assert not any(ARTICLE_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
+    assert ARTICLE_HIGHLIGHTS_HEADER not in store[TWEET_PAGE_PATH]
+    assert ARTICLE_HIGHLIGHTS_HEADER not in store[BOOK_PAGE_PATH]
+    tweet_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Tweets from @georgiedorothea" in ln
+    ][0]
+    assert tweet_line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+    book_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Deep Work by Cal Newport" in ln
+    ][0]
+    assert book_line == (
+        '- [[Deep Work by Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_youtube_highlight_does_not_write_article_highlights():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _highlight_payload(
+        title="A talk",
+        author="Someone",
+        category="video",
+        source="youtube",
+        source_url="https://www.youtube.com/watch?v=abcdefghijk",
+    )
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert not any(ARTICLE_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
+    assert "[[A talk by Someone]]:" in store[JOURNAL_NOV_PATH]
+
+
+def test_journal_buffet_line_unchanged_for_article_highlight():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        append_readwise_buffet(_article_highlight(note="clip this"), now=now)
+
+    journal_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert journal_line == (
+        '- [[A long essay by The Verge]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+    page_line = [
+        ln for ln in store[ARTICLE_PAGE_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert page_line == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+
+
+def test_reader_document_created_does_not_write_article_page():
+    with patch(
+        "services.obsidian.add_readwise_buffet._append_article_pages_after_journal"
+    ) as mock_articles, patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/A long essay by The Verge.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": True, "bookmark_id": "rd-1", "error": None},
+    ):
+        result = append_readwise_buffet(
+            _reader_payload(
+                title="A long essay",
+                author="The Verge",
+                category="article",
+                source_url="https://www.theverge.com/long-essay",
+            )
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_articles.assert_not_called()
+
+
+def test_article_page_failure_does_not_undo_journal_write():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client",
+        return_value=mock_dbx,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=_folder_by_suffix,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder",
+        side_effect=RuntimeError("kh down"),
+    ):
+        result = append_readwise_buffet(_article_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    assert result["error"] is None
+    assert "[[A long essay by The Verge]]:" in store[JOURNAL_NOV_PATH]
+    assert ARTICLE_PAGE_PATH not in store
+    assert all(item["path"] == JOURNAL_NOV_PATH for item in uploaded)
+
+
+def test_title_only_article_page_when_author_missing():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _article_highlight(author=None, title="A long essay"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page_path = f"{KH_FOLDER}/A long essay.md"
+    page = store[page_path]
+    frontmatter, _body = _extract_frontmatter(page)
+    assert "author" not in frontmatter or not frontmatter.get("author")
+    assert not frontmatter.get("People")
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "[[A long essay]]:" in store[JOURNAL_NOV_PATH]
