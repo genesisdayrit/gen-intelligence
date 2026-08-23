@@ -429,7 +429,6 @@ def add_shared_link(
     *,
     journal_date: str | None = None,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
@@ -444,7 +443,6 @@ def add_shared_link(
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
             Omitted on regular iOS share-link. On create they are written;
             on update they are set only when the existing key is empty.
-        buffet_nested: Optional nested Content Buffet lines under ``- [[stem]]``.
 
     Returns:
         dict with keys:
@@ -572,9 +570,7 @@ def add_shared_link(
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(
-                note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
-            )
+            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
             result["action"] = "updated"
             return result
@@ -634,9 +630,7 @@ Tags:
         )
 
         logger.info("Created shared link file: %s", file_path)
-        append_wikilink_to_journal_buffet(
-            note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
-        )
+        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
         result["success"] = True
         result["action"] = "created"
 

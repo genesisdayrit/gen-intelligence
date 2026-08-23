@@ -548,7 +548,6 @@ def add_youtube_link(
     *,
     journal_date: str | None = None,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     """Create a new markdown file for a YouTube video in Knowledge Hub.
 
@@ -561,7 +560,6 @@ def add_youtube_link(
             When omitted, uses today in SYSTEM_TIMEZONE.
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
             Omitted on regular iOS YouTube shares.
-        buffet_nested: Optional nested Content Buffet lines under ``- [[stem]]``.
 
     Returns:
         dict with keys:
@@ -687,9 +685,7 @@ def add_youtube_link(
             )
 
             logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(
-                note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
-            )
+            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
             result["action"] = "updated"
             result["title"] = video_title
@@ -745,9 +741,7 @@ Tags:
         )
 
         logger.info("Created YouTube link file: %s", file_path)
-        append_wikilink_to_journal_buffet(
-            note_stem, formatted_local_date, dbx=dbx, nested_lines=buffet_nested
-        )
+        append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
         result["success"] = True
         result["action"] = "created"
         result["title"] = video_title

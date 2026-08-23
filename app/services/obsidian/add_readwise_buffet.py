@@ -425,32 +425,6 @@ def reader_document_extra_frontmatter(payload: dict) -> dict:
     return extra
 
 
-def reader_document_buffet_nested_lines(payload: dict) -> list[str]:
-    """Nested Content Buffet bullets under ``- [[Note Title]]``. No quote."""
-    lines: list[str] = []
-    source = _http_url(payload.get("source_url"))
-    if source:
-        lines.append(f"  - [source]({source})")
-    readwise_url = _reader_personal_url(payload)
-    readwise_id = _reader_document_id(payload)
-    if readwise_url and readwise_id:
-        lines.append(f"  - [readwise]({readwise_url}) · `{readwise_id}`")
-    elif readwise_url:
-        lines.append(f"  - [readwise]({readwise_url})")
-    elif readwise_id:
-        lines.append(f"  - `{readwise_id}`")
-    author = _reader_author(payload)
-    if author:
-        lines.append(f"  - {_collapse(author)}")
-    published = _published_date_value(payload)
-    if published:
-        lines.append(f"  - published: {published}")
-    saved = _document_saved_at_iso(payload)
-    if saved:
-        lines.append(f"  - saved: {saved}")
-    return lines
-
-
 def document_journal_date(payload: dict, now: datetime | None = None) -> str:
     """3am-aware journal date label for a Reader document (e.g. ``Aug 22, 2026``)."""
     local = document_local_datetime(payload, now=now)
@@ -472,7 +446,6 @@ def _create_shared_link(
     title: str | None,
     journal_date: str,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     from services.obsidian.add_shared_link import add_shared_link
 
@@ -481,7 +454,6 @@ def _create_shared_link(
         title=title,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
-        buffet_nested=buffet_nested,
     )
 
 
@@ -489,7 +461,6 @@ def _create_youtube_link(
     url: str,
     journal_date: str,
     extra_frontmatter: dict | None = None,
-    buffet_nested: list[str] | None = None,
 ) -> dict:
     from services.obsidian.add_youtube_link import add_youtube_link
 
@@ -497,7 +468,6 @@ def _create_youtube_link(
         url,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
-        buffet_nested=buffet_nested,
     )
 
 
@@ -1123,7 +1093,6 @@ def _append_reader_document_knowledge_hub(
     journal_date = document_journal_date(payload, now=now)
     youtube_url = _youtube_url_for_document(payload, url)
     extras = reader_document_extra_frontmatter(payload) or None
-    nested = reader_document_buffet_nested_lines(payload) or None
 
     if not youtube_url and not stem:
         logger.info(
@@ -1141,7 +1110,6 @@ def _append_reader_document_knowledge_hub(
                 youtube_url,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
-                buffet_nested=nested,
             )
         else:
             result = _create_shared_link(
@@ -1149,7 +1117,6 @@ def _append_reader_document_knowledge_hub(
                 title=title,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
-                buffet_nested=nested,
             )
     except Exception as exc:
         logger.exception(

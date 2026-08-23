@@ -37,7 +37,6 @@ from services.obsidian.add_readwise_buffet import (  # noqa: E402
     insert_content_buffet_bullet,
     journal_filename,
     knowledge_hub_note_stem,
-    reader_document_buffet_nested_lines,
 )
 from services.obsidian.add_shared_link import add_shared_link  # noqa: E402
 from services.obsidian.add_youtube_link import add_youtube_link  # noqa: E402
@@ -524,8 +523,10 @@ def test_reader_document_writes_kh_note_and_buffet_wikilink():
     assert "published:" not in kh["content"]
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
-    assert lines[0] == f"- [[{stem}]]"
-    assert lines[1:] == reader_document_buffet_nested_lines(payload)
+    assert lines == [f"- [[{stem}]]"]
+    assert "readwise.io" not in section
+    assert "published:" not in section
+    assert "saved:" not in section
     assert '["' not in section
 
 
@@ -564,11 +565,11 @@ def test_reader_document_omits_missing_published_and_author():
     assert "readwise_id: 01kb5cap1wy21zp37bc2rjj" in kh["content"]
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
-    assert lines[0] == f"- [[{stem}]]"
-    assert not any(line.startswith("  - published:") for line in lines)
+    assert lines == [f"- [[{stem}]]"]
+    assert "readwise.io" not in section
+    assert "published:" not in section
+    assert "saved:" not in section
     assert "  - The Verge" not in lines
-    assert any("[readwise]" in line for line in lines)
-    assert any("[source]" in line for line in lines)
 
 
 def test_reader_document_update_fills_empty_extras_keeps_people_body():
@@ -617,10 +618,6 @@ date: 2025-11-28
 
 ### Content Buffet:
 - [[{stem}]]
-  - [source](https://www.theverge.com/black-friday)
-  - [readwise](https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj) · `01kb5cap1wy21zp37bc2rjj`
-  - The Verge
-  - saved: 2025-11-28T14:02:02.213618+00:00
 
 ### Content Planning
 - plan something
@@ -641,12 +638,12 @@ date: 2025-11-28
     assert action == "inserted"
     section = updated.split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
-    assert lines[0] == f"- [[{stem}]]"
-    assert lines.count("  - The Verge") == 1
-    assert lines.count(f"  - [source](https://www.theverge.com/black-friday)") == 1
-    assert lines[-1] == (
-        f'- [[{stem}]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
-    )
+    assert lines == [
+        f"- [[{stem}]]",
+        f'- [[{stem}]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+    ]
+    assert "published:" not in section
+    assert "saved:" not in section
 
 
 def test_shared_link_without_extras_does_not_get_readwise_id():
