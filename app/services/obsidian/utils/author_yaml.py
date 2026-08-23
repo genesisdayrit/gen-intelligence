@@ -111,15 +111,16 @@ def _split_author_names(text: str) -> list[str]:
 
 
 def plain_author_label(raw: object) -> str | None:
-    """Author text for buffet, journal, highlights, or a ``Title by Author`` stem.
+    """Author text for a ``Title by Author`` stem or other non-YAML uses.
 
     Never includes ``[[`` / ``]]``. Wikilink brackets belong only on Knowledge
-    Hub YAML ``author``.
+    Hub YAML ``author``. Does not collapse internal whitespace so the stem
+    matches the existing filename sanitizer.
     """
     text = _nonempty(raw)
     if not text:
         return None
-    return _collapse(_unwrap_wikilinks(text)) or None
+    return _unwrap_wikilinks(text).strip() or None
 
 
 def author_frontmatter_value(raw: object, *, is_tweet: bool = False) -> str | None:
