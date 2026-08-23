@@ -8,6 +8,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.obsidian.add_readwise_buffet import tweet_highlight_quote as reexported
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 
+# Aug 23, 2026 journal — two empty-alt twimg images after a t.co URL.
+INTERNET_HOF_TEXT = (
+    "New York is now the #1 market for tech talent, dethroning San Francisco's "
+    "13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+    "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+    "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+)
+FLOWER_ALICEE_TEXT = (
+    "...but then when https://t.co/p3GyToJO6M "
+    "![](https://pbs.twimg.com/media/HQWvI2ZbIAA4WBd.jpg) "
+    "![](https://pbs.twimg.com/media/HQWvI2ZaoAAdqfb.jpg)"
+)
+
+
+def test_live_interneth0f_keeps_tco_strips_two_empty_alt_images():
+    assert tweet_highlight_quote(INTERNET_HOF_TEXT) == (
+        "New York is now the #1 market for tech talent, dethroning San Francisco's "
+        "13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+    )
+
+
+def test_live_flower_alicee_keeps_tco_strips_two_empty_alt_images():
+    assert tweet_highlight_quote(FLOWER_ALICEE_TEXT) == (
+        "...but then when https://t.co/p3GyToJO6M"
+    )
+
 
 def test_strips_markdown_image():
     assert (

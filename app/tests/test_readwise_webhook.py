@@ -1565,6 +1565,62 @@ def test_locked_tweet_highlight_still_uses_handle_wikilink():
     assert line != "- [[Tweets from @georgiedorothea]]"
 
 
+def test_format_live_interneth0f_keeps_tco_and_open_link():
+    """Aug 23 journal: two empty-alt twimg images after t.co, stripped by hand."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            id=1047167879,
+            text=(
+                "New York is now the #1 market for tech talent, dethroning "
+                "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG "
+                "![](https://pbs.twimg.com/media/HQYkftsXEAAsKdm.jpg) "
+                "![](https://pbs.twimg.com/media/HQYkgifXEAAfKbH.jpg)"
+            ),
+            title="Tweets From InternetH0F",
+            author="@InternetH0F on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/InternetH0F",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @InternetH0F]]: '
+        '["New York is now the #1 market for tech talent, dethroning '
+        "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
+        '"](https://readwise.io/open/1047167879)'
+    )
+    assert "![]" not in line
+    assert "pbs.twimg.com" not in line
+
+
+def test_format_live_flower_alicee_keeps_tco_and_open_link():
+    """Aug 23 journal: two empty-alt twimg images after t.co, stripped by hand."""
+    clear_book_cache()
+    line = format_readwise_bullet(
+        _highlight_payload(
+            id=1047167880,
+            text=(
+                "...but then when https://t.co/p3GyToJO6M "
+                "![](https://pbs.twimg.com/media/HQWvI2ZbIAA4WBd.jpg) "
+                "![](https://pbs.twimg.com/media/HQWvI2ZaoAAdqfb.jpg)"
+            ),
+            title="Tweets From flower_alicee",
+            author="@flower_alicee on Twitter",
+            category="tweets",
+            source="twitter",
+            source_url="https://twitter.com/flower_alicee",
+        )
+    )
+    assert line == (
+        '- [[Tweets from @flower_alicee]]: '
+        '["...but then when https://t.co/p3GyToJO6M"]'
+        "(https://readwise.io/open/1047167880)"
+    )
+    assert "![]" not in line
+    assert "pbs.twimg.com" not in line
+
+
 def test_format_tweet_strips_markdown_image_to_text_only():
     clear_book_cache()
     line = format_readwise_bullet(
