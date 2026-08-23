@@ -1967,9 +1967,37 @@ def _mock_vault_dbx(files_by_path=None):
         result.entries = entries
         return result
 
+    def search_v2(query, options=None, **_kwargs):
+        result = MagicMock()
+        result.has_more = False
+        matches = []
+        q = str(query or "")
+        scope = getattr(options, "path", None) if options is not None else None
+        prefix = (str(scope).rstrip("/") + "/") if isinstance(scope, str) and scope else None
+        for file_path, content in store.items():
+            if prefix and not (
+                file_path == str(scope).rstrip("/") or file_path.startswith(prefix)
+            ):
+                continue
+            name = file_path.rsplit("/", 1)[-1]
+            if not name.endswith(".md"):
+                continue
+            if q not in f"{file_path}\n{content}":
+                continue
+            match = MagicMock()
+            meta = MagicMock()
+            meta.name = name
+            meta.path_display = file_path
+            meta.path_lower = file_path
+            match.metadata.get_metadata.return_value = meta
+            matches.append(match)
+        result.matches = matches
+        return result
+
     mock_dbx.files_download.side_effect = download
     mock_dbx.files_upload.side_effect = upload
     mock_dbx.files_list_folder.side_effect = list_folder
+    mock_dbx.files_search_v2.side_effect = search_v2
     return mock_dbx, uploaded, store
 
 

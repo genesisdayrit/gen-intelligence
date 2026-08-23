@@ -1385,6 +1385,130 @@ def _note_matches_identity(
     return False
 
 
+# Dropbox search_v2 rejects queries shorter than 3 characters.
+_IDENTITY_SEARCH_MIN_LEN = 3
+_IDENTITY_SEARCH_MAX_RESULTS = 25
+
+
+def _identity_search_terms(
+    *,
+    url: str | None = None,
+    readwise_id: str | None = None,
+) -> list[tuple[str, str]]:
+    """Distinctive KH search queries: ``(kind, query)``. Never file bodies."""
+    terms: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, value: object) -> None:
+        text = _nonempty(value)
+        if not text or len(text) < _IDENTITY_SEARCH_MIN_LEN or text in seen:
+            return
+        seen.add(text)
+        terms.append((kind, text))
+
+    href = _http_url(url) or _nonempty(url)
+    add("url", href)
+    if href:
+        from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
+
+        if is_valid_youtube_url(href):
+            add("video_id", _extract_video_id(href))
+    add("readwise_id", readwise_id)
+    return terms
+
+
+def _search_match_md_path(match) -> str | None:
+    """Markdown path from a ``files_search_v2`` hit. None if not a usable .md."""
+    metadata = getattr(match, "metadata", None)
+    if metadata is None:
+        return None
+    file_meta = None
+    getter = getattr(metadata, "get_metadata", None)
+    if callable(getter):
+        try:
+            file_meta = getter()
+        except Exception:
+            file_meta = None
+    if file_meta is None:
+        file_meta = getattr(metadata, "metadata", None) or metadata
+    path = getattr(file_meta, "path_display", None) or getattr(file_meta, "path_lower", None)
+    if not isinstance(path, str) or not path:
+        return None
+    name = getattr(file_meta, "name", None)
+    if not isinstance(name, str) or not name:
+        name = path.rsplit("/", 1)[-1]
+    if not name.endswith(".md"):
+        return None
+    return path
+
+
+def _hub_identity_search_options(hub_path: str):
+    return dropbox.files.SearchOptions(
+        path=hub_path,
+        max_results=_IDENTITY_SEARCH_MAX_RESULTS,
+        filename_only=False,
+        file_extensions=["md"],
+    )
+
+
+def _search_hub_identity_paths(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    terms: list[tuple[str, str]],
+) -> list[str]:
+    """Unique markdown paths from KH-scoped content search.
+
+    Miss or API error → empty list. Never list-folder or download the hub.
+    Logs hit counts only — never file bodies.
+    """
+    paths: list[str] = []
+    seen: set[str] = set()
+    options = _hub_identity_search_options(hub_path)
+    error_count = 0
+
+    for kind, query in terms:
+        query_hits = 0
+        try:
+            result = dbx.files_search_v2(query, options=options)
+            while True:
+                matches = getattr(result, "matches", None)
+                if not isinstance(matches, (list, tuple)):
+                    break
+                for match in matches:
+                    path = _search_match_md_path(match)
+                    if not path:
+                        continue
+                    key = path.casefold()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    paths.append(path)
+                    query_hits += 1
+                if getattr(result, "has_more", False) is not True:
+                    break
+                cursor = getattr(result, "cursor", None)
+                if not cursor:
+                    break
+                result = dbx.files_search_continue_v2(cursor)
+        except Exception as exc:
+            error_count += 1
+            logger.warning(
+                "KH identity search kind=%s failed (%s); treating query as miss",
+                kind,
+                type(exc).__name__,
+            )
+            continue
+        logger.info("KH identity search kind=%s hits=%s", kind, query_hits)
+
+    logger.info(
+        "KH identity search queries=%s unique_hits=%s errors=%s",
+        len(terms),
+        len(paths),
+        error_count,
+    )
+    return paths
+
+
 def find_hub_note_by_identity(
     dbx: dropbox.Dropbox,
     hub_path: str,
@@ -1396,36 +1520,44 @@ def find_hub_note_by_identity(
     """Find a Knowledge Hub note by stem, then YAML ``URL`` / ``readwise_id``.
 
     Primary key is the shared Reader stem. Title drift still hits the same
-    note via YouTube ``URL`` or ``readwise_id``. Does not create a file.
+    note via YouTube ``URL`` or ``readwise_id``. After a stem miss, searches
+    the hub with ``files_search_v2`` (full URL, YouTube video id, readwise_id)
+    and downloads only those hits. Search miss or error means no existing
+    note — never list-folder + download-all. Does not create a file.
     """
     if stem:
         existing = _download_hub_note(dbx, hub_path, _hub_note_filename(stem))
         if existing:
             return existing
-    if not url and not readwise_id:
+    terms = _identity_search_terms(url=url, readwise_id=readwise_id)
+    if not terms:
         return None
 
-    result = dbx.files_list_folder(hub_path)
-    while True:
-        entries = getattr(result, "entries", None)
-        if not isinstance(entries, (list, tuple)):
-            return None
-        for entry in entries:
-            name = getattr(entry, "name", None)
-            if not isinstance(name, str) or not name.endswith(".md"):
-                continue
-            path = getattr(entry, "path_display", None) or getattr(entry, "path_lower", None)
-            if not path:
-                continue
-            try:
-                content = _get_file_content(dbx, path)
-            except FileNotFoundError:
-                continue
-            if _note_matches_identity(content, url=url, readwise_id=readwise_id):
-                return path, content
-        if getattr(result, "has_more", False) is not True:
-            break
-        result = dbx.files_list_folder_continue(result.cursor)
+    hits = _search_hub_identity_paths(dbx, hub_path, terms)
+    downloaded = 0
+    for path in hits:
+        try:
+            content = _get_file_content(dbx, path)
+        except Exception as exc:
+            logger.warning(
+                "KH identity search download failed name=%s (%s)",
+                path.rsplit("/", 1)[-1],
+                type(exc).__name__,
+            )
+            continue
+        downloaded += 1
+        if _note_matches_identity(content, url=url, readwise_id=readwise_id):
+            logger.info(
+                "KH identity search unique_hits=%s downloaded=%s match=1",
+                len(hits),
+                downloaded,
+            )
+            return path, content
+    logger.info(
+        "KH identity search unique_hits=%s downloaded=%s match=0",
+        len(hits),
+        downloaded,
+    )
     return None
 
 
