@@ -38,6 +38,7 @@ EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
 BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
 HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
+HIGHLIGHT_LINK_LABEL = "Link"
 READER_DOC_URL = "https://read.readwise.io/read/{document_id}"
 DOCUMENT_CREATED_EVENTS = {
     "reader.any_document.created",
@@ -635,6 +636,19 @@ def _highlight_permalink(payload: dict) -> str | None:
     return _http_url(payload.get("readwise_url"))
 
 
+def _quoted_highlight_text(text: str, highlight_url: str | None = None) -> str:
+    """Quoted highlight text plus optional trailing ``([Link](url))``.
+
+    The quote stays regular markdown text so Obsidian does not color the
+    whole line as a link. Only the ``Link`` label is clickable. No URL
+    means quoted text only — never an empty ``(Link)``.
+    """
+    quote = f'"{text}"'
+    if highlight_url:
+        return f"{quote} ([{HIGHLIGHT_LINK_LABEL}]({highlight_url}))"
+    return quote
+
+
 def _resolve_highlight_book(payload: dict) -> dict | None:
     """Book identity from the payload, else GET /api/v2/books/{id}/."""
     book = _book_from_payload(payload)
@@ -733,9 +747,7 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     if author and not _wikilink_target(author):
         author = None
     highlight_url = _highlight_permalink(payload)
-    quote = f'"{_collapse(text)}"'
-    if highlight_url:
-        quote = f"[{quote}]({highlight_url})"
+    quote = _quoted_highlight_text(_collapse(text), highlight_url)
 
     tweet_target = _tweet_wikilink_target(book)
     if tweet_target:
@@ -789,10 +801,10 @@ def _tweet_quote_for_page(text: object) -> str | None:
 
 
 def _format_tweet_page_bullet(payload: dict, book: dict | None = None) -> str | None:
-    """Quote line for the handle page: stripped quote + open/id, no wikilink.
+    """Quote line for the handle page: stripped quote + optional (Link), no wikilink.
 
-    Journal keeps ``- [[Tweets from @handle]]: ["quote"](open/id)``.
-    The handle page is already that note, so this is ``- ["quote"](open/id)``.
+    Journal keeps ``- [[Tweets from @handle]]: "quote" ([Link](open/id))``.
+    The handle page is already that note, so this is ``- "quote" ([Link](open/id))``.
     Tweets only: requires ``_is_tweet_book`` and ``_tweet_handle``.
     Image embeds are stripped (same rule as the journal buffet).
     """
@@ -808,9 +820,7 @@ def _format_tweet_page_bullet(payload: dict, book: dict | None = None) -> str | 
         return None
     note = _nonempty(payload.get("note"))
     highlight_url = _highlight_permalink(payload)
-    quote = f'"{text}"'
-    if highlight_url:
-        quote = f"[{quote}]({highlight_url})"
+    quote = _quoted_highlight_text(text, highlight_url)
     line = f"- {quote}"
     if note:
         line += f" — {_collapse(note)}"
@@ -905,7 +915,7 @@ def insert_content_buffet_bullet(
 
     ``exact_line=True`` matches stripped lines only, so a standalone
     ``- [[Note Title]]`` does not collapse into
-    ``- [[Note Title]]: ["quote"](https://readwise.io/open/{id})``.
+    ``- [[Note Title]]: "quote" ([Link](https://readwise.io/open/{id}))``.
     Nested metadata under the standalone line is part of ``bullet`` and is
     inserted with it; dedup keys should still be the first line only.
     """
@@ -1094,7 +1104,7 @@ def standalone_wikilink_bullet(
 
     Keys are the first line only. Nested metadata (source/readwise/author)
     is optional and is not used as a dedup key. A later highlight line
-    ``- [[stem]]: ["quote"](https://readwise.io/open/{id})`` must not match.
+    ``- [[stem]]: "quote" ([Link](https://readwise.io/open/{id}))`` must not match.
     """
     target = _wikilink_from_note_stem(note_title)
     if not target:
@@ -1575,10 +1585,10 @@ def _book_page_extras(payload: dict, book: dict | None) -> dict:
 
 
 def _format_book_page_bullet(payload: dict, book: dict | None = None) -> str | None:
-    """Quote line for the book page: quote + open/id, no title wikilink.
+    """Quote line for the book page: quote + optional (Link), no title wikilink.
 
-    Journal keeps ``- [[Title by Author]]: ["quote"](open/id)``.
-    The book page is already that note, so this is ``- ["quote"](open/id)``.
+    Journal keeps ``- [[Title by Author]]: "quote" ([Link](open/id))``.
+    The book page is already that note, so this is ``- "quote" ([Link](open/id))``.
     Books only: requires ``_is_book_highlight``. User notes use the same
     em dash as the journal formatter.
     """
@@ -1591,9 +1601,7 @@ def _format_book_page_bullet(payload: dict, book: dict | None = None) -> str | N
         return None
     note = _nonempty(payload.get("note"))
     highlight_url = _highlight_permalink(payload)
-    quote = f'"{_collapse(text)}"'
-    if highlight_url:
-        quote = f"[{quote}]({highlight_url})"
+    quote = _quoted_highlight_text(_collapse(text), highlight_url)
     line = f"- {quote}"
     if note:
         line += f" — {_collapse(note)}"
@@ -1849,10 +1857,10 @@ def _article_page_extras(payload: dict, book: dict | None) -> dict:
 
 
 def _format_article_page_bullet(payload: dict, book: dict | None = None) -> str | None:
-    """Quote line for the article page: quote + open/id, no title wikilink.
+    """Quote line for the article page: quote + optional (Link), no title wikilink.
 
-    Journal keeps ``- [[Title by Author]]: ["quote"](open/id)``.
-    The article page is already that note, so this is ``- ["quote"](open/id)``.
+    Journal keeps ``- [[Title by Author]]: "quote" ([Link](open/id))``.
+    The article page is already that note, so this is ``- "quote" ([Link](open/id))``.
     Articles only: requires ``_is_article_highlight``. User notes use the same
     em dash as the journal formatter.
     """
@@ -1865,9 +1873,7 @@ def _format_article_page_bullet(payload: dict, book: dict | None = None) -> str 
         return None
     note = _nonempty(payload.get("note"))
     highlight_url = _highlight_permalink(payload)
-    quote = f'"{_collapse(text)}"'
-    if highlight_url:
-        quote = f"[{quote}]({highlight_url})"
+    quote = _quoted_highlight_text(_collapse(text), highlight_url)
     line = f"- {quote}"
     if note:
         line += f" — {_collapse(note)}"
@@ -2021,7 +2027,7 @@ def _youtube_page_stem(book: dict | None, payload: dict) -> str | None:
 
 
 def _format_youtube_page_bullet(payload: dict, book: dict | None = None) -> str | None:
-    """Quote line for the YouTube note: ``- ["quote"](open/id)``, no wikilink."""
+    """Quote line for the YouTube note: ``- "quote" ([Link](open/id))``, no wikilink."""
     if not _is_youtube_highlight(book, payload):
         return None
     if not _youtube_page_stem(book, payload):
@@ -2031,9 +2037,7 @@ def _format_youtube_page_bullet(payload: dict, book: dict | None = None) -> str 
         return None
     note = _nonempty(payload.get("note"))
     highlight_url = _highlight_permalink(payload)
-    quote = f'"{_collapse(text)}"'
-    if highlight_url:
-        quote = f"[{quote}]({highlight_url})"
+    quote = _quoted_highlight_text(_collapse(text), highlight_url)
     line = f"- {quote}"
     if note:
         line += f" — {_collapse(note)}"

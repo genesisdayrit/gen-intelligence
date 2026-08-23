@@ -253,7 +253,7 @@ def test_highlight_bullet_does_not_wikilink_author():
     )
     assert line == (
         '- [[Increasing Returns by W. Brian Arthur]]: '
-        '["A quote"](https://readwise.io/open/954480)'
+        '"A quote" ([Link](https://readwise.io/open/954480))'
     )
     assert "by [[W. Brian Arthur]]" not in line
     assert "[[W. Brian Arthur]]" not in line

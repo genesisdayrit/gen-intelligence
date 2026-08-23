@@ -51,6 +51,7 @@ from services.obsidian.add_readwise_buffet import (
     _tweet_handle,
     _tweet_people_wikilink,
     _tweet_quote_for_page,
+    _quoted_highlight_text,
     _tweet_wikilink_target,
     TRANSCRIPT_HIGHLIGHTS_HEADER,
     _format_youtube_page_bullet,
@@ -532,7 +533,7 @@ def test_highlight_dedup_skips_old_title_dash_author_via_open_url():
 def test_highlight_dedup_does_not_match_bare_title_or_author():
     """A different highlight must not skip just because title/author already appear."""
     content = """### Content Buffet:
-- [[Deep Work by Cal Newport]]: ["Old quote"](https://readwise.io/open/111)
+- [[Deep Work by Cal Newport]]: "Old quote" ([Link](https://readwise.io/open/111))
 
 ### Content Planning
 """
@@ -573,7 +574,7 @@ def test_format_official_sample_without_title():
     """Official webhook sample has no title; write the linked highlight only."""
     clear_book_cache()
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
-    assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert line == '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     assert "[[" not in line
 
 
@@ -596,7 +597,7 @@ def test_format_official_sample_attaches_book_title(mock_get):
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "bookreview" not in line
     assert "(Book)" not in line
@@ -624,7 +625,7 @@ def test_format_highlight_includes_note_after_linked_quote(mock_get):
     line = format_readwise_bullet(_highlight_payload(note="worth revisiting"))
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
 
 
@@ -636,7 +637,7 @@ def test_format_uses_payload_title_as_kh_stem():
     )
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "bookreview" not in line
     assert "read.readwise.io" not in line
@@ -655,7 +656,7 @@ def test_format_highlight_uses_title_by_author_stem():
     )
     assert line == (
         '- [[Zero to One by Peter Thiel, Blake Masters]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
     line = format_readwise_bullet(
@@ -667,7 +668,7 @@ def test_format_highlight_uses_title_by_author_stem():
     assert line == (
         "- [[Surely You're Joking, Mr. Feynman! by Richard P. Feynman, "
         "Ralph Leighton, Edward Hutchings, and Albert R. Hibbs]]: "
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
     line = format_readwise_bullet(
@@ -678,7 +679,7 @@ def test_format_highlight_uses_title_by_author_stem():
     )
     assert line == (
         '- [[Zero to One by Peter Thiel,   Blake Masters]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
 
@@ -692,11 +693,11 @@ def test_highlight_stem_matches_reader_document_stem():
     line = format_readwise_bullet(_highlight_payload(title=title, author=author))
     assert line == (
         f'- [[{stem}]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert line != (
         '- [[Our Black Friday sale ends soon]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
 
@@ -705,7 +706,7 @@ def test_format_omits_author_from_wikilink_when_missing():
     line = format_readwise_bullet(_highlight_payload(title="Deep Work"))
     assert line == (
         '- [[Deep Work]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " - " not in line
     assert " by " not in line
@@ -717,7 +718,7 @@ def test_format_author_only_when_title_missing():
     line = format_readwise_bullet(_highlight_payload(author="Cal Newport"))
     assert line == (
         '- Cal Newport: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "[[" not in line
 
@@ -734,7 +735,7 @@ def test_format_wikilink_uses_sanitized_filename_stem():
     )
     assert line == (
         f'- [[{expected_stem}]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
 
@@ -742,7 +743,7 @@ def test_format_skips_empty_wikilink_after_sanitize():
     """A title that sanitizes to nothing must not write empty [[]]."""
     clear_book_cache()
     line = format_readwise_bullet(_highlight_payload(title="|#^]]"))
-    assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert line == '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     assert "[[" not in line
 
 
@@ -761,6 +762,43 @@ def test_format_wikilink_title_and_unlinked_quote_when_id_missing():
     assert line == '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever"'
     assert "bookreview" not in line
     assert "readwise.io/open" not in line
+
+
+def test_quoted_highlight_text_plain_quote_plus_optional_link():
+    """Shared helper: quote stays text; only trailing (Link) is clickable."""
+    assert _quoted_highlight_text("Most Amazing Highlight Ever") == (
+        '"Most Amazing Highlight Ever"'
+    )
+    assert _quoted_highlight_text(
+        "Most Amazing Highlight Ever",
+        "https://readwise.io/open/954480",
+    ) == (
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    )
+    linked = _quoted_highlight_text("quote", "https://readwise.io/open/1")
+    assert linked.startswith('"quote"')
+    assert "([Link](https://readwise.io/open/1))" in linked
+    assert not linked.startswith('["')
+    assert '["quote"](' not in linked
+
+
+def test_highlight_dedup_skips_legacy_wrapped_quote_for_same_open_id():
+    """Old [\"quote\"](open/id) lines still dedup against the new (Link) shape."""
+    content = """### Content Buffet:
+- [[Deep Work by Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)
+
+### Content Planning
+"""
+    payload = _highlight_payload(title="Deep Work", author="Cal Newport")
+    bullet = format_readwise_bullet(payload)
+    assert bullet == (
+        '- [[Deep Work by Cal Newport]]: '
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    )
+    updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
+    assert action == "skipped"
+    assert updated == content
+    assert content.count("https://readwise.io/open/954480") == 1
 
 
 def test_format_ignores_reader_payload():
@@ -895,7 +933,7 @@ def test_format_tweet_uses_handle_from_author():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "Tweets From Georgie" not in line
     assert "on Twitter" not in line
@@ -915,7 +953,7 @@ def test_format_tweet_falls_back_to_twitter_url_handle():
     )
     assert line == (
         '- [[Tweets from @forgebitz]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " by " not in line
 
@@ -932,7 +970,7 @@ def test_format_tweet_falls_back_to_x_com_url_handle():
     )
     assert line == (
         '- [[Tweets from @forgebitz]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " by " not in line
 
@@ -949,7 +987,7 @@ def test_format_tweet_missing_handle_falls_back_to_kh_stem():
     )
     assert line == (
         '- [[Tweets From Klaas]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " by " not in line
 
@@ -968,7 +1006,7 @@ def test_format_non_tweet_uses_title_by_author_stem():
     )
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "Tweets from" not in line
     assert "[[Deep Work - Cal Newport]]" not in line
@@ -996,7 +1034,7 @@ def test_format_tweet_from_fetched_book_fields(mock_get):
     line = format_readwise_bullet(OFFICIAL_HIGHLIGHT)
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "bookreview" not in line
     assert " by " not in line
@@ -1079,7 +1117,7 @@ def test_append_replaces_placeholder_on_effective_journal_path():
     assert result["success"] is True
     assert result["action"] == "replaced"
     assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Nov 27, 2025.md"
-    assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded["content"]
+    assert '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in uploaded["content"]
     assert uploaded["content"].index("### Content Buffet:") < uploaded["content"].index("### Content Planning")
 
 
@@ -1478,7 +1516,7 @@ def test_format_highlight_special_filename_chars_match_kh_stem():
     line = format_readwise_bullet(_highlight_payload(title=title, author="Someone"))
     assert line == (
         f'- [[{stem}]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert stem == _sanitize_filename(f'{title} by Someone')
     assert "read.readwise.io" not in line
@@ -1517,20 +1555,20 @@ def test_highlight_appends_separate_line_without_removing_standalone():
     bullet = format_readwise_bullet(payload)
     assert bullet == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     updated, action = insert_content_buffet_bullet(content, bullet, keys=dedup_keys(payload))
     assert action == "inserted"
     assert _buffet_lines(updated) == [
         "- [[Deep Work]]",
-        '- [[Deep Work by Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))',
     ]
 
 
 def test_standalone_wikilink_does_not_collapse_into_existing_highlight_line():
     """Highlight-first: later document save still writes the standalone line."""
     content = """### Content Buffet:
-- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)
+- [[Deep Work]]: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))
 
 ### Content Planning
 """
@@ -1542,7 +1580,7 @@ def test_standalone_wikilink_does_not_collapse_into_existing_highlight_line():
     )
     assert action == "inserted"
     assert _buffet_lines(updated) == [
-        '- [[Deep Work]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        '- [[Deep Work]]: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))',
         "- [[Deep Work]]",
     ]
 
@@ -1590,7 +1628,7 @@ def test_locked_tweet_highlight_still_uses_handle_wikilink():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert line != "- [[Tweets from @georgiedorothea]]"
 
@@ -1616,9 +1654,9 @@ def test_format_live_interneth0f_keeps_tco_and_open_link():
     )
     assert line == (
         '- [[Tweets from @InternetH0F]]: '
-        '["New York is now the #1 market for tech talent, dethroning '
+        '"New York is now the #1 market for tech talent, dethroning '
         "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
-        '"](https://readwise.io/open/1047167879)'
+        '" ([Link](https://readwise.io/open/1047167879))'
     )
     assert "![]" not in line
     assert "pbs.twimg.com" not in line
@@ -1644,8 +1682,8 @@ def test_format_live_flower_alicee_keeps_tco_and_open_link():
     )
     assert line == (
         '- [[Tweets from @flower_alicee]]: '
-        '["...but then when https://t.co/p3GyToJO6M"]'
-        "(https://readwise.io/open/1047167880)"
+        '"...but then when https://t.co/p3GyToJO6M" '
+        "([Link](https://readwise.io/open/1047167880))"
     )
     assert "![]" not in line
     assert "pbs.twimg.com" not in line
@@ -1658,7 +1696,7 @@ def test_format_tweet_strips_markdown_image_to_text_only():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Quote text"](https://readwise.io/open/954480)'
+        '"Quote text" ([Link](https://readwise.io/open/954480))'
     )
     assert "pbs.twimg.com" not in line
     assert "![]" not in line
@@ -1673,7 +1711,7 @@ def test_format_tweet_strips_markdown_image_on_own_line():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Quote text"](https://readwise.io/open/954480)'
+        '"Quote text" ([Link](https://readwise.io/open/954480))'
     )
     assert "pbs.twimg.com" not in line
     assert "![" not in line
@@ -1688,7 +1726,7 @@ def test_format_tweet_strips_html_img():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Quote text"](https://readwise.io/open/954480)'
+        '"Quote text" ([Link](https://readwise.io/open/954480))'
     )
     assert "<img" not in line
     assert "pbs.twimg.com" not in line
@@ -1703,7 +1741,7 @@ def test_format_tweet_strips_bare_twimg_url():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Quote text"](https://readwise.io/open/954480)'
+        '"Quote text" ([Link](https://readwise.io/open/954480))'
     )
     assert "pbs.twimg.com" not in line
     assert "pic.twitter.com" not in line
@@ -1718,7 +1756,7 @@ def test_format_tweet_strips_bare_video_twimg_url():
     )
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Quote text"](https://readwise.io/open/954480)'
+        '"Quote text" ([Link](https://readwise.io/open/954480))'
     )
     assert "video.twimg.com" not in line
 
@@ -1737,7 +1775,7 @@ def test_format_non_tweet_unrelated_url_is_unchanged():
     )
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        f'["{text}"](https://readwise.io/open/954480)'
+        f'"{text}" ([Link](https://readwise.io/open/954480))'
     )
     assert "https://example.com/diagram.png" in line
 
@@ -1756,7 +1794,7 @@ def test_format_non_tweet_markdown_image_is_unchanged():
     )
     assert line == (
         '- [[Deep Work by Cal Newport]]: '
-        f'["{text}"](https://readwise.io/open/954480)'
+        f'"{text}" ([Link](https://readwise.io/open/954480))'
     )
     assert "![](https://example.com/chart.png)" in line
 
@@ -1864,7 +1902,7 @@ def test_highlight_append_does_not_add_another_metadata_block():
     lines = _buffet_lines(updated)
     assert lines == [
         "- [[Deep Work]]",
-        '- [[Deep Work by Cal Newport]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        '- [[Deep Work by Cal Newport]]: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))',
     ]
     assert "readwise.io" not in "\n".join(lines[:-1])
     assert "published:" not in "\n".join(lines)
@@ -1970,7 +2008,7 @@ title: "Tweets from @georgiedorothea"
 
 Kept body text.
 """
-    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     updated, action = insert_bookmarked_tweets_bullet(
         content, bullet, keys=["https://readwise.io/open/954480"]
     )
@@ -1990,14 +2028,14 @@ def test_insert_bookmarked_tweets_dedups_open_url_not_handle():
 {BOOKMARKED_TWEETS_HEADER}
 - ["Old quote"](https://readwise.io/open/111)
 """
-    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    same_id = '- "Same id new wording" ([Link](https://readwise.io/open/111))'
     updated, action = insert_bookmarked_tweets_bullet(
         content, same_id, keys=["https://readwise.io/open/111"]
     )
     assert action == "skipped"
     assert updated == content
 
-    other = '- ["New quote"](https://readwise.io/open/222)'
+    other = '- "New quote" ([Link](https://readwise.io/open/222))'
     updated, action = insert_bookmarked_tweets_bullet(
         content, other, keys=["https://readwise.io/open/222"]
     )
@@ -2015,10 +2053,10 @@ def test_format_tweet_page_bullet_omits_wikilink_and_keeps_note():
     page = _format_tweet_page_bullet(payload, book)
     assert journal == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert page == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert "[[Tweets from @georgiedorothea]]" not in page
     assert _tweet_wikilink_target(book) == "Tweets from @georgiedorothea"
@@ -2071,9 +2109,9 @@ def test_format_tweet_page_bullet_strips_images_keeps_quote_and_open_id():
     book = _resolve_highlight_book(payload)
     page = _format_tweet_page_bullet(payload, book)
     assert page == (
-        '- ["New York is now the #1 market for tech talent, dethroning '
+        '- "New York is now the #1 market for tech talent, dethroning '
         "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
-        '"](https://readwise.io/open/954480)'
+        '" ([Link](https://readwise.io/open/954480))'
     )
     assert "![]" not in page
     assert "<img" not in page
@@ -2090,21 +2128,21 @@ def test_format_tweet_page_bullet_strips_html_and_bare_twimg():
         _tweet_highlight(text='Quote text <img src="https://pbs.twimg.com/media/foo.jpg">'),
         book,
     )
-    assert html == '- ["Quote text"](https://readwise.io/open/954480)'
+    assert html == '- "Quote text" ([Link](https://readwise.io/open/954480))'
     bare = _format_tweet_page_bullet(
         _tweet_highlight(
             text="Quote text https://pbs.twimg.com/media/foo.jpg pic.twitter.com/abc"
         ),
         book,
     )
-    assert bare == '- ["Quote text"](https://readwise.io/open/954480)'
+    assert bare == '- "Quote text" ([Link](https://readwise.io/open/954480))'
     video = _format_tweet_page_bullet(
         _tweet_highlight(
             text="Quote text https://video.twimg.com/ext_tw_video/1/pu/vid/foo.mp4"
         ),
         book,
     )
-    assert video == '- ["Quote text"](https://readwise.io/open/954480)'
+    assert video == '- "Quote text" ([Link](https://readwise.io/open/954480))'
 
 
 def test_format_tweet_page_bullet_image_only_is_none():
@@ -2145,14 +2183,14 @@ def test_format_tweet_page_bullet_skips_missing_handle_or_text():
 def test_new_tweet_page_markdown_is_minimal():
     markdown = _new_tweet_page_markdown(
         "Tweets from @georgiedorothea",
-        '- ["quote"](https://readwise.io/open/954480)',
+        '- "quote" ([Link](https://readwise.io/open/954480))',
         "georgiedorothea",
     )
     assert markdown.startswith("---\ntitle: \"Tweets from @georgiedorothea\"\n")
     assert '  - "[[@georgiedorothea]]"' in markdown
     assert "# Tweets from @georgiedorothea" in markdown
     assert BOOKMARKED_TWEETS_HEADER in markdown
-    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     frontmatter, _body = _extract_frontmatter(markdown)
     assert frontmatter["People"] == ["[[@georgiedorothea]]"]
     assert "Journal:" not in markdown
@@ -2172,14 +2210,14 @@ def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
     journal = store[JOURNAL_NOV_PATH]
     assert (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal
     page = store[TWEET_PAGE_PATH]
     assert 'title: "Tweets from @georgiedorothea"' in page
     assert "# Tweets from @georgiedorothea" in page
     assert BOOKMARKED_TWEETS_HEADER in page
     assert (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
         in page
     )
     assert "- [[Tweets from @georgiedorothea]]:" not in page
@@ -2244,7 +2282,7 @@ A paragraph that must survive.
     assert "A paragraph that must survive." in page
     assert BOOKMARKED_TWEETS_HEADER in page
     assert page.index("A paragraph that must survive.") < page.index(BOOKMARKED_TWEETS_HEADER)
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     frontmatter, body = _extract_frontmatter(page)
     assert "[[@georgiedorothea]]" in frontmatter["People"]
     assert "- [[Georgie Dorothea]]" in body
@@ -2347,13 +2385,13 @@ def test_journal_buffet_line_still_uses_tweets_from_handle_wikilink():
     ][0]
     assert journal_line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
     page_line = [
         ln for ln in store[TWEET_PAGE_PATH].splitlines() if "Most Amazing" in ln
     ][0]
     assert page_line == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
 
 
@@ -2449,7 +2487,7 @@ def test_existing_tweet_page_found_case_insensitive_filename():
 Some intro.
 
 ### Bookmarked Tweets
-- ["old"](https://readwise.io/open/1)
+- "old" ([Link](https://readwise.io/open/1))
 """
     mock_dbx, uploaded, store = _mock_vault_dbx({
         JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
@@ -2465,7 +2503,7 @@ Some intro.
     page = store[alt_path]
     assert "Some intro." in page
     assert "old" in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     frontmatter, body = _extract_frontmatter(page)
     assert frontmatter["People"] == ["[[@georgiedorothea]]"]
     assert "Some intro." in body
@@ -2514,11 +2552,11 @@ def test_bookmarked_tweets_live_interneth0f_keeps_tco_and_open_id():
     assert "[[@interneth0f]]" not in page
     line = [ln for ln in page.splitlines() if "New York is now" in ln][0]
     assert line == (
-        '- ["New York is now the #1 market for tech talent, dethroning '
+        '- "New York is now the #1 market for tech talent, dethroning '
         "San Francisco's 13-year reign (via: CNBC) https://t.co/L3eHRbgQyG"
-        '"](https://readwise.io/open/1047167879)'
+        '" ([Link](https://readwise.io/open/1047167879))'
     )
-    assert line.startswith("- [\"")
+    assert line.startswith("- \"")
     assert "https://t.co/L3eHRbgQyG" in line
     assert "https://readwise.io/open/1047167879" in line
     assert "![]" not in page
@@ -2555,8 +2593,8 @@ def test_bookmarked_tweets_live_flower_alicee_keeps_tco_and_open_id():
     assert "[[@Flower_alicee]]" not in page
     line = [ln for ln in page.splitlines() if "but then when" in ln][0]
     assert line == (
-        '- ["...but then when https://t.co/p3GyToJO6M"]'
-        "(https://readwise.io/open/1047167880)"
+        '- "...but then when https://t.co/p3GyToJO6M" '
+        "([Link](https://readwise.io/open/1047167880))"
     )
     assert "https://t.co/p3GyToJO6M" in line
     assert "https://readwise.io/open/1047167880" in line
@@ -2583,7 +2621,7 @@ def test_tweet_page_write_strips_images_keeps_quote_and_open_id():
     assert result["success"] is True
     page = store[TWEET_PAGE_PATH]
     line = [ln for ln in page.splitlines() if "Quote text" in ln][0]
-    assert line == '- ["Quote text https://t.co/abc"](https://readwise.io/open/954480)'
+    assert line == '- "Quote text https://t.co/abc" ([Link](https://readwise.io/open/954480))'
     assert "![]" not in page
     assert "<img" not in page
     assert "pbs.twimg.com" not in page
@@ -2620,7 +2658,7 @@ def test_tweet_people_wikilink_keeps_at_and_readwise_casing():
 def test_new_tweet_page_yaml_people_is_share_link_wikilink_list():
     markdown = _new_tweet_page_markdown(
         "Tweets from @InternetH0F",
-        '- ["quote"](https://readwise.io/open/1)',
+        '- "quote" ([Link](https://readwise.io/open/1))',
         "InternetH0F",
     )
     frontmatter, _body = _extract_frontmatter(markdown)
@@ -2639,7 +2677,7 @@ title: "Tweets from @georgiedorothea"
 Kept body.
 
 ### Bookmarked Tweets
-- ["old"](https://readwise.io/open/1)
+- "old" ([Link](https://readwise.io/open/1))
 """
     mock_dbx, uploaded, store = _mock_vault_dbx({
         JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
@@ -2656,7 +2694,7 @@ Kept body.
     assert page.count("[[@georgiedorothea]]") == 1
     assert "Kept body." in body
     assert "old" in body
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert not any("_People/" in item["path"] for item in uploaded)
 
 
@@ -2674,7 +2712,7 @@ People:
 Body stays.
 
 ### Bookmarked Tweets
-- ["old"](https://readwise.io/open/1)
+- "old" ([Link](https://readwise.io/open/1))
 """
     page_path = f"{KH_FOLDER}/Tweets from @InternetH0F.md"
     mock_dbx, _uploaded, store = _mock_vault_dbx({
@@ -2806,10 +2844,10 @@ def test_format_book_page_bullet_omits_wikilink_and_keeps_note():
     page = _format_book_page_bullet(payload, book)
     assert journal == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert page == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert "[[Deep Work by Cal Newport]]" not in page
     assert _format_book_page_bullet(_tweet_highlight(), _resolve_highlight_book(_tweet_highlight())) is None
@@ -2825,7 +2863,7 @@ title: "Deep Work by Cal Newport"
 ## Notes
 Kept body text.
 """
-    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     updated, action = insert_book_highlights_bullet(
         content, bullet, keys=["https://readwise.io/open/954480"]
     )
@@ -2844,14 +2882,14 @@ def test_insert_book_highlights_dedups_open_url_only():
 {BOOK_HIGHLIGHTS_HEADER}
 - ["Old quote"](https://readwise.io/open/111)
 """
-    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    same_id = '- "Same id new wording" ([Link](https://readwise.io/open/111))'
     updated, action = insert_book_highlights_bullet(
         content, same_id, keys=["https://readwise.io/open/111"]
     )
     assert action == "skipped"
     assert updated == content
 
-    other = '- ["New quote"](https://readwise.io/open/222)'
+    other = '- "New quote" ([Link](https://readwise.io/open/222))'
     updated, action = insert_book_highlights_bullet(
         content, other, keys=["https://readwise.io/open/222"]
     )
@@ -2863,7 +2901,7 @@ def test_insert_book_highlights_dedups_open_url_only():
 def test_new_book_page_markdown_has_author_people_and_metadata():
     markdown = _new_book_page_markdown(
         "Deep Work by Cal Newport",
-        '- ["quote"](https://readwise.io/open/954480)',
+        '- "quote" ([Link](https://readwise.io/open/954480))',
         {
             "author": "[[Cal Newport]]",
             "URL": "https://www.amazon.com/dp/example",
@@ -2884,7 +2922,7 @@ def test_new_book_page_markdown_has_author_people_and_metadata():
     assert frontmatter["category"] == "books"
     assert frontmatter["source"] == "kindle"
     assert BOOK_HIGHLIGHTS_HEADER in markdown
-    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     assert "[[Deep Work by Cal Newport]]:" not in markdown
     assert "[[@" not in markdown
 
@@ -2901,7 +2939,7 @@ def test_book_highlight_creates_title_by_author_page():
     journal = store[JOURNAL_NOV_PATH]
     assert (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal
     page = store[BOOK_PAGE_PATH]
     frontmatter, body = _extract_frontmatter(page)
@@ -2913,7 +2951,7 @@ def test_book_highlight_creates_title_by_author_page():
     assert frontmatter["source"] == "kindle"
     assert BOOK_HIGHLIGHTS_HEADER in page
     assert (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
         in page
     )
     assert "- [[Deep Work by Cal Newport]]:" not in page
@@ -2971,7 +3009,7 @@ def test_two_authors_become_two_distinct_people_and_author_links():
     assert page.count("[[Bob Jones]]") == 2
     assert (
         '- [[Increasing Returns by Alice Smith, Alice Smith, Bob Jones]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in store[JOURNAL_NOV_PATH]
 
 
@@ -2992,7 +3030,7 @@ def test_tweet_highlight_does_not_write_book_page():
     ][0]
     assert journal_line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
 
 
@@ -3033,13 +3071,13 @@ def test_journal_buffet_line_unchanged_for_book_highlight():
     ][0]
     assert journal_line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
     page_line = [
         ln for ln in store[BOOK_PAGE_PATH].splitlines() if "Most Amazing" in ln
     ][0]
     assert page_line == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
 
 
@@ -3103,7 +3141,7 @@ A paragraph that must survive.
     assert "A paragraph that must survive." in body
     assert BOOK_HIGHLIGHTS_HEADER in page
     assert page.index("A paragraph that must survive.") < page.index(BOOK_HIGHLIGHTS_HEADER)
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
 
 
 def test_existing_book_people_not_duplicated():
@@ -3119,7 +3157,7 @@ People:
 # Deep Work by Cal Newport
 
 ### Book highlights
-- ["old"](https://readwise.io/open/1)
+- "old" ([Link](https://readwise.io/open/1))
 """
     mock_dbx, _uploaded, store = _mock_vault_dbx({
         JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
@@ -3178,7 +3216,7 @@ def test_title_only_book_page_when_author_missing():
     assert "author" not in frontmatter or not frontmatter.get("author")
     assert not frontmatter.get("People")
     assert BOOK_HIGHLIGHTS_HEADER in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "[[Deep Work]]:" in store[JOURNAL_NOV_PATH]
 
 
@@ -3282,10 +3320,10 @@ def test_format_article_page_bullet_omits_wikilink_and_keeps_note():
     page = _format_article_page_bullet(payload, book)
     assert journal == (
         '- [[A long essay by The Verge]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert page == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — worth revisiting'
     )
     assert "[[A long essay by The Verge]]" not in page
     assert _format_article_page_bullet(_tweet_highlight(), _resolve_highlight_book(_tweet_highlight())) is None
@@ -3302,7 +3340,7 @@ title: "A long essay by The Verge"
 ## Notes
 Kept body text.
 """
-    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     updated, action = insert_article_highlights_bullet(
         content, bullet, keys=["https://readwise.io/open/954480"]
     )
@@ -3321,14 +3359,14 @@ def test_insert_article_highlights_dedups_open_url_only():
 {ARTICLE_HIGHLIGHTS_HEADER}
 - ["Old quote"](https://readwise.io/open/111)
 """
-    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    same_id = '- "Same id new wording" ([Link](https://readwise.io/open/111))'
     updated, action = insert_article_highlights_bullet(
         content, same_id, keys=["https://readwise.io/open/111"]
     )
     assert action == "skipped"
     assert updated == content
 
-    other = '- ["New quote"](https://readwise.io/open/222)'
+    other = '- "New quote" ([Link](https://readwise.io/open/222))'
     updated, action = insert_article_highlights_bullet(
         content, other, keys=["https://readwise.io/open/222"]
     )
@@ -3340,7 +3378,7 @@ def test_insert_article_highlights_dedups_open_url_only():
 def test_new_article_page_markdown_has_author_people_and_url():
     markdown = _new_article_page_markdown(
         "A long essay by The Verge",
-        '- ["quote"](https://readwise.io/open/954480)',
+        '- "quote" ([Link](https://readwise.io/open/954480))',
         {
             "author": "[[The Verge]]",
             "URL": "https://www.theverge.com/long-essay",
@@ -3358,7 +3396,7 @@ def test_new_article_page_markdown_has_author_people_and_url():
     assert "category" not in frontmatter
     assert "source" not in frontmatter
     assert ARTICLE_HIGHLIGHTS_HEADER in markdown
-    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     assert "[[A long essay by The Verge]]:" not in markdown
     assert "[[@" not in markdown
 
@@ -3375,7 +3413,7 @@ def test_article_highlight_creates_title_by_author_page():
     journal = store[JOURNAL_NOV_PATH]
     assert (
         '- [[A long essay by The Verge]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal
     page = store[ARTICLE_PAGE_PATH]
     frontmatter, body = _extract_frontmatter(page)
@@ -3385,7 +3423,7 @@ def test_article_highlight_creates_title_by_author_page():
     assert "readwise_id" not in frontmatter
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
         in page
     )
     assert "- [[A long essay by The Verge]]:" not in page
@@ -3469,7 +3507,7 @@ A paragraph that must survive.
     assert "A paragraph that must survive." in body
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert page.index("A paragraph that must survive.") < page.index(ARTICLE_HIGHLIGHTS_HEADER)
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
 
 
 def test_article_highlight_fills_empty_url_on_existing_note():
@@ -3513,14 +3551,14 @@ def test_tweet_and_book_highlights_do_not_write_article_highlights():
     ][0]
     assert tweet_line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     book_line = [
         ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Deep Work by Cal Newport" in ln
     ][0]
     assert book_line == (
         '- [[Deep Work by Cal Newport]]: '
-        '["A book sentence"](https://readwise.io/open/954482)'
+        '"A book sentence" ([Link](https://readwise.io/open/954482))'
     )
 
 
@@ -3555,13 +3593,13 @@ def test_journal_buffet_line_unchanged_for_article_highlight():
     ][0]
     assert journal_line == (
         '- [[A long essay by The Verge]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
     page_line = [
         ln for ln in store[ARTICLE_PAGE_PATH].splitlines() if "Most Amazing" in ln
     ][0]
     assert page_line == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480)) — clip this'
     )
 
 
@@ -3635,7 +3673,7 @@ def test_title_only_article_page_when_author_missing():
     assert "author" not in frontmatter or not frontmatter.get("author")
     assert not frontmatter.get("People")
     assert ARTICLE_HIGHLIGHTS_HEADER in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "[[A long essay]]:" in store[JOURNAL_NOV_PATH]
 
 # ---------------------------------------------------------------------------
@@ -3685,10 +3723,10 @@ def test_format_youtube_page_bullet_omits_wikilink():
     page = _format_youtube_page_bullet(payload, book)
     assert journal == (
         '- [[Cool Video by A Channel]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert page == (
-        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert "[[Cool Video by A Channel]]" not in page
     assert _format_youtube_page_bullet(_book_highlight(), _resolve_highlight_book(_book_highlight())) is None
@@ -3703,7 +3741,7 @@ URL: https://www.youtube.com/watch?v=abcdefghijk
 
 Kept description.
 """
-    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     updated, action = insert_transcript_highlights_bullet(
         content, bullet, keys=["https://readwise.io/open/954480"]
     )
@@ -3720,7 +3758,7 @@ def test_insert_transcript_highlights_dedups_open_url():
 {TRANSCRIPT_HIGHLIGHTS_HEADER}
 - ["Old quote"](https://readwise.io/open/111)
 """
-    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    same_id = '- "Same id new wording" ([Link](https://readwise.io/open/111))'
     updated, action = insert_transcript_highlights_bullet(
         content, same_id, keys=["https://readwise.io/open/111"]
     )
@@ -3755,12 +3793,12 @@ Video description here.
     journal = store[JOURNAL_NOV_PATH]
     assert (
         '- [[Cool Video by A Channel]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal
     page = store[YOUTUBE_PAGE_PATH]
     assert TRANSCRIPT_HIGHLIGHTS_HEADER in page
     assert page.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < page.index("## Cool Video")
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "Video description here." in page
     assert BOOK_HIGHLIGHTS_HEADER not in page
     assert BOOKMARKED_TWEETS_HEADER not in page
@@ -3792,7 +3830,7 @@ readwise_id: 01readerdoc
     assert YOUTUBE_PAGE_PATH not in store
     page = store[old_path]
     assert TRANSCRIPT_HIGHLIGHTS_HEADER in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert not any(item["path"].endswith("Cool Video (Reader) by A Channel.md") for item in uploaded)
 
 

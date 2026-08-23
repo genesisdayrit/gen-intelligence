@@ -293,7 +293,7 @@ def test_dedup_on_second_run():
     )
     assert first["replaced"] == 1
     assert first["files_written"] == 1
-    assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded_first[0]["content"]
+    assert '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in uploaded_first[0]["content"]
     assert "[[Deep Work by Cal Newport]]:" in uploaded_first[0]["content"]
     assert "bookreview" not in uploaded_first[0]["content"]
 
@@ -366,7 +366,7 @@ def test_export_title_used_without_books_api():
     mock_fetch.assert_not_called()
     assert "book 8237" not in uploaded[0]["content"]
     assert "[[Deep Work by Cal Newport]]:" in uploaded[0]["content"]
-    assert '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in uploaded[0]["content"]
+    assert '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in uploaded[0]["content"]
     assert "bookreview" not in uploaded[0]["content"]
     assert "(Book)" not in uploaded[0]["content"]
 
@@ -381,7 +381,7 @@ def test_missing_title_writes_quote_only():
         )
     assert result["files_written"] == 1
     line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
-    assert line == '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert line == '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     assert "[[" not in line
     assert "book 8237" not in uploaded[0]["content"]
 
@@ -397,7 +397,7 @@ def test_missing_title_with_author_writes_author_prefix():
     assert result["files_written"] == 1
     mock_fetch.assert_not_called()
     line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
-    assert line == '- Cal Newport: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    assert line == '- Cal Newport: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     assert "[[" not in line
 
 
@@ -450,7 +450,7 @@ def test_export_tweet_highlight_uses_handle_wikilink():
     line = [ln for ln in uploaded[0]["content"].splitlines() if "Most Amazing" in ln][0]
     assert line == (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " by " not in line
     assert "bookreview" not in uploaded[0]["content"]
@@ -480,11 +480,11 @@ def test_export_tweet_highlight_creates_handle_page():
     journal = next(item for item in uploaded if item["path"] == nov_path)
     assert (
         '- [[Tweets from @georgiedorothea]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal["content"]
     page = store[tweet_page]
     assert "### Bookmarked Tweets" in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "- [[Tweets from @georgiedorothea]]:" not in page
     frontmatter, _body = _extract_frontmatter(page)
     assert frontmatter["People"] == ["[[@georgiedorothea]]"]
@@ -513,11 +513,11 @@ def test_export_book_highlight_creates_title_by_author_page():
     journal = next(item for item in uploaded if item["path"] == nov_path)
     assert (
         '- [[Deep Work by Cal Newport]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal["content"]
     page = store[book_page]
     assert "### Book highlights" in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "- [[Deep Work by Cal Newport]]:" not in page
     assert 'author: "[[Cal Newport]]"' in page
     assert '  - "[[Cal Newport]]"' in page
@@ -548,11 +548,11 @@ def test_export_article_highlight_creates_title_by_author_page():
     journal = next(item for item in uploaded if item["path"] == nov_path)
     assert (
         '- [[A long essay by The Verge]]: '
-        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     ) in journal["content"]
     page = store[article_page]
     assert "### Article highlights" in page
-    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "- [[A long essay by The Verge]]:" not in page
     assert "### Book highlights" not in page
     assert 'author: "[[The Verge]]"' in page

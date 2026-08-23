@@ -287,7 +287,7 @@ date: 2026-08-22
 ---
 
 ### Content Buffet:
-- [[My Article]]: ["a quote"](https://readwise.io/open/954480)
+- [[My Article]]: "a quote" ([Link](https://readwise.io/open/954480))
 
 ### Content Planning
 - plan something
@@ -300,7 +300,7 @@ date: 2026-08-22
     section = uploads[0]["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     lines = [line for line in section.splitlines() if line.strip()]
     assert lines == [
-        '- [[My Article]]: ["a quote"](https://readwise.io/open/954480)',
+        '- [[My Article]]: "a quote" ([Link](https://readwise.io/open/954480))',
         "- [[My Article]]",
     ]
 
@@ -715,7 +715,7 @@ date: 2025-11-28
     lines = [line for line in section.splitlines() if line.strip()]
     assert lines == [
         f"- [[{stem}]]",
-        f'- [[{stem}]]: ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)',
+        f'- [[{stem}]]: "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))',
     ]
     assert "published:" not in section
     assert "saved:" not in section
