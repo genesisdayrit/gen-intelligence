@@ -11,7 +11,13 @@ import pytz
 import requests
 from dotenv import load_dotenv
 
-from services.obsidian.utils.author_yaml import author_frontmatter_value, plain_author_label
+from services.obsidian.utils.author_yaml import (
+    author_frontmatter_value,
+    author_yaml_literal,
+    is_plain_to_wikilink_author_upgrade,
+    plain_author_label,
+    split_author_names,
+)
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
@@ -22,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 CONTENT_BUFFET_HEADER = "### Content Buffet:"
 BOOKMARKED_TWEETS_HEADER = "### Bookmarked Tweets"
+BOOK_HIGHLIGHTS_HEADER = "### Book highlights"
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
 EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
@@ -908,27 +915,27 @@ def insert_content_buffet_bullet(
     return "\n".join(updated), "inserted"
 
 
-def insert_bookmarked_tweets_bullet(
+def _insert_heading_bullet(
     content: str,
+    header: str,
     bullet: str,
     keys: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Insert ``bullet`` under ``### Bookmarked Tweets``. Returns (content, action).
+    """Insert ``bullet`` under ``header``. Returns (content, action).
 
-    Sibling of ``insert_content_buffet_bullet``. If the heading is missing, it
-    is appended at the end of the note — existing People/body/other headings
-    are left alone. Dedup uses ``_section_has_dedup_key`` on the open URL
-    (not the handle or title).
+    If the heading is missing, it is appended at the end of the note —
+    existing People/body/other headings are left alone. Dedup uses
+    ``_section_has_dedup_key`` on the open URL (not the title or stem).
     """
     lines = content.split("\n")
-    header_idx, section_end = _section_bounds(lines, BOOKMARKED_TWEETS_HEADER)
+    header_idx, section_end = _section_bounds(lines, header)
     bullet_lines = _buffet_bullet_lines(bullet)
 
     if header_idx is None:
         updated = list(lines)
         if updated and updated[-1].strip():
             updated.append("")
-        updated.append(BOOKMARKED_TWEETS_HEADER)
+        updated.append(header)
         updated.extend(bullet_lines)
         return "\n".join(updated), "inserted"
 
@@ -954,6 +961,34 @@ def insert_bookmarked_tweets_bullet(
             insert_at = header_idx + 1 + i + 1
     updated = lines[:insert_at] + bullet_lines + lines[insert_at:]
     return "\n".join(updated), "inserted"
+
+
+def insert_bookmarked_tweets_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Bookmarked Tweets``. Returns (content, action).
+
+    Sibling of ``insert_content_buffet_bullet``. If the heading is missing, it
+    is appended at the end of the note — existing People/body/other headings
+    are left alone. Dedup uses ``_section_has_dedup_key`` on the open URL
+    (not the handle or title).
+    """
+    return _insert_heading_bullet(content, BOOKMARKED_TWEETS_HEADER, bullet, keys)
+
+
+def insert_book_highlights_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Book highlights``. Returns (content, action).
+
+    Sibling of ``insert_bookmarked_tweets_bullet``. Missing heading is
+    appended; other sections stay. Dedup is the open URL only.
+    """
+    return _insert_heading_bullet(content, BOOK_HIGHLIGHTS_HEADER, bullet, keys)
 
 
 def _wikilink_from_note_stem(note_title: str) -> str | None:
@@ -1089,8 +1124,12 @@ def _resolve_knowledge_hub_folder(dbx: dropbox.Dropbox) -> str:
     return _find_knowledge_hub_path(dbx, vault_path)
 
 
+def _hub_note_filename(stem: str) -> str:
+    return _sanitize_note_filename(stem) + ".md"
+
+
 def _tweet_page_filename(target: str) -> str:
-    return _sanitize_note_filename(target) + ".md"
+    return _hub_note_filename(target)
 
 
 def _tweet_people_wikilink(handle: str) -> str:
@@ -1197,12 +1236,12 @@ def _find_hub_note_by_filename(
     return None
 
 
-def _download_tweet_page(
+def _download_hub_note(
     dbx: dropbox.Dropbox,
     hub_path: str,
     filename: str,
 ) -> tuple[str, str] | None:
-    """Return ``(path, content)`` for an existing handle page, or None."""
+    """Return ``(path, content)`` for an existing Knowledge Hub note, or None."""
     constructed = f"{hub_path}/{filename}"
     try:
         return constructed, _get_file_content(dbx, constructed)
@@ -1215,6 +1254,15 @@ def _download_tweet_page(
         return alt, _get_file_content(dbx, alt)
     except FileNotFoundError:
         return None
+
+
+def _download_tweet_page(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    filename: str,
+) -> tuple[str, str] | None:
+    """Return ``(path, content)`` for an existing handle page, or None."""
+    return _download_hub_note(dbx, hub_path, filename)
 
 
 def _append_tweet_page(
@@ -1303,6 +1351,289 @@ def _append_tweet_pages_after_journal(
             )
 
 
+def _is_book_highlight(book: dict | None) -> bool:
+    """True for Readwise ``category == books`` that are not tweets."""
+    if not book or _is_tweet_book(book):
+        return False
+    category = (_nonempty(book.get("category")) or "").lower()
+    return category == "books"
+
+
+def _book_page_stem(book: dict | None, payload: dict) -> str | None:
+    """``Title by Author`` stem (title-only if no author) for a book highlight."""
+    if not _is_book_highlight(book):
+        return None
+    return reader_knowledge_hub_note_stem(
+        _nonempty((book or {}).get("title")),
+        _reader_author(book or {}) or _reader_author(payload),
+    )
+
+
+def _distinct_author_names(raw: object) -> list[str]:
+    """Distinct author names for YAML author + People. Dedups case-insensitively."""
+    text = plain_author_label(raw)
+    if not text:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in split_author_names(_collapse(text)):
+        target = _wikilink_target(part)
+        if not target:
+            continue
+        key = target.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(target)
+    return names
+
+
+def _book_author_people(book: dict | None, payload: dict) -> tuple[str | None, list[str]]:
+    """Wikilinked ``author`` value and People list for distinct book authors."""
+    names = _distinct_author_names(
+        _reader_author(book or {}) or _reader_author(payload)
+    )
+    if not names:
+        return None, []
+    formatted = author_frontmatter_value(", ".join(names))
+    return formatted, [f"[[{name}]]" for name in names]
+
+
+def _book_page_extras(payload: dict, book: dict | None) -> dict:
+    """Fill-if-empty YAML extras for a book page. Omits empty fields."""
+    extras: dict = {}
+    author, _people = _book_author_people(book, payload)
+    if author:
+        extras["author"] = author
+    source_url = _http_url((book or {}).get("source_url") or payload.get("source_url"))
+    if source_url:
+        extras["URL"] = source_url
+    book_id = payload.get("book_id")
+    if book_id is not None and book_id != "":
+        extras["readwise_id"] = str(book_id)
+    category = _nonempty((book or {}).get("category") or payload.get("category"))
+    if category:
+        extras["category"] = category
+    source = _nonempty((book or {}).get("source") or payload.get("source"))
+    if source:
+        extras["source"] = source
+    return extras
+
+
+def _format_book_page_bullet(payload: dict, book: dict | None = None) -> str | None:
+    """Quote line for the book page: quote + open/id, no title wikilink.
+
+    Journal keeps ``- [[Title by Author]]: ["quote"](open/id)``.
+    The book page is already that note, so this is ``- ["quote"](open/id)``.
+    Books only: requires ``_is_book_highlight``. User notes use the same
+    em dash as the journal formatter.
+    """
+    if not _is_book_highlight(book):
+        return None
+    if not _book_page_stem(book, payload):
+        return None
+    text = _nonempty(payload.get("text"))
+    if not text:
+        return None
+    note = _nonempty(payload.get("note"))
+    highlight_url = _highlight_permalink(payload)
+    quote = f'"{_collapse(text)}"'
+    if highlight_url:
+        quote = f"[{quote}]({highlight_url})"
+    line = f"- {quote}"
+    if note:
+        line += f" — {_collapse(note)}"
+    return line
+
+
+def _yaml_value_empty(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (list, dict)) and not value:
+        return True
+    return False
+
+
+def _people_entry_has_name(entry: object, name: str) -> bool:
+    """True when ``entry`` is already this person (case-insensitive).
+
+    ``[[Alice Smith]]`` and ``Alice Smith`` count as present.
+    """
+    text = str(entry).strip()
+    if text.startswith("[[") and text.endswith("]]"):
+        text = text[2:-2].strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    have = _collapse(text)
+    want = _collapse(name)
+    return bool(have) and have.casefold() == want.casefold()
+
+
+def _new_book_page_markdown(
+    stem: str,
+    bullet: str,
+    extras: dict,
+    people_links: list[str],
+) -> str:
+    """Minimal book page: YAML metadata, H1, Book highlights, first bullet."""
+    lines = ["---", f'title: "{stem}"']
+    author = extras.get("author")
+    if author:
+        lines.append(f"author: {author_yaml_literal(author)}")
+    if people_links:
+        lines.append("People:")
+        for link in people_links:
+            lines.append(f'  - "{link}"')
+    for key in ("URL", "readwise_id", "category", "source"):
+        value = extras.get(key)
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        lines.append(f"{key}: {value}")
+    lines.extend(["---", "", f"# {stem}", "", BOOK_HIGHLIGHTS_HEADER, bullet, ""])
+    return "\n".join(lines)
+
+
+def _ensure_book_page_frontmatter(
+    content: str,
+    extras: dict,
+    people_links: list[str],
+) -> str:
+    """Fill empty YAML keys and add missing People author wikilinks.
+
+    Does not overwrite People/body/other keys blindly. A plain-text
+    ``author`` is upgraded to wikilinks only when it is the same name(s).
+    """
+    from services.obsidian.add_shared_link import _extract_frontmatter, _rebuild_markdown
+
+    frontmatter, body = _extract_frontmatter(content)
+    changed = False
+    if extras.get("title") and _yaml_value_empty(frontmatter.get("title")):
+        frontmatter["title"] = extras["title"]
+        changed = True
+    for key, value in extras.items():
+        if key == "title":
+            continue
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        existing = frontmatter.get(key)
+        if key == "author":
+            if _yaml_value_empty(existing) or is_plain_to_wikilink_author_upgrade(
+                existing, value
+            ):
+                frontmatter[key] = value
+                changed = True
+            continue
+        if _yaml_value_empty(existing):
+            frontmatter[key] = value
+            changed = True
+
+    if people_links:
+        people = _people_list(frontmatter.get("People"))
+        added = False
+        for link in people_links:
+            name = link[2:-2] if link.startswith("[[") and link.endswith("]]") else link
+            if any(_people_entry_has_name(item, name) for item in people):
+                continue
+            people.append(link)
+            added = True
+        if added:
+            frontmatter["People"] = people
+            changed = True
+
+    if not changed:
+        return content
+    return _rebuild_markdown(frontmatter, body)
+
+
+def _append_book_page(
+    dbx: dropbox.Dropbox,
+    payload: dict,
+    hub_path: str,
+) -> str | None:
+    """Create or append one book highlight on the ``Title by Author`` note.
+
+    Books only — gated on ``_is_book_highlight``. Returns the Dropbox
+    action (``created``, ``inserted``, ``replaced``, ``skipped``) or None
+    when this highlight is not a book.
+    """
+    book = _resolve_highlight_book(payload)
+    if not _is_book_highlight(book):
+        return None
+    stem = _book_page_stem(book, payload)
+    if not stem:
+        return None
+    bullet = _format_book_page_bullet(payload, book)
+    if not bullet:
+        return None
+    keys = dedup_keys(payload)
+    extras = _book_page_extras(payload, book)
+    extras["title"] = stem
+    _author, people_links = _book_author_people(book, payload)
+    filename = _hub_note_filename(stem)
+    existing = _download_hub_note(dbx, hub_path, filename)
+    if existing is None:
+        file_path = f"{hub_path}/{filename}"
+        markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
+        dbx.files_upload(
+            markdown.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("Book page created path=%s", file_path)
+        return "created"
+
+    file_path, content = existing
+    updated, action = insert_book_highlights_bullet(content, bullet, keys)
+    updated = _ensure_book_page_frontmatter(updated, extras, people_links)
+    if updated != content:
+        dbx.files_upload(
+            updated.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        if action == "skipped":
+            logger.info("Book page metadata backfill path=%s", file_path)
+        else:
+            logger.info("Book page %s path=%s", action, file_path)
+    elif action == "skipped":
+        logger.info("Book page skipped (duplicate) path=%s", file_path)
+    return action
+
+
+def _append_book_pages_after_journal(
+    dbx: dropbox.Dropbox,
+    payloads: list[dict],
+) -> None:
+    """Best-effort book-page writes after a successful highlight journal pass.
+
+    ``readwise.highlight.created`` only (the same ``format_readwise_bullet``
+    writer the journal book line uses). Gated on ``_is_book_highlight`` —
+    tweets stay on the tweet-page path, articles and Reader documents do
+    not get ``### Book highlights``. Not used for Reader
+    ``*_document.created``, share-link, YouTube, or Raindrop. Resolves the
+    Knowledge Hub folder only when the payload is a book. Failures are
+    logged and never raised — the journal write already happened.
+    """
+    hub_path: str | None = None
+    for payload in payloads:
+        if not is_highlight_event(payload):
+            continue
+        book = _resolve_highlight_book(payload)
+        if not _is_book_highlight(book):
+            continue
+        try:
+            if hub_path is None:
+                hub_path = _resolve_knowledge_hub_folder(dbx)
+            _append_book_page(dbx, payload, hub_path)
+        except Exception:
+            logger.exception(
+                "Book page write failed; journal write kept (highlight %s)",
+                payload.get("id"),
+            )
+
+
 def write_highlights_by_journal(
     payloads: list[dict],
     now: datetime | None = None,
@@ -1317,11 +1648,13 @@ def write_highlights_by_journal(
     Defaults are the highlight formatter, highlight journal path, and
     highlight dedup keys. Missing journal files are skipped — never written
     to today. After a successful journal pass, tweet *highlights* also
-    create or append the ``Tweets from @handle`` Knowledge Hub page when
+    create or append the ``Tweets from @handle`` Knowledge Hub page, and
+    book *highlights* (``category == books``, not tweets) create or append
+    the ``Title by Author`` page under ``### Book highlights``, when
     ``format_fn`` is ``format_readwise_bullet`` (webhook
     ``readwise.highlight.created`` and the existing highlight backfill,
     which already calls this writer). Document fallback / other formatters
-    skip it. Page failures are logged and never undo the journal write.
+    skip both. Page failures are logged and never undo the journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -1394,6 +1727,7 @@ def write_highlights_by_journal(
 
             if format_fn is format_readwise_bullet:
                 _append_tweet_pages_after_journal(dbx, buffet_payloads)
+                _append_book_pages_after_journal(dbx, buffet_payloads)
         except Exception as exc:
             logger.exception("Readwise buffet failed for %s", file_path)
             if raise_errors:
@@ -1568,8 +1902,10 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     bookmark the document page URL in Raindrop Unsorted. Highlights wikilink
     that same KH stem and are not bookmarked. ``readwise.highlight.created``
     tweet highlights also create or append ``Tweets from @handle`` under
-    ``### Bookmarked Tweets`` after the journal write. Reader document
-    events, share-link, YouTube, and Raindrop do not write that page.
+    ``### Bookmarked Tweets`` after the journal write. Book highlights
+    (``category == books``, not tweets) create or append
+    ``Title by Author`` under ``### Book highlights``. Reader document
+    events, share-link, YouTube, and Raindrop do not write those pages.
     Child annotation documents are ignored.
     """
     if is_highlight_event(payload):

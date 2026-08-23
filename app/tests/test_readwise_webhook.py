@@ -31,11 +31,15 @@ from fastapi.testclient import TestClient
 
 from main import app
 from services.obsidian.add_readwise_buffet import (
+    BOOK_HIGHLIGHTS_HEADER,
     BOOKMARKED_TWEETS_HEADER,
     _ensure_tweet_page_people,
+    _format_book_page_bullet,
     _format_tweet_page_bullet,
     _get_dropbox_client,
+    _is_book_highlight,
     _is_tweet_book,
+    _new_book_page_markdown,
     _new_tweet_page_markdown,
     _people_entry_has_handle,
     _resolve_highlight_book,
@@ -56,6 +60,7 @@ from services.obsidian.add_readwise_buffet import (
     get_document_journal_path,
     get_highlight_journal_path,
     get_today_journal_path,
+    insert_book_highlights_bullet,
     insert_bookmarked_tweets_bullet,
     insert_content_buffet_bullet,
     is_document_event,
@@ -2269,14 +2274,13 @@ def test_reader_document_created_does_not_write_tweet_page():
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"title": "Deep Work", "author": "Cal Newport", "category": "books", "source": "kindle"},
         {"title": "A long essay", "author": "The Verge", "category": "articles", "source": "reader"},
         {"title": "Weekly notes", "author": "Casey Newton", "category": "articles"},
         {"title": "Invoice.pdf", "author": None, "category": "pdfs"},
     ],
 )
 def test_non_tweet_highlights_never_touch_bookmarked_tweets_or_hub(overrides):
-    """Articles, books, and other highlights stay journal-only."""
+    """Articles and other non-book highlights stay journal-only."""
     clear_book_cache()
     payload = _highlight_payload(**overrides)
     book = _resolve_highlight_book(payload)
@@ -2743,3 +2747,425 @@ Kept.
     assert page.count("https://readwise.io/open/954480") == 1
     assert "Kept." in body
     assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
+
+# ---------------------------------------------------------------------------
+# Title by Author Knowledge Hub book page
+# ---------------------------------------------------------------------------
+
+BOOK_PAGE_PATH = f"{KH_FOLDER}/Deep Work by Cal Newport.md"
+
+
+def _book_highlight(**overrides):
+    data = {
+        "title": "Deep Work",
+        "author": "Cal Newport",
+        "category": "books",
+        "source": "kindle",
+        "source_url": "https://www.amazon.com/dp/example",
+    }
+    data.update(overrides)
+    return _highlight_payload(**data)
+
+
+def test_is_book_highlight_requires_books_category_and_not_tweet():
+    clear_book_cache()
+    book = _resolve_highlight_book(_book_highlight())
+    assert _is_book_highlight(book) is True
+    article = _resolve_highlight_book(
+        _highlight_payload(title="A long essay", author="The Verge", category="articles")
+    )
+    assert _is_book_highlight(article) is False
+    tweet = _resolve_highlight_book(_tweet_highlight())
+    assert _is_book_highlight(tweet) is False
+    tweet_books = _resolve_highlight_book(
+        _highlight_payload(
+            title="Tweets From Georgie Dorothea",
+            author="@georgiedorothea on Twitter",
+            category="books",
+            source="twitter",
+            source_url="https://twitter.com/georgiedorothea",
+        )
+    )
+    assert _is_tweet_book(tweet_books) is True
+    assert _is_book_highlight(tweet_books) is False
+
+
+def test_format_book_page_bullet_omits_wikilink_and_keeps_note():
+    clear_book_cache()
+    payload = _book_highlight(note="worth revisiting")
+    book = _resolve_highlight_book(payload)
+    journal = format_readwise_bullet(payload)
+    page = _format_book_page_bullet(payload, book)
+    assert journal == (
+        '- [[Deep Work by Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert page == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — worth revisiting'
+    )
+    assert "[[Deep Work by Cal Newport]]" not in page
+    assert _format_book_page_bullet(_tweet_highlight(), _resolve_highlight_book(_tweet_highlight())) is None
+
+
+def test_insert_book_highlights_appends_missing_heading():
+    content = """---
+title: "Deep Work by Cal Newport"
+---
+
+# Deep Work by Cal Newport
+
+## Notes
+Kept body text.
+"""
+    bullet = '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    updated, action = insert_book_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    assert "## Notes" in updated
+    assert "Kept body text." in updated
+    assert BOOK_HIGHLIGHTS_HEADER in updated
+    assert updated.index("Kept body text.") < updated.index(BOOK_HIGHLIGHTS_HEADER)
+    assert bullet in updated
+    assert "[[Deep Work by Cal Newport]]:" not in updated
+
+
+def test_insert_book_highlights_dedups_open_url_only():
+    content = f"""# Deep Work by Cal Newport
+
+{BOOK_HIGHLIGHTS_HEADER}
+- ["Old quote"](https://readwise.io/open/111)
+"""
+    same_id = '- ["Same id new wording"](https://readwise.io/open/111)'
+    updated, action = insert_book_highlights_bullet(
+        content, same_id, keys=["https://readwise.io/open/111"]
+    )
+    assert action == "skipped"
+    assert updated == content
+
+    other = '- ["New quote"](https://readwise.io/open/222)'
+    updated, action = insert_book_highlights_bullet(
+        content, other, keys=["https://readwise.io/open/222"]
+    )
+    assert action == "inserted"
+    assert "Old quote" in updated
+    assert "New quote" in updated
+
+
+def test_new_book_page_markdown_has_author_people_and_metadata():
+    markdown = _new_book_page_markdown(
+        "Deep Work by Cal Newport",
+        '- ["quote"](https://readwise.io/open/954480)',
+        {
+            "author": "[[Cal Newport]]",
+            "URL": "https://www.amazon.com/dp/example",
+            "readwise_id": "8237",
+            "category": "books",
+            "source": "kindle",
+        },
+        ["[[Cal Newport]]"],
+    )
+    assert markdown.startswith("---\ntitle: \"Deep Work by Cal Newport\"\n")
+    assert 'author: "[[Cal Newport]]"' in markdown
+    assert '  - "[[Cal Newport]]"' in markdown
+    frontmatter, _body = _extract_frontmatter(markdown)
+    assert frontmatter["author"] == "[[Cal Newport]]"
+    assert frontmatter["People"] == ["[[Cal Newport]]"]
+    assert frontmatter["URL"] == "https://www.amazon.com/dp/example"
+    assert str(frontmatter["readwise_id"]) == "8237"
+    assert frontmatter["category"] == "books"
+    assert frontmatter["source"] == "kindle"
+    assert BOOK_HIGHLIGHTS_HEADER in markdown
+    assert '- ["quote"](https://readwise.io/open/954480)' in markdown
+    assert "[[Deep Work by Cal Newport]]:" not in markdown
+    assert "[[@" not in markdown
+
+
+def test_book_highlight_creates_title_by_author_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_book_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[Deep Work by Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal
+    page = store[BOOK_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["author"] == "[[Cal Newport]]"
+    assert frontmatter["People"] == ["[[Cal Newport]]"]
+    assert frontmatter["URL"] == "https://www.amazon.com/dp/example"
+    assert str(frontmatter["readwise_id"]) == "8237"
+    assert frontmatter["category"] == "books"
+    assert frontmatter["source"] == "kindle"
+    assert BOOK_HIGHLIGHTS_HEADER in page
+    assert (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+        in page
+    )
+    assert "- [[Deep Work by Cal Newport]]:" not in page
+    assert "[[@Cal" not in page
+    assert BOOKMARKED_TWEETS_HEADER not in page
+    assert any(item["path"] == BOOK_PAGE_PATH for item in uploaded)
+
+
+def test_second_book_highlight_appends_and_same_open_id_is_skipped():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        first = append_readwise_buffet(_book_highlight(), now=now)
+        assert first["success"] is True
+        assert store[BOOK_PAGE_PATH].count("readwise.io/open/") == 1
+
+        second = append_readwise_buffet(
+            _book_highlight(id=954481, text="Another deep sentence"), now=now
+        )
+        assert second["success"] is True
+        page = store[BOOK_PAGE_PATH]
+        assert "Most Amazing Highlight Ever" in page
+        assert "Another deep sentence" in page
+        assert page.index("Most Amazing Highlight Ever") < page.index("Another deep sentence")
+        assert page.count("https://readwise.io/open/954480") == 1
+        assert page.count("https://readwise.io/open/954481") == 1
+
+        before = page
+        third = append_readwise_buffet(_book_highlight(), now=now)
+        assert third["success"] is True
+        assert store[BOOK_PAGE_PATH] == before
+        assert store[BOOK_PAGE_PATH].count("https://readwise.io/open/954480") == 1
+
+
+def test_two_authors_become_two_distinct_people_and_author_links():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _book_highlight(
+        title="Increasing Returns",
+        author="Alice Smith, Alice Smith, Bob Jones",
+    )
+    stem = reader_knowledge_hub_note_stem("Increasing Returns", "Alice Smith, Alice Smith, Bob Jones")
+    page_path = f"{KH_FOLDER}/{stem}.md"
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    page = store[page_path]
+    frontmatter, _body = _extract_frontmatter(page)
+    assert frontmatter["author"] == "[[Alice Smith]], [[Bob Jones]]"
+    assert frontmatter["People"] == ["[[Alice Smith]]", "[[Bob Jones]]"]
+    assert page.count("[[Alice Smith]]") == 2  # author key + People
+    assert page.count("[[Bob Jones]]") == 2
+    assert (
+        '- [[Increasing Returns by Alice Smith, Alice Smith, Bob Jones]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in store[JOURNAL_NOV_PATH]
+
+
+def test_tweet_highlight_does_not_write_book_page():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    assert BOOK_PAGE_PATH not in store
+    assert not any("Deep Work" in item["path"] for item in uploaded)
+    assert not any(BOOK_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
+    assert BOOK_HIGHLIGHTS_HEADER not in store[TWEET_PAGE_PATH]
+    journal_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert journal_line == (
+        '- [[Tweets from @georgiedorothea]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    )
+
+
+def test_article_highlight_does_not_write_book_highlights():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx), patch(
+        "services.obsidian.add_readwise_buffet._append_book_page"
+    ) as mock_page:
+        result = append_readwise_buffet(
+            _highlight_payload(
+                title="A long essay",
+                author="The Verge",
+                category="articles",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    mock_page.assert_not_called()
+    assert not any(BOOK_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
+    assert "[[A long essay by The Verge]]:" in store[JOURNAL_NOV_PATH]
+
+
+def test_journal_buffet_line_unchanged_for_book_highlight():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        append_readwise_buffet(_book_highlight(note="clip this"), now=now)
+
+    journal_line = [
+        ln for ln in store[JOURNAL_NOV_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert journal_line == (
+        '- [[Deep Work by Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+    page_line = [
+        ln for ln in store[BOOK_PAGE_PATH].splitlines() if "Most Amazing" in ln
+    ][0]
+    assert page_line == (
+        '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480) — clip this'
+    )
+
+
+def test_reader_document_created_does_not_write_book_page():
+    with patch(
+        "services.obsidian.add_readwise_buffet._append_book_pages_after_journal"
+    ) as mock_books, patch(
+        "services.obsidian.add_readwise_buffet._create_shared_link",
+        return_value={
+            "success": True,
+            "action": "created",
+            "error": None,
+            "file_path": "_Knowledge-Hub/Deep Work by Cal Newport.md",
+        },
+    ), patch(
+        "services.obsidian.add_readwise_buffet.create_bookmark",
+        return_value={"success": True, "bookmark_id": "rd-1", "error": None},
+    ):
+        result = append_readwise_buffet(
+            _reader_payload(
+                title="Deep Work",
+                author="Cal Newport",
+                category="books",
+                source="kindle",
+                source_url="https://www.amazon.com/dp/example",
+            )
+        )
+
+    assert result["success"] is True
+    assert result["action"] == "created"
+    mock_books.assert_not_called()
+
+
+def test_missing_book_highlights_heading_is_created_body_kept():
+    clear_book_cache()
+    existing = """---
+title: "Deep Work by Cal Newport"
+author: "Someone Else"
+People:
+  - "[[Existing Person]]"
+---
+
+# Deep Work by Cal Newport
+
+A paragraph that must survive.
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        BOOK_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_book_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[BOOK_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["author"] == "Someone Else"
+    assert "[[Cal Newport]]" in frontmatter["People"]
+    assert "[[Existing Person]]" in frontmatter["People"]
+    assert "A paragraph that must survive." in body
+    assert BOOK_HIGHLIGHTS_HEADER in page
+    assert page.index("A paragraph that must survive.") < page.index(BOOK_HIGHLIGHTS_HEADER)
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+
+
+def test_existing_book_people_not_duplicated():
+    clear_book_cache()
+    existing = """---
+title: "Deep Work by Cal Newport"
+author: "[[Cal Newport]]"
+People:
+  - "[[Cal Newport]]"
+  - "[[Someone Else]]"
+---
+
+# Deep Work by Cal Newport
+
+### Book highlights
+- ["old"](https://readwise.io/open/1)
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        BOOK_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_book_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[BOOK_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[Cal Newport]]", "[[Someone Else]]"]
+    assert page.count("[[Cal Newport]]") == 2  # author + People
+    assert "old" in body
+
+
+def test_book_page_failure_does_not_undo_journal_write():
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client",
+        return_value=mock_dbx,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=_folder_by_suffix,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._resolve_knowledge_hub_folder",
+        side_effect=RuntimeError("kh down"),
+    ):
+        result = append_readwise_buffet(_book_highlight(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    assert result["error"] is None
+    assert "[[Deep Work by Cal Newport]]:" in store[JOURNAL_NOV_PATH]
+    assert BOOK_PAGE_PATH not in store
+    assert all(item["path"] == JOURNAL_NOV_PATH for item in uploaded)
+
+
+def test_title_only_book_page_when_author_missing():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _book_highlight(author=None, title="Deep Work"),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page_path = f"{KH_FOLDER}/Deep Work.md"
+    page = store[page_path]
+    frontmatter, _body = _extract_frontmatter(page)
+    assert "author" not in frontmatter or not frontmatter.get("author")
+    assert not frontmatter.get("People")
+    assert BOOK_HIGHLIGHTS_HEADER in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "[[Deep Work]]:" in store[JOURNAL_NOV_PATH]
