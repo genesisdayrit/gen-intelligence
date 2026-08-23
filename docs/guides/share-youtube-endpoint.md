@@ -4,6 +4,8 @@
 
 The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description) from the Supadata API, with a fallback to YouTube's oEmbed API and page scraping if Supadata is unavailable.
 
+After a successful Knowledge Hub write it also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) so Genesis can highlight the video in Reader. The Reader document title is the existing Obsidian filename stem (title-only). The KH note is never renamed from Reader's title. `/share/link` routes YouTube URLs through this same path; regular article shares are unchanged.
+
 ## Endpoint Details
 
 ```
@@ -44,8 +46,9 @@ POST /share/youtube
 
 | File | Purpose |
 |------|---------|
-| `app/main.py` | Endpoint definition, `YouTubeShareRequest` model, auth, URL validation |
-| `app/services/obsidian/add_youtube_link.py` | YouTube metadata fetching, Dropbox file creation |
+| `app/main.py` | Endpoint definition, `YouTubeShareRequest` model, auth, URL validation, Reader save after KH write |
+| `app/services/obsidian/add_youtube_link.py` | YouTube metadata fetching, Dropbox file creation, YAML extras merge |
+| `app/services/readwise/reader.py` | `save_document` helper (`POST /api/v3/save/`) |
 
 ## How It Works
 
@@ -59,6 +62,9 @@ POST /share/youtube
 8. **Filename Sanitization**: Replaces `[\/:*?"<>|]` with `_`
 9. **Duplicate Check**: Skips if file already exists
 10. **File Creation**: Creates markdown file with YAML frontmatter and AI summary (if available)
+11. **Raindrop**: On a new KH note, mirrors the URL to Raindrop Unsorted (failures are logged and do not undo the note)
+12. **Reader save**: POSTs the YouTube URL to Reader Document CREATE with `category: video`, `title` set to the Obsidian stem, and `saved_using: gen-intelligence`. `201` (new) and `200` (already exists) are both success. Failures are logged and do not undo the KH note, buffet line, or Raindrop bookmark.
+13. **Reader YAML**: On save success, fill-if-empty `readwise_id` and `readwise_url` on the existing KH note. `readwise_url` is the clickable Reader permalink `https://read.readwise.io/read/{id}`. The save API returns `https://read.readwise.io/new/read/{id}` (inbox location); both open the video, but KH stores `/read/{id}` to match other Reader documents.
 
 ## File Format
 
@@ -72,6 +78,8 @@ created time: 2026-01-19T15:30:00+00:00
 modified time: 2026-01-19T15:30:00+00:00
 key words:
 URL: https://www.youtube.com/watch?v=VIDEO_ID
+readwise_id: 01kb5cap1wy21zp37bc2rjj
+readwise_url: https://read.readwise.io/read/01kb5cap1wy21zp37bc2rjj
 Notes+Ideas:
 Experiences:
 Tags:
@@ -84,7 +92,9 @@ Video description text goes here...
 
 ```
 
-Note: A `youtube` tag is automatically added, and the video description is included in the body of the markdown file.
+Note: A `youtube` tag is automatically added, and the video description is included in the body of the markdown file. After Reader save, `readwise_id` and `readwise_url` are filled if empty so Genesis can open the video in Reader from metadata. Filename and Content Buffet stay title-only (`Video Title.md` / `- [[Video Title]]`) — not Reader's `Title by Author`.
+
+When `reader.any_document.created` fires after this save, the webhook calls `add_youtube_link` again. That helper still keys the file off the YouTube title, so it hits the same note and only fill-if-empty extras. It does not create a second `Title by Author` note.
 
 ## Environment Variables
 
@@ -99,6 +109,7 @@ Note: A `youtube` tag is automatically added, and the video description is inclu
 | `REDIS_PORT` | No | Redis port (default: 6379) |
 | `SUPADATA_API_KEY` | Yes | API key for Supadata YouTube metadata API |
 | `OPENAI_API_KEY` | No | API key for OpenAI transcript summarization (summary skipped if not set) |
+| `READWISE_TOKEN` | Yes (for Reader save) | Readwise access token for `POST /api/v3/save/` (same token as highlight export). Missing token is logged; KH write still succeeds. |
 | `SYSTEM_TIMEZONE` | No | Timezone for dates (default: US/Eastern) |
 
 ## Key Functions in `add_youtube_link.py`
@@ -112,8 +123,10 @@ def fetch_youtube_metadata(url: str) -> dict:
     Returns: dict with keys: title, author_name, description"""
 
 def add_youtube_link(url: str) -> dict:
-    """Main entry point. Returns {"success": bool, "action": str | None, "error": str | None}"""
+    """Main entry point. Returns success, action, stem, file_path, ..."""
 ```
+
+`save_document` in `app/services/readwise/reader.py` POSTs to Reader. `reader_permalink` normalizes the save API's `/new/read/{id}` to `/read/{id}` for the `readwise_url` YAML key.
 
 ## Testing
 

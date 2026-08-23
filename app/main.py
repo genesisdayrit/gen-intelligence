@@ -36,8 +36,13 @@ from services.obsidian.add_shared_link import (
     check_save_readiness,
     get_predicted_link_path,
 )
-from services.obsidian.add_youtube_link import add_youtube_link, is_valid_youtube_url
+from services.obsidian.add_youtube_link import (
+    add_youtube_link,
+    apply_youtube_extra_frontmatter,
+    is_valid_youtube_url,
+)
 from services.raindrop.client import mirror_to_raindrop as _mirror_to_raindrop
+from services.readwise.reader import reader_permalink, save_document
 from services.todoist.client import create_completed_todoist_task
 
 load_dotenv()
@@ -940,13 +945,77 @@ def _process_shared_link(url: str, title: str | None) -> None:
         logger.error("Failed to save link: %s - %s", url[:100], result["error"])
 
 
+def _mirror_youtube_to_reader(url: str, kh_result: dict) -> None:
+    """Save the YouTube URL to Reader and fill KH YAML. Never raises or undoes KH.
+
+    Uses the existing Obsidian stem as Reader's title so the UI matches; does
+    not rename the Knowledge Hub note. ``201`` new and ``200`` already-exists
+    both write ``readwise_id`` / ``readwise_url``.
+    """
+    try:
+        stem = kh_result.get("stem") or kh_result.get("title")
+        save_result = save_document(
+            url,
+            category="video",
+            title=stem,
+            saved_using="gen-intelligence",
+        )
+        if not save_result.get("success"):
+            logger.error(
+                "Failed to save YouTube to Reader: %s - %s",
+                url[:100],
+                save_result.get("error"),
+            )
+            return
+
+        extras = {}
+        doc_id = save_result.get("id")
+        permalink = reader_permalink(doc_id, save_result.get("url"))
+        if doc_id:
+            extras["readwise_id"] = doc_id
+        if permalink:
+            extras["readwise_url"] = permalink
+        if not extras:
+            logger.error(
+                "Reader save succeeded but response had no id/url for %s", url[:100]
+            )
+            return
+
+        file_path = kh_result.get("file_path")
+        if not file_path:
+            logger.error(
+                "Reader save succeeded but KH file_path missing for %s", url[:100]
+            )
+            return
+
+        apply_result = apply_youtube_extra_frontmatter(file_path, extras)
+        if not apply_result.get("success"):
+            logger.error(
+                "Failed to write Reader extras on YouTube KH note: %s - %s",
+                file_path,
+                apply_result.get("error"),
+            )
+        else:
+            logger.info(
+                "Wrote Reader extras on YouTube KH note: %s (action=%s id=%s)",
+                file_path,
+                apply_result.get("action"),
+                doc_id,
+            )
+    except Exception as exc:
+        logger.error(
+            "Unexpected error saving YouTube to Reader: %s - %s", url[:100], exc
+        )
+
+
 def _process_youtube_link(url: str) -> None:
-    """Background task to save YouTube link to Obsidian and mirror to Raindrop.io."""
+    """Background task: KH note, Raindrop, then Reader document for highlighting."""
     result = add_youtube_link(url)
     if result["success"]:
         logger.info("Saved YouTube link: %s (action=%s)", url[:100], result.get("action"))
         if result.get("action") == "created":
             _mirror_to_raindrop(url, result.get("title"), result.get("description"))
+        _mirror_youtube_to_reader(url, result)
     else:
         logger.error("Failed to save YouTube link: %s - %s", url[:100], result["error"])
 

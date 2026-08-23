@@ -516,6 +516,13 @@ def _create_youtube_link(
     journal_date: str,
     extra_frontmatter: dict | None = None,
 ) -> dict:
+    """Save a YouTube Reader document onto the existing YouTube stem.
+
+    ``add_youtube_link`` keys the filename / buffet wikilink off the
+    Supadata/YouTube title (title-only). Do not derive a ``Title by Author``
+    stem from Reader's title — iOS ``/share/youtube`` already created that
+    note, so this only fill-if-empty extras (including same-day skip).
+    """
     from services.obsidian.add_youtube_link import add_youtube_link
 
     return add_youtube_link(
@@ -2066,6 +2073,8 @@ def _append_reader_document_knowledge_hub(
         return {"success": True, "action": "ignored", "error": None, "file_path": None}
 
     try:
+        # YouTube Reader docs stay on the existing YouTube stem (title-only).
+        # add_youtube_link ignores Reader's Title by Author and only merges extras.
         if youtube_url:
             result = _create_youtube_link(
                 youtube_url,

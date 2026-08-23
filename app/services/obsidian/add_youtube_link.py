@@ -559,15 +559,27 @@ def add_youtube_link(
         journal_date: Optional 3am-aware journal date label (e.g. ``Aug 22, 2026``).
             When omitted, uses today in SYSTEM_TIMEZONE.
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
-            Omitted on regular iOS YouTube shares.
+            iOS YouTube shares write these after Reader save. The Reader
+            webhook passes them so same-day skip still fill-if-empty.
 
     Returns:
         dict with keys:
             - success: bool
             - action: str | None ("created", "updated", or "skipped")
             - error: str | None
+            - title: str | None
+            - stem: str | None (Obsidian filename / wikilink stem)
+            - file_path: str | None
     """
-    result = {"success": False, "action": None, "error": None, "title": None, "description": None}
+    result = {
+        "success": False,
+        "action": None,
+        "error": None,
+        "title": None,
+        "description": None,
+        "stem": None,
+        "file_path": None,
+    }
 
     vault_path = os.getenv('DROPBOX_OBSIDIAN_VAULT_PATH')
     if not vault_path:
@@ -616,6 +628,10 @@ def add_youtube_link(
         else:
             formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
         note_stem = sanitized_title
+        result["title"] = video_title
+        result["description"] = description
+        result["stem"] = note_stem
+        result["file_path"] = file_path
 
         # Check if file already exists
         if _file_exists(dbx, file_path):
@@ -639,7 +655,24 @@ def add_youtube_link(
                 existing_journals = [existing_journals] if existing_journals else []
 
             if today_link in existing_journals:
-                logger.info("Today's date already linked, skipping: %s", file_path)
+                # Same-day skip still fill-if-empty extras (Reader webhook
+                # after iOS share). Do not append buffet again and do not
+                # rename off Reader's Title by Author — stem is YouTube title.
+                extras_changed = _merge_extra_frontmatter(frontmatter, extra_frontmatter)
+                if extras_changed:
+                    frontmatter["modified time"] = now_utc.isoformat()
+                    updated_content = _rebuild_markdown(frontmatter, body)
+                    dbx.files_upload(
+                        updated_content.encode('utf-8'),
+                        file_path,
+                        mode=dropbox.files.WriteMode.overwrite
+                    )
+                    logger.info(
+                        "Filled extra frontmatter on existing YouTube file: %s",
+                        file_path,
+                    )
+                else:
+                    logger.info("Today's date already linked, skipping: %s", file_path)
                 result["success"] = True
                 result["action"] = "skipped"
                 return result
@@ -688,8 +721,6 @@ def add_youtube_link(
             append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
             result["action"] = "updated"
-            result["title"] = video_title
-            result["description"] = description
             return result
 
         # Build description section
@@ -744,8 +775,6 @@ Tags:
         append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
         result["success"] = True
         result["action"] = "created"
-        result["title"] = video_title
-        result["description"] = description
 
     except FileNotFoundError as e:
         result["error"] = str(e)
@@ -758,3 +787,50 @@ Tags:
         logger.error("Unexpected error saving YouTube link: %s", e)
 
     return result
+
+
+def apply_youtube_extra_frontmatter(file_path: str, extra_frontmatter: dict | None) -> dict:
+    """Fill-if-empty extras on an existing YouTube KH note. Does not touch buffet.
+
+    Used after Reader save so ``readwise_id`` / ``readwise_url`` land on the
+    note ``add_youtube_link`` already created. Failures never undo that write.
+    """
+    result = {"success": False, "action": None, "error": None}
+    if not extra_frontmatter:
+        result["success"] = True
+        result["action"] = "skipped"
+        return result
+
+    try:
+        dbx = _get_dropbox_client()
+        existing_content = _get_file_content(dbx, file_path)
+        if existing_content is None:
+            result["error"] = f"Could not download existing file: {file_path}"
+            logger.error(result["error"])
+            return result
+
+        frontmatter, body = _extract_frontmatter(existing_content)
+        if not _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+            result["success"] = True
+            result["action"] = "skipped"
+            return result
+
+        frontmatter["modified time"] = datetime.now(timezone.utc).isoformat()
+        updated_content = _rebuild_markdown(frontmatter, body)
+        dbx.files_upload(
+            updated_content.encode("utf-8"),
+            file_path,
+            mode=dropbox.files.WriteMode.overwrite,
+        )
+        logger.info("Filled extra frontmatter on YouTube KH note: %s", file_path)
+        result["success"] = True
+        result["action"] = "updated"
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        logger.error(
+            "Failed to fill extra frontmatter on YouTube KH note %s: %s",
+            file_path,
+            exc,
+        )
+        return result

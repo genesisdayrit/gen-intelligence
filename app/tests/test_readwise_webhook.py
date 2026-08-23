@@ -1161,6 +1161,7 @@ def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
 
 
 def test_append_youtube_document_uses_youtube_helper():
+    """YouTube Reader docs call add_youtube_link (YouTube stem), not Title by Author."""
     now = LA.localize(datetime(2026, 8, 22, 15, 0))
     payload = _reader_payload(
         title="Cool Video",
