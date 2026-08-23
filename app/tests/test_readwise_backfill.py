@@ -491,6 +491,39 @@ def test_export_tweet_highlight_creates_handle_page():
     assert any(item["path"] == tweet_page for item in uploaded)
 
 
+def test_export_book_highlight_creates_title_by_author_page():
+    """Backfill writes the journal wikilink and the book page highlight."""
+    pages = [
+        _export_page([
+            _book(
+                category="books",
+                source="kindle",
+                source_url="https://www.amazon.com/dp/example",
+                highlights=[_hl()],
+            ),
+        ]),
+    ]
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    book_page = f"{KH_FOLDER}/Deep Work by Cal Newport.md"
+    result, uploaded, store, _ = _run_backfill(
+        pages,
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+    )
+    assert result["files_written"] == 1
+    journal = next(item for item in uploaded if item["path"] == nov_path)
+    assert (
+        '- [[Deep Work by Cal Newport]]: '
+        '["Most Amazing Highlight Ever"](https://readwise.io/open/954480)'
+    ) in journal["content"]
+    page = store[book_page]
+    assert "### Book highlights" in page
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert "- [[Deep Work by Cal Newport]]:" not in page
+    assert 'author: "[[Cal Newport]]"' in page
+    assert '  - "[[Cal Newport]]"' in page
+    assert any(item["path"] == book_page for item in uploaded)
+
+
 # ---------------------------------------------------------------------------
 # Export pagination
 # ---------------------------------------------------------------------------
