@@ -32,13 +32,16 @@ from fastapi.testclient import TestClient
 from main import app
 from services.obsidian.add_readwise_buffet import (
     BOOKMARKED_TWEETS_HEADER,
+    _ensure_tweet_page_people,
     _format_tweet_page_bullet,
     _get_dropbox_client,
     _is_tweet_book,
     _new_tweet_page_markdown,
+    _people_entry_has_handle,
     _resolve_highlight_book,
     _strip_tweet_image_embeds,
     _tweet_handle,
+    _tweet_people_wikilink,
     _tweet_quote_for_page,
     _tweet_wikilink_target,
     append_readwise_buffet,
@@ -63,7 +66,7 @@ from services.obsidian.add_readwise_buffet import (
     reader_knowledge_hub_note_stem,
     standalone_wikilink_bullet,
 )
-from services.obsidian.add_shared_link import _sanitize_filename
+from services.obsidian.add_shared_link import _extract_frontmatter, _sanitize_filename
 
 client = TestClient(app)
 LA = pytz.timezone("America/Los_Angeles")
@@ -2127,14 +2130,18 @@ def test_new_tweet_page_markdown_is_minimal():
     markdown = _new_tweet_page_markdown(
         "Tweets from @georgiedorothea",
         '- ["quote"](https://readwise.io/open/954480)',
+        "georgiedorothea",
     )
-    assert markdown.startswith("---\ntitle: \"Tweets from @georgiedorothea\"\n---\n")
+    assert markdown.startswith("---\ntitle: \"Tweets from @georgiedorothea\"\n")
+    assert '  - "[[@georgiedorothea]]"' in markdown
     assert "# Tweets from @georgiedorothea" in markdown
     assert BOOKMARKED_TWEETS_HEADER in markdown
     assert '- ["quote"](https://readwise.io/open/954480)' in markdown
-    assert "People" not in markdown
+    frontmatter, _body = _extract_frontmatter(markdown)
+    assert frontmatter["People"] == ["[[@georgiedorothea]]"]
     assert "Journal:" not in markdown
     assert "[[Tweets from @georgiedorothea]]" not in markdown
+    assert "_People/" not in markdown
 
 
 def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
@@ -2160,7 +2167,9 @@ def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
         in page
     )
     assert "- [[Tweets from @georgiedorothea]]:" not in page
-    assert "People" not in page
+    frontmatter, _body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@georgiedorothea]]"]
+    assert not any("_People/" in item["path"] for item in uploaded)
     assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
 
 
@@ -2220,6 +2229,10 @@ A paragraph that must survive.
     assert BOOKMARKED_TWEETS_HEADER in page
     assert page.index("A paragraph that must survive.") < page.index(BOOKMARKED_TWEETS_HEADER)
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    frontmatter, body = _extract_frontmatter(page)
+    assert "[[@georgiedorothea]]" in frontmatter["People"]
+    assert "- [[Georgie Dorothea]]" in body
+    assert "A paragraph that must survive." in body
 
 
 def test_reader_document_created_does_not_write_tweet_page():
@@ -2441,6 +2454,9 @@ Some intro.
     assert "Some intro." in page
     assert "old" in page
     assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@georgiedorothea]]"]
+    assert "Some intro." in body
     assert any(item["path"] == alt_path for item in uploaded)
 
 
@@ -2480,6 +2496,10 @@ def test_bookmarked_tweets_live_interneth0f_keeps_tco_and_open_id():
 
     assert result["success"] is True
     page = store[page_path]
+    frontmatter, _body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@InternetH0F]]"]
+    assert "[[@InternetH0F]]" in page
+    assert "[[@interneth0f]]" not in page
     line = [ln for ln in page.splitlines() if "New York is now" in ln][0]
     assert line == (
         '- ["New York is now the #1 market for tech talent, dethroning '
@@ -2517,6 +2537,10 @@ def test_bookmarked_tweets_live_flower_alicee_keeps_tco_and_open_id():
 
     assert result["success"] is True
     page = store[page_path]
+    frontmatter, _body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@flower_alicee]]"]
+    assert "[[@flower_alicee]]" in page
+    assert "[[@Flower_alicee]]" not in page
     line = [ln for ln in page.splitlines() if "but then when" in ln][0]
     assert line == (
         '- ["...but then when https://t.co/p3GyToJO6M"]'
@@ -2568,3 +2592,154 @@ def test_tweet_page_image_only_does_not_create_page():
     assert TWEET_PAGE_PATH not in store
     assert not any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
     assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
+
+
+def test_tweet_people_wikilink_keeps_at_and_readwise_casing():
+    assert _tweet_people_wikilink("InternetH0F") == "[[@InternetH0F]]"
+    assert _tweet_people_wikilink("flower_alicee") == "[[@flower_alicee]]"
+    assert _tweet_people_wikilink("flower_alicee") != "[[@Flower_alicee]]"
+    assert "@" in _tweet_people_wikilink("InternetH0F")
+    assert _people_entry_has_handle("[[@InternetH0F]]", "InternetH0F")
+    assert _people_entry_has_handle("@InternetH0F", "interneth0f")
+    assert _people_entry_has_handle("InternetH0F", "interneth0f")
+    assert not _people_entry_has_handle("[[Georgie Dorothea]]", "georgiedorothea")
+
+
+def test_new_tweet_page_yaml_people_is_share_link_wikilink_list():
+    markdown = _new_tweet_page_markdown(
+        "Tweets from @InternetH0F",
+        '- ["quote"](https://readwise.io/open/1)',
+        "InternetH0F",
+    )
+    frontmatter, _body = _extract_frontmatter(markdown)
+    assert frontmatter["People"] == ["[[@InternetH0F]]"]
+    assert '  - "[[@InternetH0F]]"' in markdown
+
+
+def test_existing_tweet_page_missing_people_gets_link_on_next_bookmark():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @georgiedorothea"
+---
+
+# Tweets from @georgiedorothea
+
+Kept body.
+
+### Bookmarked Tweets
+- ["old"](https://readwise.io/open/1)
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        TWEET_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert "[[@georgiedorothea]]" in frontmatter["People"]
+    assert page.count("[[@georgiedorothea]]") == 1
+    assert "Kept body." in body
+    assert "old" in body
+    assert '- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)' in page
+    assert not any("_People/" in item["path"] for item in uploaded)
+
+
+def test_existing_tweet_page_people_not_duplicated():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @InternetH0F"
+People:
+  - "[[Someone Else]]"
+  - "[[@InternetH0F]]"
+---
+
+# Tweets from @InternetH0F
+
+Body stays.
+
+### Bookmarked Tweets
+- ["old"](https://readwise.io/open/1)
+"""
+    page_path = f"{KH_FOLDER}/Tweets from @InternetH0F.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        page_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167879,
+                text=LIVE_INTERNET_HOF_TEXT,
+                title="Tweets From InternetH0F",
+                author="@InternetH0F on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/InternetH0F",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[Someone Else]]", "[[@InternetH0F]]"]
+    assert page.count("[[@InternetH0F]]") == 1
+    assert "Body stays." in body
+    assert "old" in body
+
+
+@pytest.mark.parametrize(
+    "people_yaml",
+    [
+        '  - "[[@InternetH0F]]"',
+        "  - '@InternetH0F'",
+        "  - InternetH0F",
+        "  - interneth0f",
+    ],
+)
+def test_existing_people_handle_variants_are_not_duplicated(people_yaml):
+    content = f"""---
+title: "Tweets from @InternetH0F"
+People:
+{people_yaml}
+---
+
+# Tweets from @InternetH0F
+"""
+    updated = _ensure_tweet_page_people(content, "InternetH0F")
+    assert updated == content
+
+
+def test_duplicate_bookmark_still_backfills_missing_people():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @georgiedorothea"
+---
+
+# Tweets from @georgiedorothea
+
+Kept.
+
+### Bookmarked Tweets
+- ["Most Amazing Highlight Ever"](https://readwise.io/open/954480)
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        TWEET_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["People"] == ["[[@georgiedorothea]]"]
+    assert page.count("https://readwise.io/open/954480") == 1
+    assert "Kept." in body
+    assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
