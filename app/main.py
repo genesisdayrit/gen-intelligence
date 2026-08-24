@@ -1151,21 +1151,27 @@ async def trigger_job(
     job_id: str,
     since: str | None = None,
     updated_after: str | None = None,
+    lookback_days: int | None = None,
 ):
     """Trigger a scheduled job to run immediately.
 
     ``backfill_readwise_highlights`` accepts optional ``since`` (ISO date,
-    default 2024-08-13) and ``updated_after`` (ISO8601, passed to the
-    Readwise export API). ``backfill_knowledge_hub_buffet`` accepts optional
-    ``since`` (ISO date, default 2018-01-01). Other jobs ignore these query
-    params.
+    default 2024-08-13), ``updated_after`` (ISO8601, passed to the
+    Readwise export API), and ``lookback_days`` (int, sets ``updated_after``
+    to now minus N days unless ``updated_after`` is explicit).
+    ``backfill_knowledge_hub_buffet`` accepts optional ``since`` (ISO date,
+    default 2018-01-01). Other jobs ignore these query params.
     """
     from scheduler import run_job_now
 
     kwargs = {}
     if job_id == "backfill_readwise_highlights":
         # Always set kwargs so a previous parameterized run cannot leak.
-        kwargs = {"since": since, "updated_after": updated_after}
+        kwargs = {
+            "since": since,
+            "updated_after": updated_after,
+            "lookback_days": lookback_days,
+        }
     elif job_id == "backfill_knowledge_hub_buffet":
         kwargs = {"since": since}
     if run_job_now(job_id, **kwargs):
@@ -1174,6 +1180,8 @@ async def trigger_job(
             payload["since"] = since
             if "updated_after" in kwargs:
                 payload["updated_after"] = updated_after
+            if "lookback_days" in kwargs:
+                payload["lookback_days"] = lookback_days
         return payload
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 

@@ -2,7 +2,7 @@
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +26,9 @@ os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
 def _force_la_timezone(monkeypatch):
     monkeypatch.setenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
     monkeypatch.setenv("READWISE_TOKEN", "test-readwise-token")
+    monkeypatch.delenv("READWISE_BACKFILL_SINCE", raising=False)
+    monkeypatch.delenv("READWISE_BACKFILL_UPDATED_AFTER", raising=False)
+    monkeypatch.delenv("READWISE_BACKFILL_LOOKBACK_DAYS", raising=False)
 
 
 from fastapi.testclient import TestClient
@@ -34,7 +37,9 @@ from main import app
 from services.obsidian.add_readwise_buffet import clear_book_cache
 from services.obsidian.add_shared_link import _extract_frontmatter
 from services.readwise.backfill import (
+    CURSOR_REDIS_KEY,
     DEFAULT_SINCE,
+    FIRST_CURSOR,
     backfill_readwise_highlights,
     highlight_effective_date,
     select_highlights,
@@ -130,12 +135,33 @@ def _mock_dropbox(contents_by_path=None, missing_paths=None):
     return mock_dbx, uploaded, contents_by_path
 
 
-def _run_backfill(pages, contents_by_path=None, missing_paths=None, **kwargs):
+def _fake_redis(cursor_store=None):
+    cursor_store = {} if cursor_store is None else cursor_store
+    mock_redis = MagicMock()
+    mock_redis.get.side_effect = lambda key: cursor_store.get(key)
+    mock_redis.set.side_effect = lambda key, value, **_kwargs: cursor_store.__setitem__(key, value)
+    return mock_redis, cursor_store
+
+
+def _run_backfill(
+    pages,
+    contents_by_path=None,
+    missing_paths=None,
+    cursor_store=None,
+    export_error=None,
+    write_error=None,
+    **kwargs,
+):
     clear_book_cache()
     mock_dbx, uploaded, store = _mock_dropbox(contents_by_path, missing_paths)
+    if write_error is not None:
+        mock_dbx.files_upload.side_effect = write_error
     page_iter = iter(pages)
+    mock_redis, cursor_store = _fake_redis(cursor_store)
 
     def fake_get(url, params=None, headers=None, timeout=None):
+        if export_error is not None:
+            raise export_error
         response = MagicMock()
         response.status_code = 200
         response.json.return_value = next(page_iter)
@@ -143,6 +169,7 @@ def _run_backfill(pages, contents_by_path=None, missing_paths=None, **kwargs):
         return response
 
     with patch("services.readwise.export.requests.get", side_effect=fake_get) as mock_get, \
+         patch("services.readwise.backfill.redis_client", mock_redis), \
          patch("services.obsidian.add_readwise_buffet._get_dropbox_client", return_value=mock_dbx), \
          patch("services.obsidian.add_readwise_buffet._find_folder_by_suffix", side_effect=[
              "/obsidian/personal/01_daily",
@@ -153,7 +180,7 @@ def _run_backfill(pages, contents_by_path=None, missing_paths=None, **kwargs):
              return_value=KH_FOLDER,
          ):
         result = backfill_readwise_highlights(**kwargs)
-    return result, uploaded, store, mock_get
+    return result, uploaded, store, mock_get, cursor_store
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +231,7 @@ def test_backfill_cutoff_does_not_write_pre_since_highlight():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, _ = _run_backfill(
+    result, uploaded, _, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
         since="2024-08-13",
@@ -228,7 +255,7 @@ def test_missing_journal_is_skipped_not_written_to_today():
         ]),
     ]
     today = LA.localize(datetime(2026, 8, 22, 15, 0))
-    result, uploaded, _, _ = _run_backfill(
+    result, uploaded, _, _, _ = _run_backfill(
         pages,
         missing_paths={f"{JOURNAL_FOLDER}/Mar 15, 2019.md"},
         since="2019-01-01",
@@ -251,7 +278,7 @@ def test_empty_text_does_not_write():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, mock_get = _run_backfill(
+    result, uploaded, _, mock_get, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -272,7 +299,7 @@ def test_deleted_and_discarded_highlights_are_not_selected():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, _ = _run_backfill(
+    result, uploaded, _, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -287,7 +314,7 @@ def test_dedup_on_second_run():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    first, uploaded_first, store, _ = _run_backfill(
+    first, uploaded_first, store, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -297,7 +324,7 @@ def test_dedup_on_second_run():
     assert "[[Deep Work by Cal Newport]]:" in uploaded_first[0]["content"]
     assert "bookreview" not in uploaded_first[0]["content"]
 
-    second, uploaded_second, _, _ = _run_backfill(
+    second, uploaded_second, _, _, _ = _run_backfill(
         [_export_page([_book(highlights=[_hl()])])],
         contents_by_path=store,
     )
@@ -320,7 +347,7 @@ def test_short_highlight_ids_do_not_collide_with_dates():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, _ = _run_backfill(
+    result, uploaded, _, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -340,7 +367,7 @@ def test_batch_writes_one_upload_per_journal_file():
         ]),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, _ = _run_backfill(
+    result, uploaded, _, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -358,7 +385,7 @@ def test_export_title_used_without_books_api():
     pages = [_export_page([_book(highlights=[_hl()])])]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     with patch("services.obsidian.add_readwise_buffet.fetch_book") as mock_fetch:
-        result, uploaded, _, _ = _run_backfill(
+        result, uploaded, _, _, _ = _run_backfill(
             pages,
             contents_by_path={nov_path: SAMPLE_JOURNAL},
         )
@@ -375,7 +402,7 @@ def test_missing_title_writes_quote_only():
     pages = [_export_page([_book(title="", readable_title="", author="", highlights=[_hl()])])]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     with patch("services.obsidian.add_readwise_buffet.fetch_book", return_value=None):
-        result, uploaded, _, _ = _run_backfill(
+        result, uploaded, _, _, _ = _run_backfill(
             pages,
             contents_by_path={nov_path: SAMPLE_JOURNAL},
         )
@@ -390,7 +417,7 @@ def test_missing_title_with_author_writes_author_prefix():
     pages = [_export_page([_book(title="", readable_title="", highlights=[_hl()])])]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     with patch("services.obsidian.add_readwise_buffet.fetch_book") as mock_fetch:
-        result, uploaded, _, _ = _run_backfill(
+        result, uploaded, _, _, _ = _run_backfill(
             pages,
             contents_by_path={nov_path: SAMPLE_JOURNAL},
         )
@@ -441,7 +468,7 @@ def test_export_tweet_highlight_uses_handle_wikilink():
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     with patch("services.obsidian.add_readwise_buffet.fetch_book") as mock_fetch:
-        result, uploaded, _, _ = _run_backfill(
+        result, uploaded, _, _, _ = _run_backfill(
             pages,
             contents_by_path={nov_path: SAMPLE_JOURNAL},
         )
@@ -472,7 +499,7 @@ def test_export_tweet_highlight_creates_handle_page():
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     tweet_page = f"{KH_FOLDER}/Tweets from @georgiedorothea.md"
-    result, uploaded, store, _ = _run_backfill(
+    result, uploaded, store, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -505,7 +532,7 @@ def test_export_book_highlight_creates_title_by_author_page():
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     book_page = f"{KH_FOLDER}/Deep Work by Cal Newport.md"
-    result, uploaded, store, _ = _run_backfill(
+    result, uploaded, store, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -540,7 +567,7 @@ def test_export_article_highlight_creates_title_by_author_page():
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
     article_page = f"{KH_FOLDER}/A long essay by The Verge.md"
-    result, uploaded, store, _ = _run_backfill(
+    result, uploaded, store, _, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -614,7 +641,7 @@ def test_backfill_walks_paginated_export():
         ),
     ]
     nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
-    result, uploaded, _, mock_get = _run_backfill(
+    result, uploaded, _, mock_get, _ = _run_backfill(
         pages,
         contents_by_path={nov_path: SAMPLE_JOURNAL},
     )
@@ -623,6 +650,151 @@ def test_backfill_walks_paginated_export():
     assert result["files_written"] == 1
     assert "Page one" in uploaded[0]["content"]
     assert "Page two" in uploaded[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# Last-run cursor + lookback
+# ---------------------------------------------------------------------------
+
+
+def _nov_pages():
+    return [_export_page([_book(highlights=[_hl()])])]
+
+
+def test_empty_redis_uses_first_cursor_seed():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    result, _, _, mock_get, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        now=now,
+    )
+    assert result["updated_after"] == FIRST_CURSOR
+    assert FIRST_CURSOR == "2026-08-24T04:00:00Z"
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == FIRST_CURSOR
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-24T12:00:00Z"
+    assert result["cursor"] == "2026-08-24T12:00:00Z"
+
+
+def test_successful_run_advances_cursor_and_next_run_uses_it():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    first_now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    first, _, store, _, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        now=first_now,
+    )
+    assert first["updated_after"] == FIRST_CURSOR
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-24T12:00:00Z"
+
+    second_now = datetime(2026, 8, 25, 8, 0, tzinfo=timezone.utc)
+    second, _, _, mock_get, _ = _run_backfill(
+        _nov_pages(),
+        contents_by_path=store,
+        cursor_store=cursor_store,
+        now=second_now,
+    )
+    assert second["updated_after"] == "2026-08-24T12:00:00Z"
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == "2026-08-24T12:00:00Z"
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-25T08:00:00Z"
+    assert second["cursor"] == "2026-08-25T08:00:00Z"
+
+
+def test_export_failure_does_not_write_cursor():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    result, uploaded, _, mock_get, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        export_error=RuntimeError("export down"),
+    )
+    assert result["errors"]
+    assert "export down" in result["errors"][0]
+    assert CURSOR_REDIS_KEY not in cursor_store
+    assert result["cursor"] == FIRST_CURSOR
+    assert uploaded == []
+    mock_get.assert_called()
+
+
+def test_write_errors_do_not_advance_cursor():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    stored = {CURSOR_REDIS_KEY: "2026-08-24T12:00:00Z"}
+    result, _, _, _, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        cursor_store=stored,
+        write_error=RuntimeError("dropbox down"),
+    )
+    assert result["errors"]
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-24T12:00:00Z"
+    assert result["cursor"] == "2026-08-24T12:00:00Z"
+    assert result["updated_after"] == "2026-08-24T12:00:00Z"
+
+
+def test_explicit_updated_after_overrides_cursor_and_still_advances():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    stored = {CURSOR_REDIS_KEY: "2026-08-24T12:00:00Z"}
+    now = datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc)
+    result, _, _, mock_get, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        cursor_store=stored,
+        updated_after="2026-01-01T00:00:00Z",
+        now=now,
+    )
+    assert result["updated_after"] == "2026-01-01T00:00:00Z"
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == "2026-01-01T00:00:00Z"
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-26T09:00:00Z"
+    assert result["cursor"] == "2026-08-26T09:00:00Z"
+
+
+def test_lookback_days_overrides_cursor_and_still_advances():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    stored = {CURSOR_REDIS_KEY: "2026-01-01T00:00:00Z"}
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    result, _, _, mock_get, cursor_store = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        cursor_store=stored,
+        lookback_days=1,
+        now=now,
+    )
+    expected = "2026-08-23T12:00:00Z"
+    assert result["updated_after"] == expected
+    assert result["lookback_days"] == 1
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == expected
+    now_utc = now
+    used = datetime.fromisoformat(result["updated_after"].replace("Z", "+00:00"))
+    assert abs((now_utc - used) - timedelta(days=1)) < timedelta(seconds=1)
+    assert cursor_store[CURSOR_REDIS_KEY] == "2026-08-24T12:00:00Z"
+
+
+def test_env_updated_after_overrides_cursor(monkeypatch):
+    monkeypatch.setenv("READWISE_BACKFILL_UPDATED_AFTER", "2026-03-01T00:00:00Z")
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    stored = {CURSOR_REDIS_KEY: "2026-08-24T12:00:00Z"}
+    now = datetime(2026, 8, 26, 9, 0, tzinfo=timezone.utc)
+    result, _, _, mock_get, _ = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        cursor_store=stored,
+        now=now,
+    )
+    assert result["updated_after"] == "2026-03-01T00:00:00Z"
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == "2026-03-01T00:00:00Z"
+
+
+def test_explicit_updated_after_wins_over_lookback_days():
+    nov_path = f"{JOURNAL_FOLDER}/Nov 27, 2025.md"
+    now = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+    result, _, _, mock_get, _ = _run_backfill(
+        _nov_pages(),
+        contents_by_path={nov_path: SAMPLE_JOURNAL},
+        updated_after="2026-02-01T00:00:00Z",
+        lookback_days=1,
+        now=now,
+    )
+    assert result["updated_after"] == "2026-02-01T00:00:00Z"
+    assert mock_get.call_args_list[0].kwargs["params"]["updatedAfter"] == "2026-02-01T00:00:00Z"
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +809,14 @@ def test_backfill_job_is_registered():
     assert "backfill_readwise_highlights" in job_ids
 
 
+def test_backfill_job_is_registered_with_2099_trigger():
+    from scheduler import SCHEDULED_JOBS
+
+    job = next(j for j in SCHEDULED_JOBS if j["id"] == "backfill_readwise_highlights")
+    assert job["name"] == "Backfill Readwise Highlights (manual)"
+    assert "2099" in str(job["trigger"])
+
+
 def test_trigger_backfill_passes_query_params():
     with patch("scheduler.run_job_now", return_value=True) as mock_run:
         response = client.post(
@@ -649,6 +829,23 @@ def test_trigger_backfill_passes_query_params():
         "backfill_readwise_highlights",
         since="2025-01-01",
         updated_after="2026-01-01T00:00:00Z",
+        lookback_days=None,
+    )
+
+
+def test_trigger_backfill_passes_lookback_days():
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            "/scheduler/jobs/backfill_readwise_highlights/run",
+            params={"lookback_days": 1},
+        )
+    assert response.status_code == 200
+    assert response.json()["lookback_days"] == 1
+    mock_run.assert_called_once_with(
+        "backfill_readwise_highlights",
+        since=None,
+        updated_after=None,
+        lookback_days=1,
     )
 
 
