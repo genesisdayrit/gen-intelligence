@@ -45,6 +45,7 @@ from services.obsidian.add_readwise_buffet import (
     _new_article_page_markdown,
     _new_book_page_markdown,
     _new_tweet_page_markdown,
+    _new_youtube_highlight_page_markdown,
     _people_entry_has_handle,
     _resolve_highlight_book,
     _strip_tweet_image_embeds,
@@ -82,6 +83,19 @@ from services.obsidian.add_readwise_buffet import (
     standalone_wikilink_bullet,
 )
 from services.obsidian.add_shared_link import _extract_frontmatter, _sanitize_filename
+
+
+def _assert_yaml_title_then_highlights(markdown: str, title_line: str, header: str) -> None:
+    """New-page order is YAML, title heading, then the highlights section."""
+    assert markdown.lstrip().startswith("---")
+    _frontmatter, body = _extract_frontmatter(markdown)
+    title_at = body.find(title_line)
+    header_at = body.find(header)
+    assert title_at != -1, markdown
+    assert header_at != -1, markdown
+    assert title_at < header_at
+    assert body[title_at + len(title_line) : header_at].strip() == ""
+
 
 client = TestClient(app)
 LA = pytz.timezone("America/Los_Angeles")
@@ -2049,7 +2063,9 @@ Kept body text.
     assert "- [[Someone]]" in updated
     assert "Kept body text." in updated
     assert BOOKMARKED_TWEETS_HEADER in updated
-    assert updated.index("Kept body text.") < updated.index(BOOKMARKED_TWEETS_HEADER)
+    assert updated.count(BOOKMARKED_TWEETS_HEADER) == 1
+    assert updated.index("# Tweets from @georgiedorothea") < updated.index(BOOKMARKED_TWEETS_HEADER)
+    assert updated.index(BOOKMARKED_TWEETS_HEADER) < updated.index("Kept body text.")
     assert bullet in updated
     assert "[[Tweets from @georgiedorothea]]" not in updated
 
@@ -2228,6 +2244,9 @@ def test_new_tweet_page_markdown_is_minimal():
     assert "Journal:" not in markdown
     assert "[[Tweets from @georgiedorothea]]" not in markdown
     assert "_People/" not in markdown
+    _assert_yaml_title_then_highlights(
+        markdown, "# Tweets from @georgiedorothea", BOOKMARKED_TWEETS_HEADER
+    )
 
 
 def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
@@ -2313,7 +2332,9 @@ A paragraph that must survive.
     assert "- [[Georgie Dorothea]]" in page
     assert "A paragraph that must survive." in page
     assert BOOKMARKED_TWEETS_HEADER in page
-    assert page.index("A paragraph that must survive.") < page.index(BOOKMARKED_TWEETS_HEADER)
+    assert page.count(BOOKMARKED_TWEETS_HEADER) == 1
+    assert page.index("# Tweets from @georgiedorothea") < page.index(BOOKMARKED_TWEETS_HEADER)
+    assert page.index(BOOKMARKED_TWEETS_HEADER) < page.index("A paragraph that must survive.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     frontmatter, body = _extract_frontmatter(page)
     assert "[[@georgiedorothea]]" in frontmatter["People"]
@@ -2903,7 +2924,9 @@ Kept body text.
     assert "## Notes" in updated
     assert "Kept body text." in updated
     assert BOOK_HIGHLIGHTS_HEADER in updated
-    assert updated.index("Kept body text.") < updated.index(BOOK_HIGHLIGHTS_HEADER)
+    assert updated.count(BOOK_HIGHLIGHTS_HEADER) == 1
+    assert updated.index("# Deep Work by Cal Newport") < updated.index(BOOK_HIGHLIGHTS_HEADER)
+    assert updated.index(BOOK_HIGHLIGHTS_HEADER) < updated.index("Kept body text.")
     assert bullet in updated
     assert "[[Deep Work by Cal Newport]]:" not in updated
 
@@ -2957,6 +2980,9 @@ def test_new_book_page_markdown_has_author_people_and_metadata():
     assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     assert "[[Deep Work by Cal Newport]]:" not in markdown
     assert "[[@" not in markdown
+    _assert_yaml_title_then_highlights(
+        markdown, "# Deep Work by Cal Newport", BOOK_HIGHLIGHTS_HEADER
+    )
 
 
 def test_book_highlight_creates_title_by_author_page():
@@ -3175,7 +3201,9 @@ A paragraph that must survive.
     assert "[[Existing Person]]" in frontmatter["People"]
     assert "A paragraph that must survive." in body
     assert BOOK_HIGHLIGHTS_HEADER in page
-    assert page.index("A paragraph that must survive.") < page.index(BOOK_HIGHLIGHTS_HEADER)
+    assert page.count(BOOK_HIGHLIGHTS_HEADER) == 1
+    assert page.index("# Deep Work by Cal Newport") < page.index(BOOK_HIGHLIGHTS_HEADER)
+    assert page.index(BOOK_HIGHLIGHTS_HEADER) < page.index("A paragraph that must survive.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
 
 
@@ -3383,7 +3411,9 @@ Kept body text.
     assert "## Notes" in updated
     assert "Kept body text." in updated
     assert ARTICLE_HIGHLIGHTS_HEADER in updated
-    assert updated.index("Kept body text.") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert updated.index("# A long essay by The Verge") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("Kept body text.")
     assert bullet in updated
     assert "[[A long essay by The Verge]]:" not in updated
 
@@ -3434,6 +3464,9 @@ def test_new_article_page_markdown_has_author_people_and_url():
     assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     assert "[[A long essay by The Verge]]:" not in markdown
     assert "[[@" not in markdown
+    _assert_yaml_title_then_highlights(
+        markdown, "# A long essay by The Verge", ARTICLE_HIGHLIGHTS_HEADER
+    )
 
 
 def test_article_highlight_creates_title_by_author_page():
@@ -3541,7 +3574,9 @@ A paragraph that must survive.
     assert frontmatter["URL"] == "https://already.example/essay"
     assert "A paragraph that must survive." in body
     assert ARTICLE_HIGHLIGHTS_HEADER in page
-    assert page.index("A paragraph that must survive.") < page.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert page.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert page.index("# A long essay by The Verge") < page.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert page.index(ARTICLE_HIGHLIGHTS_HEADER) < page.index("A paragraph that must survive.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
 
 
@@ -3782,7 +3817,9 @@ Kept description.
     )
     assert action == "inserted"
     assert TRANSCRIPT_HIGHLIGHTS_HEADER in updated
-    assert updated.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < updated.index("## Cool Video")
+    assert updated.count(TRANSCRIPT_HIGHLIGHTS_HEADER) == 1
+    assert updated.index("## Cool Video") < updated.index(TRANSCRIPT_HIGHLIGHTS_HEADER)
+    assert updated.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < updated.index("Kept description.")
     assert "Kept description." in updated
     assert bullet in updated
 
@@ -3799,6 +3836,100 @@ def test_insert_transcript_highlights_dedups_open_url():
     )
     assert action == "skipped"
     assert updated == content
+
+
+def test_missing_heading_after_h2_title_lands_after_that_heading():
+    content = """---
+URL: https://www.theverge.com/long-essay
+---
+
+## A long essay
+
+Scraped article body that must stay after highlights.
+"""
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    updated, action = insert_article_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert updated.index("## A long essay") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "Scraped article body that must stay after highlights."
+    )
+    assert bullet in updated
+
+    second = '- "Another line" ([Link](https://readwise.io/open/222))'
+    updated, action = insert_article_highlights_bullet(
+        updated, second, keys=["https://readwise.io/open/222"]
+    )
+    assert action == "inserted"
+    assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert updated.index(bullet) < updated.index(second)
+    assert updated.index(second) < updated.index(
+        "Scraped article body that must stay after highlights."
+    )
+
+
+def test_existing_heading_at_bottom_is_reused_and_not_moved():
+    content = """---
+title: "A long essay by The Verge"
+---
+
+# A long essay by The Verge
+
+Scraped article stays above the existing section.
+
+### Article highlights
+- "old" ([Link](https://readwise.io/open/111))
+"""
+    bullet = '- "new" ([Link](https://readwise.io/open/222))'
+    updated, action = insert_article_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/222"]
+    )
+    assert action == "inserted"
+    assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert updated.index("Scraped article stays above the existing section.") < updated.index(
+        ARTICLE_HIGHLIGHTS_HEADER
+    )
+    assert updated.index("old") < updated.index("new")
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("old")
+
+
+def test_missing_heading_without_title_goes_after_yaml():
+    content = """---
+title: "No heading note"
+---
+
+Just a paragraph at the top of the body.
+"""
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    updated, action = insert_transcript_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    _frontmatter, body = _extract_frontmatter(updated)
+    assert body.lstrip().startswith(TRANSCRIPT_HIGHLIGHTS_HEADER)
+    assert updated.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < updated.index(
+        "Just a paragraph at the top of the body."
+    )
+    assert updated.count(TRANSCRIPT_HIGHLIGHTS_HEADER) == 1
+
+
+def test_new_youtube_highlight_page_markdown_is_yaml_h1_highlights():
+    markdown = _new_youtube_highlight_page_markdown(
+        "Cool Video by A Channel",
+        '- "quote" ([Link](https://readwise.io/open/954480))',
+        {"URL": "https://www.youtube.com/watch?v=abcdefghijk"},
+    )
+    assert markdown.startswith("---\ntitle: \"Cool Video by A Channel\"\n")
+    _assert_yaml_title_then_highlights(
+        markdown, "# Cool Video by A Channel", TRANSCRIPT_HIGHLIGHTS_HEADER
+    )
+    assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
+    assert markdown.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < markdown.index(
+        '- "quote" ([Link](https://readwise.io/open/954480))'
+    )
 
 
 def test_youtube_highlight_appends_transcript_section_on_existing_note():
@@ -3832,7 +3963,9 @@ Video description here.
     ) in journal
     page = store[YOUTUBE_PAGE_PATH]
     assert TRANSCRIPT_HIGHLIGHTS_HEADER in page
-    assert page.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < page.index("## Cool Video")
+    assert page.count(TRANSCRIPT_HIGHLIGHTS_HEADER) == 1
+    assert page.index("## Cool Video") < page.index(TRANSCRIPT_HIGHLIGHTS_HEADER)
+    assert page.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < page.index("Video description here.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
     assert "Video description here." in page
     assert BOOK_HIGHLIGHTS_HEADER not in page

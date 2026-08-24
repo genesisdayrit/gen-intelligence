@@ -37,6 +37,7 @@ _VIDEO_SOURCES = {"youtube"}
 CONTENT_PLANNING_HEADER_PREFIX = "### Content Planning"
 EMPTY_PLACEHOLDER = re.compile(r"^-\s*$")
 HEADING_PREFIX = "### "
+_ATX_HEADING = re.compile(r"^#{1,6}(?:\s|$)")
 BOOK_DETAIL_URL = "https://readwise.io/api/v2/books/{book_id}/"
 HIGHLIGHT_OPEN_URL = "https://readwise.io/open/{highlight_id}"
 HIGHLIGHT_LINK_LABEL = "Link"
@@ -970,6 +971,73 @@ def insert_content_buffet_bullet(
     return "\n".join(updated), "inserted"
 
 
+def _frontmatter_body_start(lines: list[str]) -> int:
+    """Index of the first body line after closing YAML ``---``."""
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return index + 1
+    return 0
+
+
+def _is_atx_heading(line: str) -> bool:
+    return bool(_ATX_HEADING.match(line))
+
+
+def _title_heading_index(lines: list[str], body_start: int) -> int | None:
+    """First ATX heading in the body (H1 / ``## Title``). That is the title."""
+    for index in range(body_start, len(lines)):
+        if _is_atx_heading(lines[index]):
+            return index
+    return None
+
+
+def _is_highlight_section_line(line: str) -> bool:
+    """True for blanks, empty ``-`` placeholders, and list bullets."""
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if EMPTY_PLACEHOLDER.match(stripped):
+        return True
+    return stripped.startswith("-")
+
+
+def _highlight_section_end(lines: list[str], header_idx: int) -> int:
+    """End of a KH highlight section: next heading or first non-bullet body.
+
+    Stops before scraped article / description / summary so a later bullet
+    stays under the heading instead of after that body.
+    """
+    for index in range(header_idx + 1, len(lines)):
+        if _is_atx_heading(lines[index]):
+            return index
+        if not _is_highlight_section_line(lines[index]):
+            return index
+    return len(lines)
+
+
+def _insert_missing_heading(
+    lines: list[str],
+    header: str,
+    bullet_lines: list[str],
+) -> list[str]:
+    """Create ``header`` + first bullet after the title, else after YAML."""
+    body_start = _frontmatter_body_start(lines)
+    title_idx = _title_heading_index(lines, body_start)
+    block = [header, *bullet_lines, ""]
+    if title_idx is None:
+        insert_at = body_start
+        while insert_at < len(lines) and not lines[insert_at].strip():
+            insert_at += 1
+        return lines[:body_start] + [""] + block + lines[insert_at:]
+
+    after_title = title_idx + 1
+    if after_title < len(lines) and not lines[after_title].strip():
+        after_title += 1
+    return lines[:after_title] + [""] + block + lines[after_title:]
+
+
 def _insert_heading_bullet(
     content: str,
     header: str,
@@ -978,22 +1046,21 @@ def _insert_heading_bullet(
 ) -> tuple[str, str]:
     """Insert ``bullet`` under ``header``. Returns (content, action).
 
-    If the heading is missing, it is appended at the end of the note —
-    existing People/body/other headings are left alone. Dedup uses
+    If the heading already exists anywhere, insert into that section
+    without moving or duplicating it. If missing, create it immediately
+    after the first ATX title heading in the body (after YAML). No title
+    heading falls back to the top of the body after YAML. Dedup uses
     ``_section_has_dedup_key`` on the open URL (not the title or stem).
     """
     lines = content.split("\n")
-    header_idx, section_end = _section_bounds(lines, header)
+    header_idx, _ignored_end = _section_bounds(lines, header)
     bullet_lines = _buffet_bullet_lines(bullet)
 
     if header_idx is None:
-        updated = list(lines)
-        if updated and updated[-1].strip():
-            updated.append("")
-        updated.append(header)
-        updated.extend(bullet_lines)
+        updated = _insert_missing_heading(lines, header, bullet_lines)
         return "\n".join(updated), "inserted"
 
+    section_end = _highlight_section_end(lines, header_idx)
     section_body = lines[header_idx + 1 : section_end]
     if _section_has_dedup_key(section_body, keys, exact_line=False):
         return content, "skipped"
@@ -1025,10 +1092,10 @@ def insert_bookmarked_tweets_bullet(
 ) -> tuple[str, str]:
     """Insert ``bullet`` under ``### Bookmarked Tweets``. Returns (content, action).
 
-    Sibling of ``insert_content_buffet_bullet``. If the heading is missing, it
-    is appended at the end of the note — existing People/body/other headings
-    are left alone. Dedup uses ``_section_has_dedup_key`` on the open URL
-    (not the handle or title).
+    Sibling of ``insert_content_buffet_bullet``. If the heading is missing,
+    create it after the title header. An existing heading is reused in
+    place. Dedup uses ``_section_has_dedup_key`` on the open URL (not the
+    handle or title).
     """
     return _insert_heading_bullet(content, BOOKMARKED_TWEETS_HEADER, bullet, keys)
 
@@ -1041,7 +1108,8 @@ def insert_book_highlights_bullet(
     """Insert ``bullet`` under ``### Book highlights``. Returns (content, action).
 
     Sibling of ``insert_bookmarked_tweets_bullet``. Missing heading is
-    appended; other sections stay. Dedup is the open URL only.
+    created after the title header; an existing heading is reused.
+    Dedup is the open URL only.
     """
     return _insert_heading_bullet(content, BOOK_HIGHLIGHTS_HEADER, bullet, keys)
 
@@ -1054,19 +1122,10 @@ def insert_article_highlights_bullet(
     """Insert ``bullet`` under ``### Article highlights``. Returns (content, action).
 
     Sibling of ``insert_book_highlights_bullet``. Missing heading is
-    appended; other sections stay. Dedup is the open URL only.
+    created after the title header; an existing heading is reused.
+    Dedup is the open URL only.
     """
     return _insert_heading_bullet(content, ARTICLE_HIGHLIGHTS_HEADER, bullet, keys)
-
-
-def _frontmatter_body_start(lines: list[str]) -> int:
-    """Index of the first body line after closing YAML ``---``."""
-    if not lines or lines[0].strip() != "---":
-        return 0
-    for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
-            return index + 1
-    return 0
 
 
 def insert_transcript_highlights_bullet(
@@ -1074,25 +1133,14 @@ def insert_transcript_highlights_bullet(
     bullet: str,
     keys: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Insert ``bullet`` under ``### Transcript Highlights`` at the top of the body.
+    """Insert ``bullet`` under ``### Transcript Highlights``.
 
-    If the heading is missing, create it at the top of the body (after YAML)
-    and leave other sections alone. If it already exists, insert into that
-    section without moving it. Dedup is the open URL only.
+    Same placement as article/book/tweet highlights: after the title
+    header when the heading is missing, or into the existing section
+    without moving it. No title heading falls back to after YAML.
+    Dedup is the open URL only.
     """
-    lines = content.split("\n")
-    header_idx, _section_end = _section_bounds(lines, TRANSCRIPT_HIGHLIGHTS_HEADER)
-    if header_idx is not None:
-        return _insert_heading_bullet(content, TRANSCRIPT_HIGHLIGHTS_HEADER, bullet, keys)
-
-    bullet_lines = _buffet_bullet_lines(bullet)
-    body_start = _frontmatter_body_start(lines)
-    insert_at = body_start
-    while insert_at < len(lines) and not lines[insert_at].strip():
-        insert_at += 1
-    block = [TRANSCRIPT_HIGHLIGHTS_HEADER, *bullet_lines, ""]
-    updated = lines[:body_start] + [""] + block + lines[insert_at:]
-    return "\n".join(updated), "inserted"
+    return _insert_heading_bullet(content, TRANSCRIPT_HIGHLIGHTS_HEADER, bullet, keys)
 
 
 def _wikilink_from_note_stem(note_title: str) -> str | None:
@@ -2193,19 +2241,17 @@ def _format_youtube_page_bullet(payload: dict, book: dict | None = None) -> str 
 
 
 def _new_youtube_highlight_page_markdown(stem: str, bullet: str, extras: dict) -> str:
-    """Minimal YouTube note when a highlight arrives before the iOS share."""
+    """Minimal YouTube note: YAML, H1, Transcript Highlights, first bullet."""
     lines = ["---", f'title: "{stem}"']
     for key in ("URL", "readwise_id", "readwise_url", "category"):
         value = extras.get(key)
         if value is None or (isinstance(value, str) and not str(value).strip()):
             continue
         lines.append(f"{key}: {value}")
-    lines.extend(["Tags:", "  - youtube", "---", "", f"# {stem}", "", ""])
-    body = "\n".join(lines)
-    updated, _action = insert_transcript_highlights_bullet(
-        body, bullet, keys=None
+    lines.extend(
+        ["Tags:", "  - youtube", "---", "", f"# {stem}", "", TRANSCRIPT_HIGHLIGHTS_HEADER, bullet, ""]
     )
-    return updated
+    return "\n".join(lines)
 
 
 def _append_youtube_page(
@@ -2328,8 +2374,8 @@ def write_highlights_by_journal(
     the ``Title by Author`` page under ``### Book highlights``, article
     *highlights* (not tweets, not books, not YouTube/video) create or
     append the same stem under ``### Article highlights``, and YouTube /
-    Reader-video highlights append ``### Transcript Highlights`` at the
-    top of that note's body, when ``format_fn`` is ``format_readwise_bullet``
+    Reader-video highlights append ``### Transcript Highlights`` after
+    the title header, when ``format_fn`` is ``format_readwise_bullet``
     (webhook ``readwise.highlight.created`` and the existing highlight
     backfill, which already calls this writer). Document fallback / other
     formatters skip those page writes. Page failures are logged and never

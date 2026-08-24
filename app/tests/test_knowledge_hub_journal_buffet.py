@@ -30,6 +30,7 @@ def _force_la_timezone(monkeypatch):
 
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
+    TRANSCRIPT_HIGHLIGHTS_HEADER,
     _wikilink_from_note_stem,
     append_readwise_buffet,
     append_wikilink_to_journal_buffet,
@@ -449,6 +450,41 @@ def test_shared_link_wikilink_uses_sanitized_filename_stem():
 # ---------------------------------------------------------------------------
 # add_youtube_link
 # ---------------------------------------------------------------------------
+
+
+def test_youtube_link_create_is_yaml_title_highlights_then_rest():
+    mock_dbx, uploads = _mock_dbx(kh_exists=False)
+    long_transcript = "word " * 200
+    patches = [
+        patch("services.obsidian.add_youtube_link._get_dropbox_client", return_value=mock_dbx),
+        patch("services.obsidian.add_youtube_link._find_knowledge_hub_path", return_value=KH_PATH),
+        patch(
+            "services.obsidian.add_youtube_link.fetch_youtube_metadata",
+            return_value={
+                "title": "Cool Video",
+                "author_name": "A Channel",
+                "description": "Video description here.",
+            },
+        ),
+        patch("services.obsidian.add_youtube_link._extract_people", return_value=[]),
+        patch("services.obsidian.add_youtube_link._fetch_transcript", return_value=long_transcript),
+        patch(
+            "services.obsidian.add_youtube_link._summarize_transcript",
+            return_value="### Key Takeaways\n- one",
+        ),
+        patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER),
+    ]
+    with _patched(patches, "services.obsidian.add_youtube_link.datetime"):
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    kh = _kh_upload(uploads)
+    content = kh["content"]
+    assert content.lstrip().startswith("---")
+    assert content.index("## Cool Video") < content.index(TRANSCRIPT_HIGHLIGHTS_HEADER)
+    assert content.index(TRANSCRIPT_HIGHLIGHTS_HEADER) < content.index("Video description here.")
+    assert content.index("Video description here.") < content.index("## AI Summary")
+    assert content.count(TRANSCRIPT_HIGHLIGHTS_HEADER) == 1
 
 
 def test_youtube_link_create_appends_buffet_wikilink():
