@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import dropbox
 import pytz
@@ -555,8 +555,9 @@ def _create_youtube_link(
     """Save a YouTube Reader document onto the shared Reader stem.
 
     Filename / buffet use ``reader_knowledge_hub_note_stem`` (Title by
-    Author when author exists). If a note already exists for this YouTube
-    URL or ``readwise_id``, only fill-if-empty extras — never a second file.
+    Author when author exists). If a note already exists for this stem,
+    title-only stem, YouTube URL / video id, or ``readwise_id``, only
+    fill-if-empty extras — never a second file and never a rename.
     """
     from services.obsidian.add_youtube_link import add_youtube_link
 
@@ -1417,13 +1418,60 @@ def _download_tweet_page(
     return _download_hub_note(dbx, hub_path, filename)
 
 
+_TRACKING_QUERY_KEYS = frozenset({"si", "is"})
+
+
+def _strip_tracking_query(url: str) -> str:
+    """Drop share/tracking query keys such as ``si=`` / ``is=``. Keep the rest."""
+    text = _nonempty(url)
+    if not text:
+        return ""
+    parsed = urlparse(text)
+    if not parsed.query:
+        return text
+    kept = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.casefold() not in _TRACKING_QUERY_KEYS
+    ]
+    return urlunparse(parsed._replace(query=urlencode(kept, doseq=True)))
+
+
+def _hub_filename_stem(path: str) -> str:
+    name = path.rsplit("/", 1)[-1]
+    return name[:-3] if name.endswith(".md") else name
+
+
+def _title_only_hub_stems(*titles: str | None) -> list[str]:
+    """Distinct sanitized title-only stems (no `` by Author`` / `` by Channel``)."""
+    stems: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        stem = knowledge_hub_note_stem(title)
+        if not stem:
+            continue
+        key = stem.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        stems.append(stem)
+    return stems
+
+
 def _note_matches_identity(
     content: str,
     *,
     url: str | None = None,
     readwise_id: str | None = None,
+    title_only_stems: list[str] | None = None,
+    path: str | None = None,
 ) -> bool:
-    """True when KH YAML ``URL`` or ``readwise_id`` matches (YouTube id-aware)."""
+    """True when KH YAML ``URL`` / ``readwise_id`` or title-only filename matches.
+
+    YouTube URLs compare by video id (tracking query is ignored). A title-only
+    filename match is allowed only when YAML does not name a different video
+    or ``readwise_id``. Hits that merely share a title word are rejected.
+    """
     from services.obsidian.add_shared_link import _extract_frontmatter
     from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
@@ -1433,14 +1481,32 @@ def _note_matches_identity(
     if want_id and have_id and want_id == have_id:
         return True
     note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
-    if not url or not note_url:
+    want_url = _http_url(url) or _nonempty(url)
+    want_video = None
+    have_video = None
+    if want_url and is_valid_youtube_url(want_url):
+        want_video = _extract_video_id(want_url)
+    if note_url and is_valid_youtube_url(note_url):
+        have_video = _extract_video_id(note_url)
+    if want_url and note_url:
+        if want_url.rstrip("/") == note_url.rstrip("/"):
+            return True
+        if _strip_tracking_query(want_url).rstrip("/") == _strip_tracking_query(
+            note_url
+        ).rstrip("/"):
+            return True
+        if want_video and have_video and want_video == have_video:
+            return True
+    conflicting = bool(
+        (want_id and have_id and want_id != have_id)
+        or (want_video and have_video and want_video != have_video)
+    )
+    if conflicting:
         return False
-    if url.rstrip("/") == note_url.rstrip("/"):
-        return True
-    if is_valid_youtube_url(url) and is_valid_youtube_url(note_url):
-        left = _extract_video_id(url)
-        right = _extract_video_id(note_url)
-        return bool(left and right and left == right)
+    if path and title_only_stems:
+        file_stem = _hub_filename_stem(path)
+        if any(file_stem == stem for stem in title_only_stems):
+            return True
     return False
 
 
@@ -1453,6 +1519,7 @@ def _identity_search_terms(
     *,
     url: str | None = None,
     readwise_id: str | None = None,
+    title_only_stems: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Distinctive KH search queries: ``(kind, query)``. Never file bodies."""
     terms: list[tuple[str, str]] = []
@@ -1466,14 +1533,33 @@ def _identity_search_terms(
         terms.append((kind, text))
 
     href = _http_url(url) or _nonempty(url)
-    add("url", href)
     if href:
+        stripped = _strip_tracking_query(href) or href
+        add("url", stripped)
         from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
-        if is_valid_youtube_url(href):
-            add("video_id", _extract_video_id(href))
+        if is_valid_youtube_url(stripped):
+            video_id = _extract_video_id(stripped)
+            if video_id:
+                add("watch_v", f"watch?v={video_id}")
+                add("video_id", video_id)
     add("readwise_id", readwise_id)
+    for stem in title_only_stems or []:
+        add("title", stem)
     return terms
+
+
+def _try_constructed_hub_note(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    filename: str,
+) -> tuple[str, str] | None:
+    """Download ``hub_path/filename`` only. No folder listing on miss."""
+    constructed = f"{hub_path}/{filename}"
+    try:
+        return constructed, _get_file_content(dbx, constructed)
+    except FileNotFoundError:
+        return None
 
 
 def _search_match_md_path(match) -> str | None:
@@ -1573,22 +1659,39 @@ def find_hub_note_by_identity(
     hub_path: str,
     *,
     stem: str | None = None,
+    title: str | None = None,
+    titles: list[str] | None = None,
     url: str | None = None,
     readwise_id: str | None = None,
 ) -> tuple[str, str] | None:
-    """Find a Knowledge Hub note by stem, then YAML ``URL`` / ``readwise_id``.
+    """Find a Knowledge Hub note by stem, title-only stem, then identity search.
 
-    Primary key is the shared Reader stem. Title drift still hits the same
-    note via YouTube ``URL`` or ``readwise_id``. After a stem miss, searches
-    the hub with ``files_search_v2`` (full URL, YouTube video id, readwise_id)
-    and downloads only those hits. Search miss or error means no existing
-    note — never list-folder + download-all. Does not create a file.
+    Order: exact ``stem`` filename (Title by Author / Channel), then sanitized
+    title-only filename (no `` by Author`` / `` by Channel`` suffix), then
+    ``files_search_v2`` on stripped URL, ``watch?v=VIDEOID``, video id,
+    ``readwise_id``, and the title-only string. Downloads only those hits and
+    confirms YAML video id / ``readwise_id`` / title-only filename. Search miss
+    or error means no existing note — never list-folder + download-all. Does
+    not create, rename, or merge files.
     """
+    title_only_stems = _title_only_hub_stems(title, *(titles or []))
     if stem:
-        existing = _download_hub_note(dbx, hub_path, _hub_note_filename(stem))
+        existing = _try_constructed_hub_note(dbx, hub_path, _hub_note_filename(stem))
         if existing:
             return existing
-    terms = _identity_search_terms(url=url, readwise_id=readwise_id)
+    for title_only in title_only_stems:
+        if stem and title_only == stem:
+            continue
+        existing = _try_constructed_hub_note(
+            dbx, hub_path, _hub_note_filename(title_only)
+        )
+        if existing:
+            return existing
+    terms = _identity_search_terms(
+        url=url,
+        readwise_id=readwise_id,
+        title_only_stems=title_only_stems,
+    )
     if not terms:
         return None
 
@@ -1605,7 +1708,13 @@ def find_hub_note_by_identity(
             )
             continue
         downloaded += 1
-        if _note_matches_identity(content, url=url, readwise_id=readwise_id):
+        if _note_matches_identity(
+            content,
+            url=url,
+            readwise_id=readwise_id,
+            title_only_stems=title_only_stems,
+            path=path,
+        ):
             logger.info(
                 "KH identity search unique_hits=%s downloaded=%s match=1",
                 len(hits),
@@ -2261,9 +2370,10 @@ def _append_youtube_page(
 ) -> str | None:
     """Append a transcript highlight onto the existing YouTube KH note.
 
-    Lookup is stem, then YAML ``URL`` / ``readwise_id``. Never creates a
-    second file when one already exists. If none exists, creates a minimal
-    note under the shared stem so the highlight has a home.
+    Lookup is exact stem, title-only stem, then YAML ``URL`` / video id /
+    ``readwise_id``. Never creates a second file when one already exists.
+    If none exists, creates a minimal note under the shared stem so the
+    highlight has a home. Existing paths are not renamed.
     """
     book = _resolve_highlight_book(payload)
     if not _is_youtube_highlight(book, payload):
@@ -2275,10 +2385,12 @@ def _append_youtube_page(
     keys = dedup_keys(payload)
     youtube_url = _youtube_highlight_url(book, payload)
     readwise_id = _nonempty(payload.get("book_id")) or _reader_document_id(payload)
+    page_title = _nonempty((book or {}).get("title")) or _nonempty(payload.get("title"))
     existing = find_hub_note_by_identity(
         dbx,
         hub_path,
         stem=stem,
+        title=page_title,
         url=youtube_url,
         readwise_id=readwise_id,
     )
@@ -2573,7 +2685,8 @@ def _append_reader_document_knowledge_hub(
 
     try:
         # YouTube: shared Reader stem (Title by Author). If a note already
-        # exists for this URL / readwise_id, extras only — never a second file.
+        # exists for this stem / title-only stem / URL / readwise_id, extras
+        # only — never a second file.
         if youtube_url:
             result = _create_youtube_link(
                 youtube_url,

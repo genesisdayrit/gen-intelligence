@@ -143,6 +143,11 @@ def _mock_dbx(
             if upload["path"] == path:
                 response.content = upload["content"].encode("utf-8")
                 return None, response
+        if existing_paths is not None:
+            if path not in existing_paths:
+                raise FileNotFoundError(f"not found: {path}")
+        elif KH_PATH in path and not kh_exists:
+            raise FileNotFoundError(f"not found: {path}")
         response.content = (kh_content or "").encode("utf-8")
         return None, response
 
@@ -521,6 +526,86 @@ def test_youtube_link_update_appends_buffet_wikilink():
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "](http" not in section
+
+
+def test_youtube_link_reuses_title_only_stem_note():
+    """Share of Title-by-Channel stem updates the old title-only file."""
+    old_path = f"{KH_PATH}/Cool Video.md"
+    existing = _existing_kh(journal_dates=["May 7, 2026"], title="Cool Video").replace(
+        "URL: https://example.com/article",
+        "URL: https://www.youtube.com/watch?v=abcdefghijk",
+    )
+    mock_dbx, uploads = _mock_dbx(existing_paths=[old_path], kh_content=existing)
+    with _patched(_youtube_patches(mock_dbx, title="Cool Video"), "services.obsidian.add_youtube_link.datetime"):
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    assert result["action"] == "updated"
+    assert result["stem"] == "Cool Video"
+    kh = _kh_upload(uploads)
+    assert kh["path"] == old_path
+    assert not any(u["path"].endswith("Cool Video by A Channel.md") for u in uploads)
+    journal = _journal_upload(uploads)
+    assert journal is not None
+    assert "- [[Cool Video]]" in journal["content"]
+    assert "- [[Cool Video by A Channel]]" not in journal["content"]
+
+
+def test_youtube_link_reuse_with_ai_summary_skips_transcript_and_summarize():
+    old_path = f"{KH_PATH}/Cool Video.md"
+    existing = _existing_kh(journal_dates=["May 7, 2026"], title="Cool Video").replace(
+        "URL: https://example.com/article",
+        "URL: https://www.youtube.com/watch?v=abcdefghijk",
+    ) + "\n## AI Summary\n\n### Key Takeaways\n- already summarized\n"
+    mock_dbx, uploads = _mock_dbx(existing_paths=[old_path], kh_content=existing)
+    patches = _youtube_patches(mock_dbx, title="Cool Video")
+    with _patched(patches, "services.obsidian.add_youtube_link.datetime"), patch(
+        "services.obsidian.add_youtube_link._fetch_transcript"
+    ) as mock_fetch, patch(
+        "services.obsidian.add_youtube_link._summarize_transcript"
+    ) as mock_sum:
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    assert result["stem"] == "Cool Video"
+    mock_fetch.assert_not_called()
+    mock_sum.assert_not_called()
+    kh = _kh_upload(uploads)
+    assert kh["path"] == old_path
+    assert not any(u["path"].endswith("Cool Video by A Channel.md") for u in uploads)
+
+
+def test_youtube_link_reuse_without_summary_still_summarizes_once():
+    old_path = f"{KH_PATH}/Cool Video.md"
+    existing = _existing_kh(journal_dates=["May 7, 2026"], title="Cool Video").replace(
+        "URL: https://example.com/article",
+        "URL: https://www.youtube.com/watch?v=abcdefghijk",
+    )
+    mock_dbx, uploads = _mock_dbx(existing_paths=[old_path], kh_content=existing)
+    long_transcript = "word " * 200
+    mock_sum = MagicMock(return_value="### Key Takeaways\n- one")
+    patches = [
+        patch("services.obsidian.add_youtube_link._get_dropbox_client", return_value=mock_dbx),
+        patch("services.obsidian.add_youtube_link._find_knowledge_hub_path", return_value=KH_PATH),
+        patch(
+            "services.obsidian.add_youtube_link.fetch_youtube_metadata",
+            return_value={"title": "Cool Video", "author_name": "A Channel", "description": None},
+        ),
+        patch("services.obsidian.add_youtube_link._extract_people", return_value=[]),
+        patch("services.obsidian.add_youtube_link._fetch_transcript", return_value=long_transcript),
+        patch("services.obsidian.add_youtube_link._summarize_transcript", mock_sum),
+        patch("services.obsidian.add_readwise_buffet._resolve_journal_folder", return_value=JOURNAL_FOLDER),
+    ]
+    with _patched(patches, "services.obsidian.add_youtube_link.datetime"):
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    assert result["action"] == "updated"
+    assert result["stem"] == "Cool Video"
+    mock_sum.assert_called_once()
+    kh = _kh_upload(uploads)
+    assert kh["path"] == old_path
+    assert not any(u["path"].endswith("Cool Video by A Channel.md") for u in uploads)
 
 
 def test_youtube_link_already_linked_today_does_not_double():

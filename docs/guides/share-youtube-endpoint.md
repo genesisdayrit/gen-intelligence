@@ -62,7 +62,7 @@ POST /share/youtube
 8. **AI Summarization**: Sends the same transcript to OpenAI gpt-5.2 for structured summarization (skipped if transcript is missing, shorter than `MIN_TRANSCRIPT_CHARS`, or OPENAI_API_KEY is not set)
 9. **Folder Discovery**: Finds folder ending with `_Knowledge-Hub` in vault
 10. **Filename / wikilink**: `reader_knowledge_hub_note_stem(Reader title, author)` — `Title by Author` when author exists. If Reader is skipped or has no title yet, the same helper runs on the YouTube title + channel.
-11. **Duplicate / identity lookup**: Prefer that stem. If the file is missing, find an existing note by YAML `URL` (YouTube id-aware) or `readwise_id` and update it — never create a second file when the title string drifted.
+11. **Duplicate / identity lookup**: Prefer that stem. If it is missing, try the title-only stem (sanitized YouTube/Reader title without ` by Channel` / ` by Author`). If that is missing too, `files_search_v2` the hub for the stripped URL (drop tracking query such as `si=` / `is=`), `watch?v=VIDEOID`, the 11-character video id, `readwise_id`, and the title-only string (min 3 chars, max 25 hits). Confirm a hit by downloading it and matching YAML video id / `readwise_id` / title-only filename — do not reuse an unrelated note that only shares a title word. Keep the existing path (do not rename). If the reused note already has `## AI Summary`, skip transcript fetch and summarization; fill-if-empty extras and journal date still run.
 12. **File Creation / extras**: Writes the markdown note with YAML `URL` (YouTube). When Reader was saved, fill-if-empty `readwise_id` and `readwise_url`. `readwise_url` is `https://read.readwise.io/read/{id}` (the save API returns `/new/read/{id}`; both open the video).
 13. **Journal buffet**: Standalone `- [[stem]]` using that same normalized stem.
 14. **Raindrop**: On a new KH note, mirrors the URL to Raindrop Unsorted (failures are logged and do not undo the note). Reader skip does not skip Raindrop.
@@ -93,9 +93,9 @@ Video description text goes here...
 
 ```
 
-Note: A `youtube` tag is automatically added, and the video description is included in the body of the markdown file. Filename and Content Buffet use the shared Reader stem (`Video Title by Channel.md` / `- [[Video Title by Channel]]` when author exists). `readwise_id` and `readwise_url` are filled if empty so Genesis can open the video from metadata, and later `readwise.highlight.created` events can find the same note by stem, YouTube `URL`, or `readwise_id`.
+Note: A `youtube` tag is automatically added, and the video description is included in the body of the markdown file. Filename and Content Buffet use the shared Reader stem (`Video Title by Channel.md` / `- [[Video Title by Channel]]` when author exists). `readwise_id` and `readwise_url` are filled if empty so Genesis can open the video from metadata, and later `readwise.highlight.created` events can find the same note by stem, title-only stem, YouTube `URL` / video id, or `readwise_id`.
 
-When `reader.any_document.created` fires after this save, the webhook calls `add_youtube_link` with Reader's title/author. If a note already exists for this YouTube URL or `readwise_id`, it only fill-if-empty extras — it does not create a differently named file.
+When `reader.any_document.created` fires after this save, the webhook calls `add_youtube_link` with Reader's title/author. If a note already exists for this stem, title-only stem, YouTube URL / video id, or `readwise_id`, it only fill-if-empty extras — it does not create a differently named file and does not rename the old one. A reused note that already has `## AI Summary` does not re-run transcript fetch or summarization.
 
 Later YouTube / Reader `category=video` highlights append `- "quote" ([Link](https://readwise.io/open/{id}))` under `### Transcript Highlights` immediately after the title header (heading is created if missing; an existing heading is reused in place). Dedup is the open/id URL. Tweets and books are unchanged.
 
