@@ -54,12 +54,22 @@ Highlights are dated by `highlighted_at` (3am local rollover). Documents are dat
 
 Readwise does not refire webhooks for historical imports. Use the repeatable `backfill_readwise_highlights` job to pull from [GET /api/v2/export/](https://readwise.io/api_deets) and append the same Content Buffet bullets. That job already calls the highlight formatter/writer, so tweet highlights also get the `Tweets from @handle` Bookmarked Tweets line, book highlights (`category == books`) get the `Title by Author` Book highlights line, article highlights get the `Title by Author` Article highlights line, and YouTube / Reader `category=video` highlights get `### Transcript Highlights` — no separate backfill. Safe to rerun: existing highlight id / `readwise.io/open/{id}` bullets are skipped on the journal, the handle page, the book page, the article page, and the YouTube note. Missing journal files are skipped (never dumped onto today). Journal writes are batched per journal day; handle-page, book-page, article-page, and transcript-page failures do not undo those writes.
 
+The job stays **manual** (year-2099 `CronTrigger` so `POST /scheduler/jobs/backfill_readwise_highlights/run` still works). It is not on a daily cadence. Writes stay idempotent on `readwise.io/open/{id}` — reruns overlap safely.
+
+A last-run cursor is stored in Redis at `readwise:backfill:cursor` after a successful export+write (export exception or per-file write errors do not advance it). The next run with no explicit `updated_after` / `lookback_days` uses that cursor as the export API `updatedAfter`. If Redis has no cursor yet, the seed `FIRST_CURSOR` (`2026-08-24T04:00:00Z`) is used — that timestamp is the 2026-08-23 live today-only write (~9:00pm America/Los_Angeles). Empty Redis does **not** fall back to a full export from 2024-08-13.
+
+`since` (journal-date cutoff, default 2024-08-13) stays independent of the export cursor.
+
 ```bash
-# Default since=2024-08-13 (first day of the unbroken daily journal streak)
+# Incremental from Redis cursor, or FIRST_CURSOR if Redis is empty
 curl -X POST http://localhost:8000/scheduler/jobs/backfill_readwise_highlights/run
 
-# Optional cutoff (ISO date) and incremental export filter (ISO8601)
+# Optional journal cutoff (ISO date) and explicit export filter (ISO8601) — overrides cursor/seed
 curl -X POST 'http://localhost:8000/scheduler/jobs/backfill_readwise_highlights/run?since=2024-08-13&updated_after=2026-01-01T00:00:00Z'
+
+# Optional lookback — updated_after = now minus N days (UTC). Wins over the stored cursor/seed
+# unless updated_after is also passed.
+curl -X POST 'http://localhost:8000/scheduler/jobs/backfill_readwise_highlights/run?lookback_days=1'
 ```
 
-Defaults can also be set as `READWISE_BACKFILL_SINCE` and `READWISE_BACKFILL_UPDATED_AFTER`. The job is manual (not on a daily cadence). Check counts in the app log: `selected`, `inserted`, `replaced`, `skipped` (dedup), `skipped_missing_journal`, `files_written`, `errors`.
+Defaults can also be set as `READWISE_BACKFILL_SINCE`, `READWISE_BACKFILL_UPDATED_AFTER`, and `READWISE_BACKFILL_LOOKBACK_DAYS`. Explicit `updated_after` (query/kwarg or env) still wins over lookback, cursor, and seed. After a successful override or lookback run the Redis cursor is still updated. Check counts in the app log: `selected`, `inserted`, `replaced`, `skipped` (dedup), `skipped_missing_journal`, `files_written`, `errors`, plus `updated_after` actually used and `cursor`.

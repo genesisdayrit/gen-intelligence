@@ -80,10 +80,14 @@ def _send_main_thread_rollup():
     return run_main_thread_rollup(hours=6)
 
 
-def _backfill_readwise_highlights(since=None, updated_after=None):
+def _backfill_readwise_highlights(since=None, updated_after=None, lookback_days=None):
     from services.readwise.backfill import backfill_readwise_highlights
 
-    return backfill_readwise_highlights(since=since, updated_after=updated_after)
+    return backfill_readwise_highlights(
+        since=since,
+        updated_after=updated_after,
+        lookback_days=lookback_days,
+    )
 
 
 def _send_sunday_wrap_up_email():
