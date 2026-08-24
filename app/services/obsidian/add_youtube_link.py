@@ -67,6 +67,7 @@ SUPADATA_TRANSCRIPT_URL = "https://api.supadata.ai/v1/youtube/transcript"
 MIN_TRANSCRIPT_CHARS = 400
 # Sentinel so add_youtube_link can reuse a prefetched transcript (including None)
 _TRANSCRIPT_UNSET = object()
+_AI_SUMMARY_HEADING = re.compile(r"^## AI Summary\s*$", re.MULTILINE)
 # Max chars per single summarization call (~250k tokens, leaving room for prompt + response)
 CHUNK_CHAR_LIMIT = 1_000_000
 
@@ -575,6 +576,19 @@ def _fetch_youtube_description(client: httpx.Client, url: str) -> str | None:
         return None
 
 
+def _note_has_ai_summary(content: str) -> bool:
+    """True when the note already has a non-empty ``## AI Summary`` section."""
+    if not content:
+        return False
+    match = _AI_SUMMARY_HEADING.search(content)
+    if not match:
+        return False
+    rest = content[match.end() :]
+    next_heading = re.search(r"^##\s+", rest, re.MULTILINE)
+    section = rest[: next_heading.start()] if next_heading else rest
+    return bool(section.strip())
+
+
 def add_youtube_link(
     url: str,
     *,
@@ -590,7 +604,9 @@ def add_youtube_link(
     Author when author exists). Prefer Reader ``note_title`` / ``note_author``;
     if Reader has no title yet, fall back to the YouTube title + channel
     through the same helper. Existing notes are found by that stem, then
-    YAML ``URL`` / ``readwise_id`` — never a second file.
+    title-only stem, then YAML ``URL`` / video id / ``readwise_id`` — never
+    a second file and never a rename. Reused notes that already have
+    ``## AI Summary`` skip transcript fetch and summarization.
 
     Args:
         url: The YouTube URL to save
@@ -638,20 +654,6 @@ def add_youtube_link(
         # Extract main people from title/description
         people = _extract_people(video_title, description)
 
-        # Summarize transcript (non-blocking to core flow). Reuse a
-        # prefetched value when the share path already gated on it.
-        summary_section = ""
-        if transcript is _TRANSCRIPT_UNSET:
-            transcript = fetch_youtube_transcript(url)
-        elif transcript:
-            transcript = str(transcript).strip() or None
-        else:
-            transcript = None
-        if transcript:
-            summary = _summarize_transcript(transcript, video_title)
-            if summary:
-                summary_section = f"\n## AI Summary\n\n{summary}\n"
-
         dbx = _get_dropbox_client()
         knowledge_hub_path = _find_knowledge_hub_path(dbx, vault_path)
 
@@ -668,20 +670,48 @@ def add_youtube_link(
         extras_id = None
         if extra_frontmatter:
             extras_id = extra_frontmatter.get("readwise_id")
-        if not _file_exists(dbx, file_path):
-            found = find_hub_note_by_identity(
-                dbx,
-                knowledge_hub_path,
-                url=url,
-                readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+        identity_titles = [
+            title
+            for title in (note_title, metadata.get("title"), video_title)
+            if title and title != url
+        ]
+        found = find_hub_note_by_identity(
+            dbx,
+            knowledge_hub_path,
+            stem=note_stem,
+            title=identity_titles[0] if identity_titles else None,
+            titles=identity_titles[1:] or None,
+            url=url,
+            readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+        )
+        existing_content = None
+        if found:
+            file_path, existing_content = found
+            note_stem = file_path.rsplit("/", 1)[-1].removesuffix(".md")
+            logger.info(
+                "YouTube KH note reused; keeping existing stem %s",
+                note_stem,
             )
-            if found:
-                file_path, _found_content = found
-                note_stem = file_path.rsplit("/", 1)[-1].removesuffix(".md")
-                logger.info(
-                    "YouTube KH note found by URL/readwise_id; keeping existing stem %s",
-                    note_stem,
-                )
+
+        # Summarize only when creating or when a reused note has no summary.
+        # Reuse a prefetched transcript when the share path already gated on it.
+        summary_section = ""
+        skip_summary = bool(existing_content) and _note_has_ai_summary(existing_content)
+        if skip_summary:
+            logger.info(
+                "Existing YouTube KH note already has AI Summary; skipping transcript/summary"
+            )
+        else:
+            if transcript is _TRANSCRIPT_UNSET:
+                transcript = fetch_youtube_transcript(url)
+            elif transcript:
+                transcript = str(transcript).strip() or None
+            else:
+                transcript = None
+            if transcript:
+                summary = _summarize_transcript(transcript, video_title)
+                if summary:
+                    summary_section = f"\n## AI Summary\n\n{summary}\n"
 
         # Get timestamps
         system_tz = pytz.timezone(timezone_str)
@@ -699,11 +729,12 @@ def add_youtube_link(
         result["file_path"] = file_path
 
         # Check if file already exists
-        if _file_exists(dbx, file_path):
+        if existing_content is not None or _file_exists(dbx, file_path):
             logger.info("File already exists, checking journal date: %s", file_path)
 
-            # Download existing file
-            existing_content = _get_file_content(dbx, file_path)
+            # Download existing file when identity lookup did not already have it
+            if existing_content is None:
+                existing_content = _get_file_content(dbx, file_path)
             if existing_content is None:
                 logger.warning("Could not download existing file, skipping: %s", file_path)
                 result["success"] = True

@@ -19,7 +19,11 @@ os.environ.setdefault("DROPBOX_ACCESS_KEY", "test-key")
 os.environ.setdefault("DROPBOX_ACCESS_SECRET", "test-secret")
 os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
 
-from services.obsidian.add_readwise_buffet import find_hub_note_by_identity  # noqa: E402
+from services.obsidian.add_readwise_buffet import (  # noqa: E402
+    _identity_search_terms,
+    _note_matches_identity,
+    find_hub_note_by_identity,
+)
 
 KH_FOLDER = "/obsidian/personal/01_knowledge-hub"
 YOUTUBE_URL = "https://www.youtube.com/watch?v=abcdefghijk"
@@ -80,6 +84,9 @@ def test_find_hub_note_by_identity_stem_hit_does_not_search():
     mock_dbx.files_list_folder.assert_not_called()
     mock_dbx.files_list_folder_continue.assert_not_called()
     assert mock_dbx.files_download.call_count == 1
+    mock_dbx.files_download.assert_called_once_with(
+        f"{KH_FOLDER}/Cool Video by A Channel.md"
+    )
 
 
 def test_find_hub_note_by_identity_match_uses_search_and_one_download(caplog):
@@ -102,6 +109,7 @@ def test_find_hub_note_by_identity_match_uses_search_and_one_download(caplog):
     assert mock_dbx.files_search_v2.called
     queries = [call.args[0] for call in mock_dbx.files_search_v2.call_args_list]
     assert YOUTUBE_URL in queries
+    assert f"watch?v={VIDEO_ID}" in queries
     assert VIDEO_ID in queries
     assert READWISE_ID in queries
     for call in mock_dbx.files_search_v2.call_args_list:
@@ -154,3 +162,171 @@ def test_find_hub_note_by_identity_search_error_does_not_scan_hub():
     mock_dbx.files_list_folder_continue.assert_not_called()
     mock_dbx.files_download.assert_not_called()
     mock_dbx.files_search_continue_v2.assert_not_called()
+
+
+def test_find_hub_note_by_identity_title_only_stem_reused_without_search():
+    title_only_path = f"{KH_FOLDER}/Cool Video.md"
+
+    def download(path):
+        if path == title_only_path:
+            return _download_response(EXISTING_NOTE)
+        raise FileNotFoundError(path)
+
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = download
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Cool Video by A Channel",
+        title="Cool Video",
+        url=YOUTUBE_URL,
+        readwise_id=READWISE_ID,
+    )
+
+    assert found == (title_only_path, EXISTING_NOTE)
+    mock_dbx.files_search_v2.assert_not_called()
+    mock_dbx.files_list_folder.assert_not_called()
+    assert mock_dbx.files_download.call_args_list[0].args[0] == (
+        f"{KH_FOLDER}/Cool Video by A Channel.md"
+    )
+    assert mock_dbx.files_download.call_args_list[1].args[0] == title_only_path
+
+
+def test_find_hub_note_by_identity_title_by_channel_stem_wins_over_title_only():
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download_response(EXISTING_NOTE)
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Cool Video by A Channel",
+        title="Cool Video",
+        url=YOUTUBE_URL,
+        readwise_id=READWISE_ID,
+    )
+
+    assert found == (f"{KH_FOLDER}/Cool Video by A Channel.md", EXISTING_NOTE)
+    mock_dbx.files_search_v2.assert_not_called()
+    mock_dbx.files_download.assert_called_once_with(
+        f"{KH_FOLDER}/Cool Video by A Channel.md"
+    )
+
+
+def test_find_hub_note_by_identity_title_search_confirms_yaml_video_id():
+    """Title query finds a note whose YAML URL is the same video."""
+    drifted_path = f"{KH_FOLDER}/Saved from Reader.md"
+
+    def download(path):
+        if path == drifted_path:
+            return _download_response(EXISTING_NOTE)
+        raise FileNotFoundError(path)
+
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = download
+    mock_dbx.files_search_v2.return_value = _search_result(
+        [_search_match(drifted_path, "Saved from Reader.md")]
+    )
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Cool Video by A Channel",
+        title="Cool Video",
+        url=YOUTUBE_URL,
+        readwise_id=READWISE_ID,
+    )
+
+    assert found == (drifted_path, EXISTING_NOTE)
+    queries = [call.args[0] for call in mock_dbx.files_search_v2.call_args_list]
+    assert "Cool Video" in queries
+    mock_dbx.files_list_folder.assert_not_called()
+
+
+def test_find_hub_note_by_identity_similar_title_different_video_not_reused():
+    other_path = f"{KH_FOLDER}/Cool Video Outtakes.md"
+    other_note = """---
+URL: https://www.youtube.com/watch?v=zPLc3jjHbnU
+---
+
+## Cool Video Outtakes
+"""
+
+    def download(path):
+        if path == other_path:
+            return _download_response(other_note)
+        raise FileNotFoundError(path)
+
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = download
+    mock_dbx.files_search_v2.return_value = _search_result(
+        [_search_match(other_path, "Cool Video Outtakes.md")]
+    )
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Cool Video by A Channel",
+        title="Cool Video",
+        url=YOUTUBE_URL,
+        readwise_id=READWISE_ID,
+    )
+
+    assert found is None
+    mock_dbx.files_list_folder.assert_not_called()
+
+
+def test_find_hub_note_by_identity_tracking_param_url_variants_match():
+    tracking = f"{YOUTUBE_URL}&si=abc123&is=xyz"
+    note_path = f"{KH_FOLDER}/Other Stem.md"
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = lambda path: (
+        _download_response(EXISTING_NOTE)
+        if path == note_path
+        else (_ for _ in ()).throw(FileNotFoundError(path))
+    )
+    mock_dbx.files_search_v2.return_value = _search_result(
+        [_search_match(note_path, "Other Stem.md")]
+    )
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        url=tracking,
+        readwise_id=None,
+    )
+
+    assert found == (note_path, EXISTING_NOTE)
+    queries = [call.args[0] for call in mock_dbx.files_search_v2.call_args_list]
+    assert YOUTUBE_URL in queries
+    assert f"watch?v={VIDEO_ID}" in queries
+    assert VIDEO_ID in queries
+    assert tracking not in queries
+    mock_dbx.files_list_folder.assert_not_called()
+
+
+def test_identity_search_terms_strip_tracking_and_add_watch_v():
+    tracking = f"{YOUTUBE_URL}&si=share&is=1"
+    terms = _identity_search_terms(
+        url=tracking,
+        readwise_id=READWISE_ID,
+        title_only_stems=["Cool Video"],
+    )
+    kinds = {kind: query for kind, query in terms}
+    assert kinds["url"] == YOUTUBE_URL
+    assert kinds["watch_v"] == f"watch?v={VIDEO_ID}"
+    assert kinds["video_id"] == VIDEO_ID
+    assert kinds["readwise_id"] == READWISE_ID
+    assert kinds["title"] == "Cool Video"
+    assert tracking not in {query for _kind, query in terms}
+
+
+def test_note_matches_identity_tracking_param_urls_are_same_video():
+    assert _note_matches_identity(
+        EXISTING_NOTE,
+        url=f"{YOUTUBE_URL}&si=abc&is=xyz",
+    )
+    assert not _note_matches_identity(
+        EXISTING_NOTE,
+        url="https://www.youtube.com/watch?v=zPLc3jjHbnU",
+    )

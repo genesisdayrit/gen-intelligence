@@ -119,6 +119,8 @@ def _mock_dbx(*, kh_exists=False, kh_content=None, journal_content=SAMPLE_JOURNA
         if JOURNAL_FOLDER in path:
             response.content = journal_content.encode("utf-8")
             return None, response
+        if KH_PATH in path and not kh_exists:
+            raise FileNotFoundError(f"not found: {path}")
         response.content = (kh_content or "").encode("utf-8")
         return None, response
 
