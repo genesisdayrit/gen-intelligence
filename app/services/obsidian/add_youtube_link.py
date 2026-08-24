@@ -12,6 +12,7 @@ import pytz
 from openai import OpenAI
 
 from .add_readwise_buffet import (
+    TRANSCRIPT_HIGHLIGHTS_HEADER,
     append_wikilink_to_journal_buffet,
     find_hub_note_by_identity,
     journal_filename,
@@ -825,6 +826,8 @@ Tags:
 ---
 
 ## {video_title}
+
+{TRANSCRIPT_HIGHLIGHTS_HEADER}
 {description_section}
 {summary_section}"""
 

@@ -97,7 +97,7 @@ Note: A `youtube` tag is automatically added, and the video description is inclu
 
 When `reader.any_document.created` fires after this save, the webhook calls `add_youtube_link` with Reader's title/author. If a note already exists for this YouTube URL or `readwise_id`, it only fill-if-empty extras — it does not create a differently named file.
 
-Later YouTube / Reader `category=video` highlights append `- "quote" ([Link](https://readwise.io/open/{id}))` under `### Transcript Highlights` at the **top** of that note's body (heading is created if missing; other sections stay). Dedup is the open/id URL. Tweets and books are unchanged.
+Later YouTube / Reader `category=video` highlights append `- "quote" ([Link](https://readwise.io/open/{id}))` under `### Transcript Highlights` immediately after the title header (heading is created if missing; an existing heading is reused in place). Dedup is the open/id URL. Tweets and books are unchanged.
 
 ## Environment Variables
 
