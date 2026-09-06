@@ -1,16 +1,17 @@
 # Granola → Obsidian Journal Sync
 
-Every 15 minutes, pull Granola notes updated since a Redis last-run cursor and append each under `### Transcript Notes` on the matching daily journal.
+Every 15 minutes, pull Granola notes updated since a Redis last-run cursor and append each **summary block** under `### Transcript Notes` on the matching daily journal.
 
 ## Overview
 
 1. `GET https://public-api.granola.ai/v1/notes?updated_after=<ISO8601>` (cursor pagination; no `folder_id` filter)
-2. Date each note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
-3. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
-4. Append an idempotent bullet under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`
-5. Advance Redis `granola:notes:cursor` only when the pull and writes succeed
+2. For each listed note, always `GET /v1/notes/{id}` so `summary_markdown` is present (list payloads typically omit it)
+3. Date each note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
+4. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
+5. Append an idempotent summary block under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`
+6. Advance Redis `granola:notes:cursor` only when the pull and writes succeed
 
-The Granola API only returns notes that already have an AI summary and transcript. Missing journal files are skipped (logged as `skipped_missing_journal`) — the job does not create a journal or dump onto today.
+The Granola API only returns notes that already have an AI summary and transcript. The journal write uses **summary only** (`summary_markdown`, else `summary_text`) — never the full transcript. Missing journal files are skipped (logged as `skipped_missing_journal`) — the job does not create a journal or dump onto today.
 
 ## Prerequisites
 
@@ -57,7 +58,7 @@ Never log or print `GRANOLA_API_KEY`.
 
 **First run / empty Redis:** seed `updated_after` to now−15m (or `GRANOLA_SEED_LOOKBACK_MINUTES`). This avoids dumping the whole historical library. Documented here so an empty Redis is intentional, not a full backfill.
 
-The cursor advances only after a successful pull + write. API errors or Dropbox write errors leave the cursor unchanged. Overlap is OK: bullets dedup on the Granola note `id` (`not_…`).
+The cursor advances only after a successful pull + write. API errors or Dropbox write errors leave the cursor unchanged. Overlap is OK: blocks dedup on the Granola note `id` (`not_…` / `granola:not_…`).
 
 ## Schedule
 
@@ -84,8 +85,28 @@ curl http://localhost:8000/scheduler/jobs
 - Path: `01_Daily/_Journal/{Mon D, YYYY}.md` via `journal_filename`, Dropbox, `_resolve_journal_folder`
 - Section header exactly: `### Transcript Notes`
 - Placement: bottom of the note. Missing heading is created at EOF. An existing mid-note heading is reused in place (not moved)
-- Bullet: `- [Title](https://notes.granola.ai/...) granola:not_…` when `web_url` is present, otherwise `- Title granola:not_…`
-- Dedup key: Granola note `id` (`not_…` / `granola:not_…`)
+- Block shape (summary as-is from the API; no transcript):
+
+```markdown
+### Transcript Notes
+
+#### [Title](https://notes.granola.ai/d/…)
+<!-- granola:not_… -->
+
+<summary_markdown>
+
+---
+
+#### [Next title](https://notes.granola.ai/d/…)
+<!-- granola:not_… -->
+
+<summary_markdown>
+```
+
+- Prefer `summary_markdown`; fall back to `summary_text` if markdown is empty. Private notes are not written. Never write the full transcript.
+- Separate notes with a horizontal rule (`---` with a blank line on each side). The first note has no leading `---`.
+- Dedup key: `granola:not_…` inside the HTML comment. A second run with the same id is skipped when that comment is already present.
+- Upgrade: a legacy title-only line (`- [Title](url) granola:not_…`) for the same id is replaced with the summary block on the next sync.
 
 ## Log summary
 

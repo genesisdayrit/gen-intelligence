@@ -1,7 +1,8 @@
 """Scheduled Granola → Obsidian daily-journal sync.
 
-Pulls notes updated since a Redis last-run cursor and appends each under
-``### Transcript Notes`` on the matching daily journal (3am local rollover).
+Pulls notes updated since a Redis last-run cursor and appends each summary
+block under ``### Transcript Notes`` on the matching daily journal
+(3am local rollover).
 """
 
 from __future__ import annotations
@@ -24,7 +25,6 @@ from services.obsidian.add_readwise_buffet import (
     _buffet_bullet_lines,
     _get_dropbox_client,
     _get_file_content,
-    _insert_heading_bullet,
     _nonempty,
     _resolve_journal_folder,
     _section_bounds,
@@ -180,11 +180,37 @@ def note_web_url(note: dict) -> str | None:
     return None
 
 
-def format_granola_bullet(note: dict) -> str | None:
-    """Idempotent Transcript Notes line: title + Granola note id.
+def note_summary_body(note: dict) -> str:
+    """Prefer ``summary_markdown``; fall back to ``summary_text``.
 
-    Prefers ``- [Title](web_url) granola:not_…`` when the API provides a URL.
-    Otherwise ``- Title granola:not_…``.
+    Never uses ``transcript`` / private notes. Empty or whitespace-only
+    markdown falls through to plain text. The chosen body is returned
+    as-is (trailing newlines stripped only so the journal block joins cleanly).
+    """
+    for key in ("summary_markdown", "summary_text"):
+        raw = note.get(key)
+        if raw is None:
+            continue
+        text = str(raw)
+        if text.strip():
+            return text.rstrip("\n")
+    return ""
+
+
+def granola_html_comment(note_id_value: str) -> str:
+    """Dedup marker: ``<!-- granola:not_… -->``."""
+    return f"<!-- granola:{note_id_value} -->"
+
+
+def format_granola_block(note: dict) -> str | None:
+    """Multi-line Transcript Notes block: heading, HTML comment id, summary.
+
+    Shape::
+
+        #### [Title](web_url)
+        <!-- granola:not_… -->
+
+        <summary_markdown>
     """
     nid = note_id(note)
     if not nid:
@@ -193,8 +219,19 @@ def format_granola_bullet(note: dict) -> str | None:
     url = note_web_url(note)
     if url:
         safe_title = title.replace("[", "\\[").replace("]", "\\]")
-        return f"- [{safe_title}]({url}) granola:{nid}"
-    return f"- {title} granola:{nid}"
+        heading = f"#### [{safe_title}]({url})"
+    else:
+        heading = f"#### {title}"
+    parts = [heading, granola_html_comment(nid)]
+    summary = note_summary_body(note)
+    if summary:
+        parts.extend(["", summary])
+    return "\n".join(parts)
+
+
+def format_granola_bullet(note: dict) -> str | None:
+    """Backward-compatible name for ``format_granola_block``."""
+    return format_granola_block(note)
 
 
 def granola_dedup_keys(note: dict) -> list[str]:
@@ -205,47 +242,121 @@ def granola_dedup_keys(note: dict) -> list[str]:
     return [f"granola:{nid}", nid]
 
 
+def _line_has_dedup_key(line: str, keys: list[str]) -> bool:
+    stripped = line.strip()
+    return any(key in stripped for key in keys if key)
+
+
+def _is_title_only_granola_line(line: str, keys: list[str]) -> bool:
+    """Legacy ``- [Title](url) granola:not_…`` / ``- Title granola:not_…``."""
+    stripped = line.strip()
+    return stripped.startswith("- ") and _line_has_dedup_key(stripped, keys)
+
+
+def _is_full_block_marker_line(line: str, keys: list[str]) -> bool:
+    """``<!-- granola:not_… -->`` — summary block already written."""
+    stripped = line.strip()
+    if not (stripped.startswith("<!--") and "-->" in stripped):
+        return False
+    return _line_has_dedup_key(stripped, keys)
+
+
+def _ensure_blank_after_header(body: list[str]) -> list[str]:
+    if not body:
+        return [""]
+    if body[0].strip() == "":
+        return body
+    return [""] + body
+
+
+def _with_note_separator(prefix: list[str], block_lines: list[str]) -> list[str]:
+    """Join an existing section prefix to a new block with ``---`` (not before first)."""
+    body = list(prefix)
+    while body and not body[-1].strip():
+        body.pop()
+    if body:
+        body.extend(["", "---", ""])
+    body.extend(block_lines)
+    return _ensure_blank_after_header(body)
+
+
+def _replace_title_only_line(
+    section_body: list[str],
+    replace_idx: int,
+    block_lines: list[str],
+) -> list[str]:
+    prefix = section_body[:replace_idx]
+    suffix = section_body[replace_idx + 1 :]
+    while suffix and not suffix[0].strip():
+        suffix.pop()
+    body = _with_note_separator(prefix, block_lines)
+    if suffix:
+        body = _with_note_separator(body, suffix)
+    return body
+
+
+def _append_block_to_section(section_body: list[str], block_lines: list[str]) -> list[str]:
+    return _with_note_separator(section_body, block_lines)
+
+
 def insert_transcript_notes_bullet(
     content: str,
     bullet: str,
     keys: list[str] | None = None,
 ) -> tuple[str, str]:
-    """Insert ``bullet`` under ``### Transcript Notes``. Returns (content, action).
+    """Insert a summary block under ``### Transcript Notes``.
+
+    Returns ``(content, action)`` where action is ``inserted``,
+    ``replaced`` (legacy title-only bullet upgraded), or ``skipped``
+    (full block for this id already present).
 
     Existing heading is reused in place (not moved). Missing heading is
-    created at EOF.
+    created at EOF. ``####`` note headings stay inside the section;
+    the next ``### `` sibling ends it.
     """
+    keys = [key for key in (keys or []) if key]
     lines = content.split("\n")
-    header_idx, _ignored_end = _section_bounds(lines, TRANSCRIPT_NOTES_HEADER)
-    if header_idx is not None:
-        return _insert_heading_bullet(content, TRANSCRIPT_NOTES_HEADER, bullet, keys)
+    header_idx, section_end = _section_bounds(lines, TRANSCRIPT_NOTES_HEADER)
+    block_lines = _buffet_bullet_lines(bullet)
 
-    bullet_lines = _buffet_bullet_lines(bullet)
-    updated = list(lines)
-    while updated and updated[-1] == "":
-        updated.pop()
-    if updated and updated[-1].strip():
-        updated.append("")
-    updated.extend([TRANSCRIPT_NOTES_HEADER, *bullet_lines, ""])
-    return "\n".join(updated), "inserted"
+    if header_idx is None:
+        updated = list(lines)
+        while updated and updated[-1] == "":
+            updated.pop()
+        if updated and updated[-1].strip():
+            updated.append("")
+        updated.extend([TRANSCRIPT_NOTES_HEADER, "", *block_lines, ""])
+        return "\n".join(updated), "inserted"
 
+    section_body = lines[header_idx + 1 : section_end]
+    if any(_is_full_block_marker_line(line, keys) for line in section_body):
+        return content, "skipped"
 
-def _note_already_has_detail(note: dict) -> bool:
-    return bool(note_web_url(note) or meeting_start_value(note) or note.get("calendar_event"))
+    replace_idx = next(
+        (i for i, line in enumerate(section_body) if _is_title_only_granola_line(line, keys)),
+        None,
+    )
+    if replace_idx is not None:
+        new_body = _replace_title_only_line(section_body, replace_idx, block_lines)
+    else:
+        new_body = _append_block_to_section(section_body, block_lines)
+    if new_body and new_body[-1].strip() and section_end < len(lines):
+        new_body.append("")
+    action = "replaced" if replace_idx is not None else "inserted"
+    updated = lines[: header_idx + 1] + new_body + lines[section_end:]
+    return "\n".join(updated), action
 
 
 def hydrate_note(note: dict) -> dict | None:
-    """Merge GET /v1/notes/{id} for web_url + meeting start.
+    """Always GET /v1/notes/{id} so ``summary_markdown`` is present.
 
-    Returns None when the note 404s (do not invent it). List payloads that
-    already carry detail fields skip the extra GET.
+    List payloads typically omit summary fields. Returns None when the
+    note 404s (do not invent it).
     """
     nid = note_id(note)
     if not nid:
         logger.warning("Granola note missing id; skipping")
         return None
-    if _note_already_has_detail(note):
-        return note
     try:
         detail = get_note(nid)
     except GranolaNoteNotFound:
@@ -273,7 +384,7 @@ def write_notes_by_journal(
     now: datetime | None = None,
     raise_errors: bool = False,
 ) -> dict:
-    """Append notes grouped by journal file (one download/upload per day).
+    """Append summary blocks grouped by journal file (one download/upload per day).
 
     Missing journal files are skipped — never created, never dumped onto today.
     """
@@ -305,12 +416,14 @@ def write_notes_by_journal(
             original = content
             file_counts = {"inserted": 0, "skipped": 0}
             for note in group:
-                bullet = format_granola_bullet(note)
-                if not bullet:
+                block = format_granola_block(note)
+                if not block:
                     continue
                 content, action = insert_transcript_notes_bullet(
-                    content, bullet, granola_dedup_keys(note)
+                    content, block, granola_dedup_keys(note)
                 )
+                if action == "replaced":
+                    action = "inserted"
                 if action in file_counts:
                     file_counts[action] += 1
                     summary[action] += 1
@@ -360,7 +473,7 @@ def sync_granola_notes(
     updated_after: str | None = None,
     now: datetime | None = None,
 ) -> dict:
-    """Pull notes updated since the Redis cursor and append to daily journals.
+    """Pull notes updated since the Redis cursor and append summaries to journals.
 
     Empty Redis seeds ``updated_after`` to now−15m (see ``seed_updated_after``)
     so the first run does not dump the whole historical library. The cursor

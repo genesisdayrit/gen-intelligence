@@ -37,9 +37,12 @@ from services.granola.sync import (
     CURSOR_REDIS_KEY,
     SEED_LOOKBACK_MINUTES,
     TRANSCRIPT_NOTES_HEADER,
+    format_granola_block,
     format_granola_bullet,
+    granola_html_comment,
     insert_transcript_notes_bullet,
     note_effective_date,
+    note_summary_body,
     seed_updated_after,
     sync_granola_notes,
 )
@@ -73,7 +76,32 @@ date: 2026-09-05
 - plan something
 """
 
+JOURNAL_WITH_SUMMARY_BLOCK = """---
+date: 2026-09-05
+---
+
+# Sep 5, 2026
+
+### Transcript Notes
+
+#### [Older meeting](https://notes.granola.ai/d/old)
+<!-- granola:not_alreadyThere1 -->
+
+Already synced summary.
+
+### Content Planning
+- plan something
+"""
+
 JOURNAL_FOLDER = "/obsidian/personal/01_daily/_journal"
+
+DEFAULT_SUMMARY_MARKDOWN = (
+    "## Quarterly Yoghurt Budget Review\n"
+    "\n"
+    "The quarterly yoghurt budget review was a success.\n"
+    "\n"
+    "- Spent **$100,000** on yoghurt"
+)
 
 
 def _note(
@@ -133,6 +161,14 @@ def _fake_redis(cursor_store=None):
     return mock_redis, cursor_store
 
 
+def _note_detail_id(url):
+    path = (url or "").split("?", 1)[0].rstrip("/")
+    prefix = NOTES_URL.rstrip("/") + "/"
+    if path.startswith(prefix):
+        return path[len(prefix):] or None
+    return None
+
+
 def _run_sync(
     pages,
     contents_by_path=None,
@@ -140,11 +176,15 @@ def _run_sync(
     cursor_store=None,
     list_error=None,
     write_error=None,
+    details_by_id=None,
     **kwargs,
 ):
     mock_dbx, uploaded, store = _mock_dropbox(contents_by_path, missing_paths)
     if write_error is not None:
         mock_dbx.files_upload.side_effect = write_error
+    pages = list(pages)
+    listed_notes = [note for page in pages for note in (page.get("notes") or [])]
+    details_by_id = dict(details_by_id or {})
     page_iter = iter(pages)
     mock_redis, cursor_store = _fake_redis(cursor_store)
 
@@ -153,8 +193,16 @@ def _run_sync(
             raise list_error
         response = MagicMock()
         response.status_code = 200
-        response.json.return_value = next(page_iter)
         response.raise_for_status = MagicMock()
+        nid = _note_detail_id(url)
+        if nid is not None:
+            listed = next((note for note in listed_notes if note.get("id") == nid), {"id": nid})
+            detail = {**listed, **details_by_id.get(nid, {})}
+            if "summary_markdown" not in detail and "summary_text" not in details_by_id.get(nid, {}):
+                detail["summary_markdown"] = DEFAULT_SUMMARY_MARKDOWN
+            response.json.return_value = detail
+            return response
+        response.json.return_value = next(page_iter)
         return response
 
     with patch("services.granola.client.requests.get", side_effect=fake_get) as mock_get, \
@@ -217,6 +265,9 @@ def test_successful_run_advances_cursor_and_next_run_uses_it():
     assert mock_get.call_args_list[0].kwargs["params"]["updated_after"] == "2026-09-06T18:00:00Z"
     assert cursor_store[CURSOR_REDIS_KEY] == "2026-09-06T18:15:00Z"
     assert second["cursor"] == "2026-09-06T18:15:00Z"
+    assert second["selected"] == 1
+    assert second["inserted"] == 0
+    assert second["skipped"] == 1
 
 
 def test_api_failure_does_not_advance_cursor():
@@ -271,11 +322,14 @@ def test_note_at_2am_pt_lands_on_previous_journal_day():
     assert result["skipped_missing_journal"] == 0
     assert uploaded[0]["path"] == sep_path
     assert TRANSCRIPT_NOTES_HEADER in uploaded[0]["content"]
-    assert uploaded[0]["content"].rstrip().endswith(
-        "- [Quarterly yoghurt budget review]"
-        "(https://notes.granola.ai/d/f3e45e0f-24cc-480b-9a6c-8b1f5e3d7a2c) "
-        "granola:not_1d3tmYTlCICgjy"
-    )
+    content = uploaded[0]["content"]
+    assert (
+        "#### [Quarterly yoghurt budget review]"
+        "(https://notes.granola.ai/d/f3e45e0f-24cc-480b-9a6c-8b1f5e3d7a2c)"
+    ) in content
+    assert "<!-- granola:not_1d3tmYTlCICgjy -->" in content
+    assert DEFAULT_SUMMARY_MARKDOWN in content
+    assert "- [Quarterly yoghurt budget review]" not in content
 
 
 def test_meeting_start_preferred_over_created_at_for_journal_day():
@@ -296,10 +350,14 @@ def test_meeting_start_preferred_over_created_at_for_journal_day():
 
 def test_dedup_skips_existing_granola_id_in_transcript_notes():
     sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
-    note = _note(note_id="not_alreadyThere1", title="Older meeting")
+    note = _note(
+        note_id="not_alreadyThere1",
+        title="Older meeting",
+        web_url="https://notes.granola.ai/d/old",
+    )
     result, uploaded, _, _, _ = _run_sync(
         [_list_page([note])],
-        contents_by_path={sep_path: JOURNAL_WITH_TRANSCRIPT_NOTES},
+        contents_by_path={sep_path: JOURNAL_WITH_SUMMARY_BLOCK},
         now=datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc),
     )
     assert result["selected"] == 1
@@ -336,21 +394,171 @@ def test_missing_heading_is_created_at_eof_not_after_title():
     buffet_idx = content.index("### Content Buffet:")
     section_idx = content.index(TRANSCRIPT_NOTES_HEADER)
     assert title_idx < buffet_idx < section_idx
-    assert content.rstrip().endswith("granola:not_1d3tmYTlCICgjy")
+    assert content.rstrip().endswith("- Spent **$100,000** on yoghurt")
+    assert "<!-- granola:not_1d3tmYTlCICgjy -->" in content
 
 
 def test_existing_mid_note_section_is_not_moved():
     updated, action = insert_transcript_notes_bullet(
         JOURNAL_WITH_TRANSCRIPT_NOTES,
-        format_granola_bullet(_note()),
+        format_granola_block(_note(summary_markdown=DEFAULT_SUMMARY_MARKDOWN)),
         ["granola:not_1d3tmYTlCICgjy", "not_1d3tmYTlCICgjy"],
     )
     assert action == "inserted"
     heading_idx = updated.index(TRANSCRIPT_NOTES_HEADER)
     planning_idx = updated.index("### Content Planning")
     assert heading_idx < planning_idx
-    assert "granola:not_1d3tmYTlCICgjy" in updated
+    assert "<!-- granola:not_1d3tmYTlCICgjy -->" in updated
     assert updated.count(TRANSCRIPT_NOTES_HEADER) == 1
+    assert "\n---\n" in updated[heading_idx:planning_idx]
+
+
+# ---------------------------------------------------------------------------
+# Summary block format / hydrate / upgrade
+# ---------------------------------------------------------------------------
+
+
+def test_format_granola_block_locked_shape():
+    note = _note(summary_markdown=DEFAULT_SUMMARY_MARKDOWN)
+    expected = (
+        "#### [Quarterly yoghurt budget review]"
+        "(https://notes.granola.ai/d/f3e45e0f-24cc-480b-9a6c-8b1f5e3d7a2c)\n"
+        "<!-- granola:not_1d3tmYTlCICgjy -->\n"
+        "\n"
+        f"{DEFAULT_SUMMARY_MARKDOWN}"
+    )
+    assert format_granola_block(note) == expected
+    assert format_granola_bullet(note) == expected
+    assert granola_html_comment("not_1d3tmYTlCICgjy") == "<!-- granola:not_1d3tmYTlCICgjy -->"
+
+
+def test_format_granola_block_falls_back_to_summary_text():
+    note = _note(summary_markdown="", summary_text="Plain yoghurt takeaway")
+    block = format_granola_block(note)
+    assert "<!-- granola:not_1d3tmYTlCICgjy -->" in block
+    assert "Plain yoghurt takeaway" in block
+    assert note_summary_body(note) == "Plain yoghurt takeaway"
+
+
+def test_format_granola_block_does_not_include_transcript_or_private_notes():
+    note = _note(
+        summary_markdown="Short summary only",
+        summary_text="also short",
+        private_notes_markdown="secret private aside",
+        transcript=[{"text": "I am the full transcript and I am very long"}],
+    )
+    block = format_granola_block(note)
+    assert "Short summary only" in block
+    assert "full transcript" not in block
+    assert "secret private aside" not in block
+
+
+def test_hydrate_always_gets_note_detail_even_when_list_has_url():
+    sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
+    listed = _note()
+    assert "summary_markdown" not in listed
+    result, uploaded, _, mock_get, _ = _run_sync(
+        [_list_page([listed])],
+        contents_by_path={sep_path: SAMPLE_JOURNAL},
+        now=datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc),
+        details_by_id={
+            listed["id"]: {"summary_markdown": "## Church\n\n- Pray and reflect"},
+        },
+    )
+    assert result["inserted"] == 1
+    detail_urls = [
+        (call.args[0] if call.args else "")
+        for call in mock_get.call_args_list
+    ]
+    assert any(listed["id"] in url for url in detail_urls)
+    content = uploaded[0]["content"]
+    assert (
+        "#### [Quarterly yoghurt budget review]"
+        "(https://notes.granola.ai/d/f3e45e0f-24cc-480b-9a6c-8b1f5e3d7a2c)\n"
+        "<!-- granola:not_1d3tmYTlCICgjy -->\n"
+        "\n"
+        "## Church\n"
+        "\n"
+        "- Pray and reflect"
+    ) in content
+    assert "- [Quarterly yoghurt budget review]" not in content
+
+
+def test_title_only_bullet_is_upgraded_to_summary_block():
+    sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
+    note = _note(
+        note_id="not_alreadyThere1",
+        title="Older meeting",
+        web_url="https://notes.granola.ai/d/old",
+    )
+    result, uploaded, _, _, _ = _run_sync(
+        [_list_page([note])],
+        contents_by_path={sep_path: JOURNAL_WITH_TRANSCRIPT_NOTES},
+        now=datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc),
+        details_by_id={
+            "not_alreadyThere1": {"summary_markdown": "Church reflection body"},
+        },
+    )
+    assert result["inserted"] == 1
+    assert result["skipped"] == 0
+    content = uploaded[0]["content"]
+    assert "- [Older meeting](https://notes.granola.ai/d/old) granola:not_alreadyThere1" not in content
+    assert "#### [Older meeting](https://notes.granola.ai/d/old)" in content
+    assert "<!-- granola:not_alreadyThere1 -->" in content
+    assert "Church reflection body" in content
+    assert content.index("### Transcript Notes") < content.index("### Content Planning")
+
+
+def test_second_note_is_separated_by_horizontal_rule():
+    first = format_granola_block(_note(
+        note_id="not_first00000001",
+        title="First meeting",
+        web_url="https://notes.granola.ai/d/first",
+        summary_markdown="First summary",
+    ))
+    journal, action = insert_transcript_notes_bullet(
+        SAMPLE_JOURNAL,
+        first,
+        ["granola:not_first00000001", "not_first00000001"],
+    )
+    assert action == "inserted"
+    assert journal.count("\n---\n") == 1  # frontmatter only
+
+    second = format_granola_block(_note(
+        note_id="not_second0000002",
+        title="Second meeting",
+        web_url="https://notes.granola.ai/d/second",
+        summary_markdown="Second summary",
+    ))
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        second,
+        ["granola:not_second0000002", "not_second0000002"],
+    )
+    assert action == "inserted"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER):]
+    assert section.startswith(
+        "### Transcript Notes\n"
+        "\n"
+        "#### [First meeting](https://notes.granola.ai/d/first)\n"
+        "<!-- granola:not_first00000001 -->\n"
+        "\n"
+        "First summary\n"
+        "\n"
+        "---\n"
+        "\n"
+        "#### [Second meeting](https://notes.granola.ai/d/second)\n"
+        "<!-- granola:not_second0000002 -->\n"
+        "\n"
+        "Second summary"
+    )
+    skipped, skip_action = insert_transcript_notes_bullet(
+        updated,
+        second,
+        ["granola:not_second0000002", "not_second0000002"],
+    )
+    assert skip_action == "skipped"
+    assert skipped == updated
 
 
 # ---------------------------------------------------------------------------
