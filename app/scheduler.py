@@ -102,6 +102,12 @@ def _backfill_knowledge_hub_buffet(since=None):
     return backfill_knowledge_hub_buffet(since=since)
 
 
+def _sync_granola_notes(updated_after=None):
+    from services.granola.sync import sync_granola_notes
+
+    return sync_granola_notes(updated_after=updated_after)
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -242,6 +248,15 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "sync_granola_notes",
+        "name": "Sync Granola Notes to Daily Journal",
+        "func": _sync_granola_notes,
+        "trigger": CronTrigger(
+            minute="*/15",
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -315,8 +330,8 @@ def run_job_now(job_id, **kwargs):
     """Trigger a scheduled job to run immediately. Returns True if found.
 
     Optional kwargs are stored on the job (used by parameterized one-shots
-    such as ``backfill_readwise_highlights`` and
-    ``backfill_knowledge_hub_buffet``).
+    such as ``backfill_readwise_highlights``,
+    ``backfill_knowledge_hub_buffet``, and ``sync_granola_notes``).
     """
     job = scheduler.get_job(job_id)
     if job is None:

@@ -74,6 +74,12 @@ def test_knowledge_hub_buffet_backfill_job_in_registry():
     assert "backfill_knowledge_hub_buffet" in job_ids
 
 
+def test_granola_sync_job_in_registry():
+    """The Granola journal sync job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "sync_granola_notes" in job_ids
+
+
 def test_job_definitions_have_required_fields():
     """Every job definition has the required fields."""
     required = {"id", "name", "func", "trigger"}
@@ -136,6 +142,16 @@ def test_essay_ideas_job_runs_daily_at_430am_system_timezone(client):
     trigger_str = str(job.trigger).lower()
     assert "hour='4'" in trigger_str
     assert "minute='30'" in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_granola_sync_job_runs_every_15_minutes_system_timezone(client):
+    """The Granola sync job is scheduled every 15 minutes in system timezone."""
+    job = scheduler.get_job("sync_granola_notes")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "*/15" in trigger_str
     timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
@@ -215,6 +231,13 @@ def test_list_jobs_contains_knowledge_hub_buffet_backfill_job(client):
     response = client.get("/scheduler/jobs")
     job_ids = [j["id"] for j in response.json()["jobs"]]
     assert "backfill_knowledge_hub_buffet" in job_ids
+
+
+def test_list_jobs_contains_granola_sync_job(client):
+    """GET /scheduler/jobs includes the Granola journal sync job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "sync_granola_notes" in job_ids
 
 
 def test_run_job_now_triggers_existing_job_without_executing_workflow():
