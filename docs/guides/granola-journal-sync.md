@@ -45,6 +45,11 @@ REDIS_PORT=6379
 
 # Optional: empty-Redis seed lookback in minutes (default 15)
 # GRANOLA_SEED_LOOKBACK_MINUTES=15
+
+# Optional: manual backfill_granola_notes defaults (ignored by the 15m job)
+# GRANOLA_BACKFILL_UPDATED_AFTER=2026-01-01T00:00:00Z
+# GRANOLA_BACKFILL_LOOKBACK_DAYS=30
+# GRANOLA_BACKFILL_SINCE=2024-08-13
 ```
 
 Never log or print `GRANOLA_API_KEY`.
@@ -56,15 +61,15 @@ Never log or print `GRANOLA_API_KEY`.
 | Key | `granola:notes:cursor` |
 | Value | ISO8601 UTC of the last **successful** run start |
 
-**First run / empty Redis:** seed `updated_after` to now−15m (or `GRANOLA_SEED_LOOKBACK_MINUTES`). This avoids dumping the whole historical library. Documented here so an empty Redis is intentional, not a full backfill.
+**First run / empty Redis (15-minute job only):** `sync_granola_notes` seeds `updated_after` to now−15m (or `GRANOLA_SEED_LOOKBACK_MINUTES`). This avoids dumping the whole historical library. Documented here so an empty Redis is intentional, not a full backfill. The manual `backfill_granola_notes` job does **not** use that seed — see [Manual backfill](#manual-backfill-full-history).
 
-The cursor advances only after a successful pull + write. API errors or Dropbox write errors leave the cursor unchanged. Overlap is OK: blocks dedup on the Granola note `id` (`not_…` / `granola:not_…`).
+The cursor advances only after a successful pull + write (incremental **or** backfill). API errors or Dropbox write errors leave the cursor unchanged. Overlap is OK: blocks dedup on the Granola note `id` (`not_…` / `granola:not_…`).
 
 ## Schedule
 
-Registered in `app/scheduler.py` as `sync_granola_notes` with `CronTrigger(minute="*/15", timezone=SYSTEM_TZ)` — a real 15-minute cadence, unlike the year-2099 manual Readwise backfill.
+Registered in `app/scheduler.py` as `sync_granola_notes` with `CronTrigger(minute="*/15", timezone=SYSTEM_TZ)` — a real 15-minute cadence, unlike the year-2099 manual jobs.
 
-### Manual trigger
+### Manual trigger (incremental)
 
 ```bash
 # Incremental from Redis cursor, or now−15m if Redis is empty
@@ -72,6 +77,39 @@ curl -X POST http://localhost:8000/scheduler/jobs/sync_granola_notes/run
 
 # Optional explicit filter (ISO8601) — overrides cursor/seed for this run; success still advances the cursor
 curl -X POST 'http://localhost:8000/scheduler/jobs/sync_granola_notes/run?updated_after=2026-09-06T00:00:00Z'
+```
+
+### Manual backfill (full history)
+
+`backfill_granola_notes` is a year-2099 `CronTrigger` so `POST /scheduler/jobs/backfill_granola_notes/run` stays registered. It is **not** on a cadence.
+
+Default (no query params): omit `updated_after` on `GET /v1/notes`. That filter is optional in the Granola API, so this pulls as much history as the API returns (paginated). It does **not** use the incremental empty-Redis now−15m seed, and it does **not** read `GRANOLA_NOTES_UPDATED_AFTER`.
+
+Safe to re-run: writes reuse the same `format_granola_block` / journal helpers as the 15-minute job. Existing `<!-- granola:not_… -->` blocks are skipped; legacy title-only `- Title granola:not_…` lines for the same id are upgraded. Missing journals are skipped (`skipped_missing_journal`).
+
+After a successful backfill, Redis `granola:notes:cursor` advances to that run's start (same as `sync_granola_notes`). The next 15-minute job then continues incrementally from that point instead of reseeding now−15m.
+
+```bash
+# Full history (omit updated_after)
+curl -X POST http://localhost:8000/scheduler/jobs/backfill_granola_notes/run
+
+# Optional explicit list filter (ISO8601)
+curl -X POST 'http://localhost:8000/scheduler/jobs/backfill_granola_notes/run?updated_after=2026-01-01T00:00:00Z'
+
+# Optional lookback (sets updated_after to now minus N days UTC unless updated_after is explicit)
+curl -X POST 'http://localhost:8000/scheduler/jobs/backfill_granola_notes/run?lookback_days=30'
+
+# Optional journal-day cutoff (3am PT rollover). Notes dated before this day are not written.
+# The list API is still update-cursor based — this is a client-side filter, not created_after.
+curl -X POST 'http://localhost:8000/scheduler/jobs/backfill_granola_notes/run?since=2024-08-13'
+```
+
+Optional env overrides (same precedence as the query params; incremental `GRANOLA_*` vars are ignored):
+
+```bash
+# GRANOLA_BACKFILL_UPDATED_AFTER=2026-01-01T00:00:00Z
+# GRANOLA_BACKFILL_LOOKBACK_DAYS=30
+# GRANOLA_BACKFILL_SINCE=2024-08-13
 ```
 
 ### Check job status
@@ -121,7 +159,7 @@ Each run logs: `selected`, `inserted`, `skipped`, `skipped_missing_journal`, `er
 
 ### Job not appearing in scheduler
 
-- Check logs for `Registered job: sync_granola_notes`
+- Check logs for `Registered job: sync_granola_notes` and `Registered job: backfill_granola_notes`
 - Verify the app started without import errors
 
 ### Notes not appearing in Obsidian
@@ -135,4 +173,5 @@ Each run logs: `selected`, `inserted`, `skipped`, `skipped_missing_journal`, `er
 
 - Client: `app/services/granola/client.py`
 - Sync job: `app/services/granola/sync.py`
+- Manual backfill: `app/services/granola/backfill.py`
 - Scheduler entry: `app/scheduler.py`
