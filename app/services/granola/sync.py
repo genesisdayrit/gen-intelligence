@@ -469,50 +469,48 @@ def _empty_sync_summary(
     }
 
 
-def sync_granola_notes(
-    updated_after: str | None = None,
+def run_granola_notes_sync(
+    *,
+    resolved_updated_after: str | None,
     now: datetime | None = None,
+    run_started: str | None = None,
+    stored_cursor: str | None = None,
+    since_date: date | None = None,
+    log_label: str = "Granola sync",
 ) -> dict:
-    """Pull notes updated since the Redis cursor and append summaries to journals.
+    """Pull, hydrate, write journals, and advance ``granola:notes:cursor``.
 
-    Empty Redis seeds ``updated_after`` to now−15m (see ``seed_updated_after``)
-    so the first run does not dump the whole historical library. The cursor
-    advances to this run's start time only when the pull and writes succeed.
+    ``resolved_updated_after`` is passed through to ``iter_notes`` as-is
+    (``None`` omits the API filter). This does **not** apply the
+    incremental empty-Redis 15m seed — callers resolve their own filter.
+    The cursor advances to ``run_started`` only when the pull and writes
+    succeed.
     """
-    run_started = format_utc_iso(utc_now(now))
-    stored_cursor = get_stored_cursor()
+    if run_started is None:
+        run_started = format_utc_iso(utc_now(now))
+    if stored_cursor is None:
+        stored_cursor = get_stored_cursor()
     effective_cursor = stored_cursor or seed_updated_after(now)
 
     summary = _empty_sync_summary(
-        updated_after=updated_after,
+        updated_after=resolved_updated_after,
         cursor=effective_cursor,
     )
 
     if not os.getenv("GRANOLA_API_KEY"):
-        logger.error("GRANOLA_API_KEY not set, skipping Granola notes sync")
+        logger.error("GRANOLA_API_KEY not set, skipping %s", log_label)
         summary["errors"].append("GRANOLA_API_KEY not set")
         return summary
 
-    try:
-        resolved_updated = resolve_updated_after(
-            updated_after,
-            now=now,
-            stored_cursor=stored_cursor,
-        )
-    except ValueError as exc:
-        logger.error("Granola sync invalid params: %s", exc)
-        summary["errors"].append(str(exc))
-        return summary
-
-    summary["updated_after"] = resolved_updated
     logger.info(
-        "Granola sync starting updated_after=%s cursor=%s",
-        resolved_updated,
+        "%s starting updated_after=%s cursor=%s",
+        log_label,
+        resolved_updated_after,
         effective_cursor,
     )
 
     try:
-        listed = list(iter_notes(updated_after=resolved_updated))
+        listed = list(iter_notes(updated_after=resolved_updated_after))
     except Exception as exc:
         logger.exception("Granola list notes failed")
         summary["errors"].append(str(exc))
@@ -532,10 +530,12 @@ def sync_granola_notes(
             continue
         if hydrated is None:
             continue
+        if since_date is not None and note_effective_date(hydrated, now=now) < since_date:
+            continue
         selected.append(hydrated)
 
     if summary["errors"]:
-        logger.error("Granola sync hydrate errors; not writing or advancing cursor")
+        logger.error("%s hydrate errors; not writing or advancing cursor", log_label)
         return summary
 
     summary["selected"] = len(selected)
@@ -552,11 +552,12 @@ def sync_granola_notes(
     )
 
     if summary["errors"]:
-        logger.error("Granola sync errors: %s", summary["errors"])
+        logger.error("%s errors: %s", log_label, summary["errors"])
         logger.info(
-            "Granola sync finished without advancing cursor=%s "
+            "%s finished without advancing cursor=%s "
             "updated_after=%s selected=%s inserted=%s skipped=%s "
             "skipped_missing_journal=%s files_written=%s errors=%s",
+            log_label,
             summary["cursor"],
             summary["updated_after"],
             summary["selected"],
@@ -571,9 +572,10 @@ def sync_granola_notes(
     if set_stored_cursor(run_started):
         summary["cursor"] = run_started
     logger.info(
-        "Granola sync finished selected=%s inserted=%s skipped=%s "
+        "%s finished selected=%s inserted=%s skipped=%s "
         "skipped_missing_journal=%s files_written=%s errors=%s "
         "updated_after=%s cursor=%s",
+        log_label,
         summary["selected"],
         summary["inserted"],
         summary["skipped"],
@@ -584,3 +586,50 @@ def sync_granola_notes(
         summary["cursor"],
     )
     return summary
+
+
+def sync_granola_notes(
+    updated_after: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Pull notes updated since the Redis cursor and append summaries to journals.
+
+    Empty Redis seeds ``updated_after`` to now−15m (see ``seed_updated_after``)
+    so the first run does not dump the whole historical library. The cursor
+    advances to this run's start time only when the pull and writes succeed.
+    """
+    run_started = format_utc_iso(utc_now(now))
+    stored_cursor = get_stored_cursor()
+    effective_cursor = stored_cursor or seed_updated_after(now)
+
+    if not os.getenv("GRANOLA_API_KEY"):
+        summary = _empty_sync_summary(
+            updated_after=updated_after,
+            cursor=effective_cursor,
+        )
+        logger.error("GRANOLA_API_KEY not set, skipping Granola notes sync")
+        summary["errors"].append("GRANOLA_API_KEY not set")
+        return summary
+
+    try:
+        resolved_updated = resolve_updated_after(
+            updated_after,
+            now=now,
+            stored_cursor=stored_cursor,
+        )
+    except ValueError as exc:
+        summary = _empty_sync_summary(
+            updated_after=updated_after,
+            cursor=effective_cursor,
+        )
+        logger.error("Granola sync invalid params: %s", exc)
+        summary["errors"].append(str(exc))
+        return summary
+
+    return run_granola_notes_sync(
+        resolved_updated_after=resolved_updated,
+        now=now,
+        run_started=run_started,
+        stored_cursor=stored_cursor,
+        log_label="Granola sync",
+    )

@@ -108,6 +108,16 @@ def _sync_granola_notes(updated_after=None):
     return sync_granola_notes(updated_after=updated_after)
 
 
+def _backfill_granola_notes(updated_after=None, lookback_days=None, since=None):
+    from services.granola.backfill import backfill_granola_notes
+
+    return backfill_granola_notes(
+        updated_after=updated_after,
+        lookback_days=lookback_days,
+        since=since,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -257,6 +267,22 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "backfill_granola_notes",
+        "name": "Backfill Granola Notes (manual)",
+        "func": _backfill_granola_notes,
+        # Not on a cadence. Year 2099 keeps the job registered so
+        # POST /scheduler/jobs/backfill_granola_notes/run can fire it
+        # without a DateTrigger disappearing after one run.
+        "trigger": CronTrigger(
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -331,7 +357,8 @@ def run_job_now(job_id, **kwargs):
 
     Optional kwargs are stored on the job (used by parameterized one-shots
     such as ``backfill_readwise_highlights``,
-    ``backfill_knowledge_hub_buffet``, and ``sync_granola_notes``).
+    ``backfill_knowledge_hub_buffet``, ``sync_granola_notes``,
+    and ``backfill_granola_notes``).
     """
     job = scheduler.get_job(job_id)
     if job is None:

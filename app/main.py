@@ -1162,7 +1162,11 @@ async def trigger_job(
     ``backfill_knowledge_hub_buffet`` accepts optional ``since`` (ISO date,
     default 2018-01-01). ``sync_granola_notes`` accepts optional
     ``updated_after`` (ISO8601, passed to Granola ``GET /v1/notes``).
-    Other jobs ignore these query params.
+    ``backfill_granola_notes`` accepts optional ``updated_after`` (ISO8601;
+    omit for a full-history list), ``lookback_days`` (int, sets
+    ``updated_after`` to now minus N days unless ``updated_after`` is
+    explicit), and ``since`` (ISO date; skip notes whose journal day is
+    earlier). Other jobs ignore these query params.
     """
     from scheduler import run_job_now
 
@@ -1178,6 +1182,12 @@ async def trigger_job(
         kwargs = {"since": since}
     elif job_id == "sync_granola_notes":
         kwargs = {"updated_after": updated_after}
+    elif job_id == "backfill_granola_notes":
+        kwargs = {
+            "updated_after": updated_after,
+            "lookback_days": lookback_days,
+            "since": since,
+        }
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:
