@@ -1160,7 +1160,9 @@ async def trigger_job(
     Readwise export API), and ``lookback_days`` (int, sets ``updated_after``
     to now minus N days unless ``updated_after`` is explicit).
     ``backfill_knowledge_hub_buffet`` accepts optional ``since`` (ISO date,
-    default 2018-01-01). Other jobs ignore these query params.
+    default 2018-01-01). ``sync_granola_notes`` accepts optional
+    ``updated_after`` (ISO8601, passed to Granola ``GET /v1/notes``).
+    Other jobs ignore these query params.
     """
     from scheduler import run_job_now
 
@@ -1174,10 +1176,13 @@ async def trigger_job(
         }
     elif job_id == "backfill_knowledge_hub_buffet":
         kwargs = {"since": since}
+    elif job_id == "sync_granola_notes":
+        kwargs = {"updated_after": updated_after}
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:
-            payload["since"] = since
+            if "since" in kwargs:
+                payload["since"] = since
             if "updated_after" in kwargs:
                 payload["updated_after"] = updated_after
             if "lookback_days" in kwargs:
