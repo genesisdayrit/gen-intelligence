@@ -27,7 +27,6 @@ from services.obsidian.add_readwise_buffet import (
     _get_file_content,
     _nonempty,
     _resolve_journal_folder,
-    _section_bounds,
     journal_filename,
     parse_highlight_datetime,
 )
@@ -40,6 +39,21 @@ logger = logging.getLogger(__name__)
 CURSOR_REDIS_KEY = "granola:notes:cursor"
 TRANSCRIPT_NOTES_HEADER = "### Transcript Notes"
 SEED_LOOKBACK_MINUTES = 15
+
+# Daily-journal ### siblings only. Transcript Notes is last in the template,
+# so the insert window usually runs to EOF. An existing mid-note heading
+# still stops at these so later sections stay outside the section body.
+# ATX headings from summary_markdown (``### Church and Spiritual Practice``)
+# are not siblings and must not end the section.
+_JOURNAL_SIBLING_HEADERS = frozenset(
+    {
+        "### Morning Pages",
+        "### Content Buffet:",
+        "### Content Buffet",
+        "### Content Planning",
+        TRANSCRIPT_NOTES_HEADER,
+    }
+)
 
 
 def format_utc_iso(value: datetime) -> str:
@@ -299,6 +313,37 @@ def _append_block_to_section(section_body: list[str], block_lines: list[str]) ->
     return _with_note_separator(section_body, block_lines)
 
 
+def _is_journal_sibling_header(line: str) -> bool:
+    """True for real daily-journal ``###`` siblings, not summary-body ATX."""
+    stripped = line.strip()
+    if stripped in _JOURNAL_SIBLING_HEADERS:
+        return True
+    # Same prefix rule as Content Buffet placement (``### Content Planning``).
+    return stripped.startswith("### Content Planning")
+
+
+def _transcript_notes_bounds(lines: list[str]) -> tuple[int | None, int]:
+    """Bounds of ``### Transcript Notes``.
+
+    Starts at the existing heading (exact ``### Transcript Notes``). Ends at
+    the next journal sibling ``###`` header, or EOF when none follows
+    (Transcript Notes is last in the daily template). Does **not** treat
+    ``### `` headings inside a note's ``summary_markdown`` as the section end.
+    """
+    header_idx = next(
+        (i for i, line in enumerate(lines) if line.strip() == TRANSCRIPT_NOTES_HEADER),
+        None,
+    )
+    if header_idx is None:
+        return None, -1
+    section_end = len(lines)
+    for i in range(header_idx + 1, len(lines)):
+        if _is_journal_sibling_header(lines[i]):
+            section_end = i
+            break
+    return header_idx, section_end
+
+
 def insert_transcript_notes_bullet(
     content: str,
     bullet: str,
@@ -311,12 +356,14 @@ def insert_transcript_notes_bullet(
     (full block for this id already present).
 
     Existing heading is reused in place (not moved). Missing heading is
-    created at EOF. ``####`` note headings stay inside the section;
-    the next ``### `` sibling ends it.
+    created at EOF. ``####`` note headings and ATX headings that belong
+    to a note's ``summary_markdown`` stay inside the section. The section
+    extends to EOF unless a later daily-journal sibling ``###`` header
+    is present (Morning Pages, Content Buffet, Content Planning).
     """
     keys = [key for key in (keys or []) if key]
     lines = content.split("\n")
-    header_idx, section_end = _section_bounds(lines, TRANSCRIPT_NOTES_HEADER)
+    header_idx, section_end = _transcript_notes_bounds(lines)
     block_lines = _buffet_bullet_lines(bullet)
 
     if header_idx is None:

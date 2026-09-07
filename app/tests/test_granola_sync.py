@@ -93,6 +93,22 @@ Already synced summary.
 - plan something
 """
 
+JOURNAL_WITH_H3_IN_SUMMARY = """---
+date: 2026-09-06
+---
+
+# Sep 6, 2026
+
+### Transcript Notes
+
+#### [Church reflection](https://notes.granola.ai/d/church)
+<!-- granola:not_church0000001 -->
+
+### Church and Spiritual Practice
+
+The body of the church reflection that must stay with this note.
+"""
+
 JOURNAL_FOLDER = "/obsidian/personal/01_daily/_journal"
 
 DEFAULT_SUMMARY_MARKDOWN = (
@@ -411,6 +427,127 @@ def test_existing_mid_note_section_is_not_moved():
     assert "<!-- granola:not_1d3tmYTlCICgjy -->" in updated
     assert updated.count(TRANSCRIPT_NOTES_HEADER) == 1
     assert "\n---\n" in updated[heading_idx:planning_idx]
+
+
+def test_h3_in_existing_summary_does_not_split_or_orphan_note():
+    """Sep 6 failure: ``###`` inside summary_markdown must not end the section.
+
+    Inserting another note must append after the full first note (title,
+    HTML comment, ``### Foo`` heading, and body) — not between the comment
+    and ``### Foo``, and must not orphan the first note's body below.
+    """
+    later = format_granola_block(
+        _note(
+            note_id="not_later00000002",
+            title="Later meeting",
+            web_url="https://notes.granola.ai/d/later",
+            summary_markdown="Later summary",
+        )
+    )
+    updated, action = insert_transcript_notes_bullet(
+        JOURNAL_WITH_H3_IN_SUMMARY,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    assert action == "inserted"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER) :]
+    church_title = "#### [Church reflection](https://notes.granola.ai/d/church)"
+    church_marker = "<!-- granola:not_church0000001 -->"
+    church_h3 = "### Church and Spiritual Practice"
+    church_body = "The body of the church reflection that must stay with this note."
+    later_title = "#### [Later meeting](https://notes.granola.ai/d/later)"
+    later_marker = "<!-- granola:not_later00000002 -->"
+    assert section.index(church_title) < section.index(church_marker)
+    assert section.index(church_marker) < section.index(church_h3)
+    assert section.index(church_h3) < section.index(church_body)
+    assert section.index(church_body) < section.index("\n---\n")
+    assert section.index(church_body) < section.index(later_title)
+    assert section.index(later_title) < section.index(later_marker)
+    assert "Later summary" in section[section.index(later_marker) :]
+    assert church_body not in section[section.index(later_title) :]
+    skipped, skip_action = insert_transcript_notes_bullet(
+        updated,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    assert skip_action == "skipped"
+    assert skipped == updated
+
+
+def test_insert_after_note_whose_summary_starts_with_h3_appends_at_end():
+    """Same split/orphan case starting from an empty Transcript Notes write."""
+    church = format_granola_block(
+        _note(
+            note_id="not_church0000001",
+            title="Church reflection",
+            web_url="https://notes.granola.ai/d/church",
+            summary_markdown=(
+                "### Church and Spiritual Practice\n"
+                "\n"
+                "The body of the church reflection that must stay with this note."
+            ),
+        )
+    )
+    journal, action = insert_transcript_notes_bullet(
+        SAMPLE_JOURNAL,
+        church,
+        ["granola:not_church0000001", "not_church0000001"],
+    )
+    assert action == "inserted"
+
+    later = format_granola_block(
+        _note(
+            note_id="not_later00000002",
+            title="Later meeting",
+            web_url="https://notes.granola.ai/d/later",
+            summary_markdown="# Hash heading in later note\n\nLater summary",
+        )
+    )
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    assert action == "inserted"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER) :]
+    church_body = "The body of the church reflection that must stay with this note."
+    later_title = "#### [Later meeting](https://notes.granola.ai/d/later)"
+    assert "### Church and Spiritual Practice" in section
+    assert "# Hash heading in later note" in section
+    assert section.index(church_body) < section.index(later_title)
+    assert church_body not in section[section.index(later_title) :]
+    planning_or_buffet = updated.index("### Content Buffet:")
+    assert updated.index(TRANSCRIPT_NOTES_HEADER) > planning_or_buffet
+
+
+def test_h3_in_summary_does_not_swallow_following_journal_sibling():
+    """Mid-note Transcript Notes still ends at ``### Content Planning``."""
+    journal = (
+        JOURNAL_WITH_H3_IN_SUMMARY.rstrip()
+        + "\n\n### Content Planning\n- plan something\n"
+    )
+    later = format_granola_block(
+        _note(
+            note_id="not_later00000002",
+            title="Later meeting",
+            web_url="https://notes.granola.ai/d/later",
+            summary_markdown="Later summary",
+        )
+    )
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    assert action == "inserted"
+    heading_idx = updated.index(TRANSCRIPT_NOTES_HEADER)
+    later_idx = updated.index("#### [Later meeting](https://notes.granola.ai/d/later)")
+    planning_idx = updated.index("### Content Planning")
+    church_body_idx = updated.index(
+        "The body of the church reflection that must stay with this note."
+    )
+    assert heading_idx < church_body_idx < later_idx < planning_idx
+    assert updated[planning_idx:].startswith("### Content Planning\n- plan something")
 
 
 # ---------------------------------------------------------------------------
