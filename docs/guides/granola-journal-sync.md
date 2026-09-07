@@ -123,6 +123,7 @@ curl http://localhost:8000/scheduler/jobs
 - Path: `01_Daily/_Journal/{Mon D, YYYY}.md` via `journal_filename`, Dropbox, `_resolve_journal_folder`
 - Section header exactly: `### Transcript Notes`
 - Placement: bottom of the note. Missing heading is created at EOF. An existing mid-note heading is reused in place (not moved)
+- Section bounds: once `### Transcript Notes` is found, the insert window runs to EOF (it is last in the daily template) unless a later **journal sibling** `###` header is present (`### Morning Pages`, `### Content Buffet:`, `### Content Planning`). Headings inside `summary_markdown` (`### Church and Spiritual Practice`, `# Title`, …) are note body, not section boundaries — they must not split the section or orphan a note's body when later notes are appended
 - Block shape (summary as-is from the API; no transcript):
 
 ```markdown
