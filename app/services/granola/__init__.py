@@ -1,1 +1,1 @@
-# Granola notes client + journal sync + manual backfill
+# Granola notes client + journal sync + webhook + manual backfill

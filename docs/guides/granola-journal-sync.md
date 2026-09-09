@@ -1,15 +1,27 @@
 # Granola → Obsidian Journal Sync
 
-Every 15 minutes, pull Granola notes updated since a Redis last-run cursor and append each **summary block** under `### Transcript Notes` on the matching daily journal.
+Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Each event fetches `GET /v1/notes/{id}` and appends a **summary block** under `### Transcript Notes` on the matching daily journal.
+
+Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (Redis last-run cursor) and full-history `backfill_granola_notes`. They are **not** on a cadence.
 
 ## Overview
 
+**Webhook (primary)**
+
+1. Granola POSTs `event_id`, `event_type`, `note_id`, `occurred_at` (no note body)
+2. Verify Standard Webhooks signature + reject stale `webhook-timestamp`
+3. Dedup retries on Redis `granola:webhook:event:{event_id}`
+4. `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
+5. Date the note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
+6. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
+7. Append an idempotent summary block under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`
+
+**Manual pull (safety net)**
+
 1. `GET https://public-api.granola.ai/v1/notes?updated_after=<ISO8601>` (cursor pagination; no `folder_id` filter)
 2. For each listed note, always `GET /v1/notes/{id}` so `summary_markdown` is present (list payloads typically omit it)
-3. Date each note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
-4. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
-5. Append an idempotent summary block under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`
-6. Advance Redis `granola:notes:cursor` only when the pull and writes succeed
+3. Same dating / journal write as the webhook
+4. Advance Redis `granola:notes:cursor` only when the pull and writes succeed
 
 The Granola API only returns notes that already have an AI summary and transcript. The journal write uses **summary only** (`summary_markdown`, else `summary_text`) — never the full transcript. Missing journal files are skipped (logged as `skipped_missing_journal`) — the job does not create a journal or dump onto today.
 
@@ -26,6 +38,8 @@ Required / optional variables in `app/.env`:
 ```bash
 # Required
 GRANOLA_API_KEY=your_granola_api_key
+GRANOLA_WEBHOOK_SECRET=whsec_your_granola_webhook_signing_secret
+WEBHOOK_BASE_URL=https://your-ngrok-url.ngrok-free.app
 
 # Dropbox + vault (existing)
 DROPBOX_ACCESS_KEY=your_app_key
@@ -46,13 +60,13 @@ REDIS_PORT=6379
 # Optional: empty-Redis seed lookback in minutes (default 15)
 # GRANOLA_SEED_LOOKBACK_MINUTES=15
 
-# Optional: manual backfill_granola_notes defaults (ignored by the 15m job)
+# Optional: manual backfill_granola_notes defaults (ignored by the webhook)
 # GRANOLA_BACKFILL_UPDATED_AFTER=2026-01-01T00:00:00Z
 # GRANOLA_BACKFILL_LOOKBACK_DAYS=30
 # GRANOLA_BACKFILL_SINCE=2024-08-13
 ```
 
-Never log or print `GRANOLA_API_KEY`.
+Never log or print `GRANOLA_API_KEY` or `GRANOLA_WEBHOOK_SECRET`.
 
 ## Redis cursor
 
@@ -61,15 +75,15 @@ Never log or print `GRANOLA_API_KEY`.
 | Key | `granola:notes:cursor` |
 | Value | ISO8601 UTC of the last **successful** run start |
 
-**First run / empty Redis (15-minute job only):** `sync_granola_notes` seeds `updated_after` to now−15m (or `GRANOLA_SEED_LOOKBACK_MINUTES`). This avoids dumping the whole historical library. Documented here so an empty Redis is intentional, not a full backfill. The manual `backfill_granola_notes` job does **not** use that seed — see [Manual backfill](#manual-backfill-full-history).
+**First run / empty Redis (incremental job only):** `sync_granola_notes` seeds `updated_after` to now−15m (or `GRANOLA_SEED_LOOKBACK_MINUTES`). This avoids dumping the whole historical library. Documented here so an empty Redis is intentional, not a full backfill. The manual `backfill_granola_notes` job does **not** use that seed — see [Manual backfill](#manual-backfill-full-history). The webhook path does not use this cursor.
 
 The cursor advances only after a successful pull + write (incremental **or** backfill). API errors or Dropbox write errors leave the cursor unchanged. Overlap is OK: blocks dedup on the Granola note `id` (`not_…` / `granola:not_…`).
 
 ## Schedule
 
-Registered in `app/scheduler.py` as `sync_granola_notes` with `CronTrigger(minute="*/15", timezone=SYSTEM_TZ)` — a real 15-minute cadence, unlike the year-2099 manual jobs.
+Live updates use the webhook. Both pull jobs are year-2099 `CronTrigger`s in `app/scheduler.py` so `POST /scheduler/jobs/…/run` stays registered. Neither is on a cadence.
 
-### Manual trigger (incremental)
+### Manual trigger (incremental safety net)
 
 ```bash
 # Incremental from Redis cursor, or now−15m if Redis is empty
@@ -85,9 +99,9 @@ curl -X POST 'http://localhost:8000/scheduler/jobs/sync_granola_notes/run?update
 
 Default (no query params): omit `updated_after` on `GET /v1/notes`. That filter is optional in the Granola API, so this pulls as much history as the API returns (paginated). It does **not** use the incremental empty-Redis now−15m seed, and it does **not** read `GRANOLA_NOTES_UPDATED_AFTER`.
 
-Safe to re-run: writes reuse the same `format_granola_block` / journal helpers as the 15-minute job. Existing `<!-- granola:not_… -->` blocks are skipped; legacy title-only `- Title granola:not_…` lines for the same id are upgraded. Missing journals are skipped (`skipped_missing_journal`).
+Safe to re-run: writes reuse the same `format_granola_block` / journal helpers as the webhook and incremental job. Existing `<!-- granola:not_… -->` blocks are skipped; legacy title-only `- Title granola:not_…` lines for the same id are upgraded. Missing journals are skipped (`skipped_missing_journal`).
 
-After a successful backfill, Redis `granola:notes:cursor` advances to that run's start (same as `sync_granola_notes`). The next 15-minute job then continues incrementally from that point instead of reseeding now−15m.
+After a successful backfill, Redis `granola:notes:cursor` advances to that run's start (same as `sync_granola_notes`). A later incremental safety-net run continues from that point instead of reseeding now−15m.
 
 ```bash
 # Full history (omit updated_after)
@@ -161,6 +175,7 @@ Each run logs: `selected`, `inserted`, `skipped`, `skipped_missing_journal`, `er
 ### Job not appearing in scheduler
 
 - Check logs for `Registered job: sync_granola_notes` and `Registered job: backfill_granola_notes`
+- Both are year-2099 manual jobs (no `*/15` cadence)
 - Verify the app started without import errors
 
 ### Notes not appearing in Obsidian
@@ -172,6 +187,8 @@ Each run logs: `selected`, `inserted`, `skipped`, `skipped_missing_journal`, `er
 
 ## Code location
 
+- Webhook endpoint: `app/main.py` (`POST /granola/webhook`)
+- Webhook verify / dedup / fetch+write: `app/services/granola/webhook.py`
 - Client: `app/services/granola/client.py`
 - Sync job: `app/services/granola/sync.py`
 - Manual backfill: `app/services/granola/backfill.py`

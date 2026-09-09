@@ -5,10 +5,10 @@ Default (no params): list every note the API returns by omitting
 Does not use the incremental empty-Redis now−15m seed.
 
 On success, advances the shared ``granola:notes:cursor`` to this run's
-start so the 15-minute ``sync_granola_notes`` job continues from a
-known-good point. Writes reuse ``format_granola_block`` /
-``write_notes_by_journal`` (idempotent on Granola note id; upgrades
-legacy title-only bullets).
+start so a later manual ``sync_granola_notes`` run continues from a
+known-good point. Live notes arrive via ``POST /granola/webhook``.
+Writes reuse ``format_granola_block`` / ``write_notes_by_journal``
+(idempotent on Granola note id; upgrades legacy title-only bullets).
 """
 
 from __future__ import annotations

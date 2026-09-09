@@ -49,6 +49,13 @@ from services.readwise.reader import (
     save_document,
 )
 from services.todoist.client import create_completed_todoist_task
+from services.granola.webhook import (
+    GRANOLA_NOTE_EVENTS,
+    claim_granola_event_id,
+    is_granola_timestamp_valid,
+    process_granola_webhook_event,
+    verify_granola_signature,
+)
 
 load_dotenv()
 
@@ -68,6 +75,7 @@ GITHUB_USERNAME = os.getenv("GITHUB_USERNAME")
 LINK_SHARE_API_KEY = os.getenv("LINK_SHARE_API_KEY")
 MANUS_API_KEY = os.getenv("MANUS_API_KEY")
 READWISE_WEBHOOK_SECRET = os.getenv("READWISE_WEBHOOK_SECRET")
+GRANOLA_WEBHOOK_SECRET = os.getenv("GRANOLA_WEBHOOK_SECRET")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "")
 SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
@@ -936,6 +944,70 @@ async def readwise_webhook(
         return JSONResponse(status_code=202, content={"status": "accepted"})
 
     background_tasks.add_task(_process_readwise_event, data)
+    return JSONResponse(status_code=202, content={"status": "accepted"})
+
+
+def _granola_webhook_secret() -> str | None:
+    return os.getenv("GRANOLA_WEBHOOK_SECRET") or GRANOLA_WEBHOOK_SECRET
+
+
+def _process_granola_event(data: dict) -> None:
+    """Fetch a Granola note and write it to the journal. Logs errors; never raises."""
+    process_granola_webhook_event(data)
+
+
+@app.post("/granola/webhook")
+async def granola_webhook(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    webhook_id: str | None = Header(None, alias="webhook-id"),
+    webhook_timestamp: str | None = Header(None, alias="webhook-timestamp"),
+    webhook_signature: str | None = Header(None, alias="webhook-signature"),
+):
+    """Receive Granola note webhooks (Standard Webhooks).
+
+    Verify the raw body, reject stale timestamps, dedup retries on
+    ``event_id``, then fetch ``GET /v1/notes/{id}`` and write under
+    ``### Transcript Notes``. Returns 2xx immediately; journal I/O runs
+    in the background so Granola's 15s delivery window is met.
+    """
+    payload = await request.body()
+    secret = _granola_webhook_secret()
+
+    if not secret:
+        logger.warning("GRANOLA_WEBHOOK_SECRET not set")
+        raise HTTPException(status_code=401, detail="Webhook secret not configured")
+    if not webhook_id or not webhook_timestamp or not webhook_signature:
+        logger.warning("Missing Granola webhook signature headers")
+        raise HTTPException(status_code=401, detail="Missing signature headers")
+    if not is_granola_timestamp_valid(webhook_timestamp):
+        logger.warning("Granola webhook timestamp expired or invalid")
+        raise HTTPException(status_code=401, detail="Timestamp expired")
+    if not verify_granola_signature(
+        payload, webhook_id, webhook_timestamp, webhook_signature, secret
+    ):
+        logger.warning("Invalid Granola webhook signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    try:
+        data = json.loads(payload)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    event_type = data.get("event_type", "unknown")
+    if event_type not in GRANOLA_NOTE_EVENTS:
+        logger.info("Granola event ignored: %s", event_type)
+        return JSONResponse(content={"status": "ok"})
+
+    event_id = data.get("event_id")
+    if event_id and not claim_granola_event_id(str(event_id)):
+        logger.info("Granola webhook duplicate event_id=%s", event_id)
+        return JSONResponse(content={"status": "duplicate"})
+
+    background_tasks.add_task(_process_granola_event, data)
     return JSONResponse(status_code=202, content={"status": "accepted"})
 
 

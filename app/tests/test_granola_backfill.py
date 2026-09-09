@@ -558,13 +558,13 @@ def test_backfill_job_is_registered_with_2099_trigger():
     assert "2099" in str(job["trigger"])
 
 
-def test_incremental_job_stays_on_15m_cadence():
+def test_incremental_job_is_manual_2099_safety_net():
     from scheduler import SCHEDULED_JOBS
 
     job = next(j for j in SCHEDULED_JOBS if j["id"] == "sync_granola_notes")
     trigger = str(job["trigger"])
-    assert "*/15" in trigger
-    assert "2099" not in trigger
+    assert "2099" in trigger
+    assert "*/15" not in trigger
 
 
 def test_trigger_backfill_passes_query_params():
