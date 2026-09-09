@@ -370,3 +370,4 @@ pkill ngrok
 - [GitHub Webhook Setup](./github-webhook-setup.md) - Configure GitHub webhooks
 - [Linear Webhook Setup](./linear-webhook-setup.md) - Configure Linear webhooks
 - [Todoist Webhook Setup](./todoist-webhook-setup.md) - Configure Todoist webhooks
+- [Granola Webhook Setup](./granola-webhook-setup.md) - Configure Granola webhooks

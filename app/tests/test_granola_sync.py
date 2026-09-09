@@ -773,14 +773,14 @@ def test_list_notes_pagination_follows_cursor():
 # ---------------------------------------------------------------------------
 
 
-def test_granola_job_is_registered_with_15m_cadence():
+def test_granola_job_is_registered_as_manual_2099_safety_net():
     from scheduler import SCHEDULED_JOBS
 
     job = next(j for j in SCHEDULED_JOBS if j["id"] == "sync_granola_notes")
-    assert job["name"] == "Sync Granola Notes to Daily Journal"
+    assert job["name"] == "Sync Granola Notes to Daily Journal (manual)"
     trigger = str(job["trigger"])
-    assert "*/15" in trigger
-    assert "2099" not in trigger
+    assert "2099" in trigger
+    assert "*/15" not in trigger
 
 
 def test_trigger_granola_sync_passes_updated_after():

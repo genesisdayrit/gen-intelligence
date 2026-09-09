@@ -260,10 +260,17 @@ SCHEDULED_JOBS = [
     },
     {
         "id": "sync_granola_notes",
-        "name": "Sync Granola Notes to Daily Journal",
+        "name": "Sync Granola Notes to Daily Journal (manual)",
         "func": _sync_granola_notes,
+        # Live notes arrive via POST /granola/webhook. Year 2099 keeps this
+        # incremental pull registered as a manual safety net so
+        # POST /scheduler/jobs/sync_granola_notes/run can still fire it.
         "trigger": CronTrigger(
-            minute="*/15",
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
             timezone=SYSTEM_TZ,
         ),
     },

@@ -152,12 +152,13 @@ def test_essay_ideas_job_runs_daily_at_430am_system_timezone(client):
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
-def test_granola_sync_job_runs_every_15_minutes_system_timezone(client):
-    """The Granola sync job is scheduled every 15 minutes in system timezone."""
+def test_granola_sync_job_is_manual_2099_safety_net(client):
+    """The Granola sync job is year-2099 (webhook is primary; no */15 poll)."""
     job = scheduler.get_job("sync_granola_notes")
     assert job is not None
     trigger_str = str(job.trigger).lower()
-    assert "*/15" in trigger_str
+    assert "2099" in trigger_str
+    assert "*/15" not in trigger_str
     timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
     assert timezone_key == SYSTEM_TIMEZONE_STR
 

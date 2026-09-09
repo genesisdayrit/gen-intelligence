@@ -52,7 +52,8 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Todoist Webhook Setup](docs/guides/todoist-webhook-setup.md)
 - [Linear Webhook Setup](docs/guides/linear-webhook-setup.md)
 - [Readwise Webhook Setup](docs/guides/readwise-webhook-setup.md) — point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` with `READWISE_WEBHOOK_SECRET`
-- [Granola Journal Sync](docs/guides/granola-journal-sync.md) — every 15 minutes, append Granola summary notes under `### Transcript Notes`; manual `backfill_granola_notes` for full history
+- [Granola Webhook Setup](docs/guides/granola-webhook-setup.md) — point Granola at `POST {WEBHOOK_BASE_URL}/granola/webhook` with `GRANOLA_WEBHOOK_SECRET`
+- [Granola Journal Sync](docs/guides/granola-journal-sync.md) — webhook-driven `### Transcript Notes` writes; manual `sync_granola_notes` / `backfill_granola_notes` safety nets
 - [GitHub Webhook Setup](docs/guides/github-webhook-setup.md)
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
 - [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)

@@ -1,8 +1,9 @@
-"""Scheduled Granola → Obsidian daily-journal sync.
+"""Granola → Obsidian daily-journal writers and manual incremental sync.
 
-Pulls notes updated since a Redis last-run cursor and appends each summary
-block under ``### Transcript Notes`` on the matching daily journal
-(3am local rollover).
+Live notes arrive via ``POST /granola/webhook``. This module owns the
+journal writers (``format_granola_block``, ``### Transcript Notes``,
+3am local rollover) and the optional ``sync_granola_notes`` pull used
+as a year-2099 safety net.
 """
 
 from __future__ import annotations
