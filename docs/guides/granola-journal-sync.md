@@ -1,6 +1,6 @@
 # Granola → Obsidian Journal Sync
 
-Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Each event fetches `GET /v1/notes/{id}` and appends a **summary block** under `### Transcript Notes` on the matching daily journal.
+Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Subscribe Granola to `note.generated`, `note.edited`, and `note.access_granted`. `note.generated` and `note.access_granted` fetch `GET /v1/notes/{id}` and append a **summary block** under `### Transcript Notes` on the matching daily journal. `note.edited` is verified and acknowledged but is a **no-op** (no fetch, no rewrite) so summary tweaks do not overwrite Transcript Notes.
 
 Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (Redis last-run cursor) and full-history `backfill_granola_notes`. They are **not** on a cadence.
 
@@ -11,7 +11,7 @@ Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (R
 1. Granola POSTs `event_id`, `event_type`, `note_id`, `occurred_at` (no note body)
 2. Verify Standard Webhooks signature + reject stale `webhook-timestamp`
 3. Dedup retries on Redis `granola:webhook:event:{event_id}`
-4. `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
+4. `note.edited` stops here (logged no-op). `note.generated` and `note.access_granted` `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
 5. Date the note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
 6. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
 7. Append an idempotent summary block under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`

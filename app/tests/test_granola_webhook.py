@@ -297,7 +297,11 @@ def test_webhook_dedups_retries_on_event_id():
 # ---------------------------------------------------------------------------
 
 
-def test_process_fetches_note_and_writes_journal():
+@pytest.mark.parametrize(
+    "event_type",
+    ["note.generated", "note.access_granted"],
+)
+def test_process_fetches_note_and_writes_journal(event_type):
     write_summary = {
         "selected": 1,
         "inserted": 1,
@@ -307,18 +311,37 @@ def test_process_fetches_note_and_writes_journal():
         "errors": [],
         "paths": ["/journal/Jan 27, 2026.md"],
     }
+    event = {**SAMPLE_EVENT, "event_type": event_type}
     with patch(
         "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
     ) as mock_get, patch(
         "services.granola.webhook.write_notes_by_journal", return_value=write_summary
     ) as mock_write:
-        result = process_granola_webhook_event(SAMPLE_EVENT)
+        result = process_granola_webhook_event(event)
     mock_get.assert_called_once_with("not_1d3tmYTlCICgjy")
     mock_write.assert_called_once_with([SAMPLE_NOTE])
     assert result["inserted"] == 1
 
 
-def test_webhook_write_path_mocked_end_to_end():
+def test_process_note_edited_is_noop():
+    event = {
+        **SAMPLE_EVENT,
+        "event_type": "note.edited",
+        "data": {"changed_fields": ["summary"]},
+    }
+    with patch("services.granola.webhook.get_note") as mock_get, patch(
+        "services.granola.webhook.write_notes_by_journal"
+    ) as mock_write:
+        assert process_granola_webhook_event(event) is None
+    mock_get.assert_not_called()
+    mock_write.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["note.generated", "note.access_granted"],
+)
+def test_webhook_write_path_mocked_end_to_end(event_type):
     write_summary = {
         "selected": 1,
         "inserted": 1,
@@ -328,15 +351,36 @@ def test_webhook_write_path_mocked_end_to_end():
         "errors": [],
         "paths": [],
     }
+    event = {**SAMPLE_EVENT, "event_type": event_type, "event_id": f"evt-{event_type}"}
     with patch("main.claim_granola_event_id", return_value=True), patch(
         "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
     ) as mock_get, patch(
         "services.granola.webhook.write_notes_by_journal", return_value=write_summary
     ) as mock_write:
-        response, _ = _post_event()
+        response, _ = _post_event(event)
     assert response.status_code == 202
     mock_get.assert_called_once_with("not_1d3tmYTlCICgjy")
     mock_write.assert_called_once_with([SAMPLE_NOTE])
+
+
+def test_webhook_note_edited_acks_without_fetch_or_write():
+    event = {
+        **SAMPLE_EVENT,
+        "event_type": "note.edited",
+        "event_id": "evt-note.edited",
+        "data": {"changed_fields": ["summary"]},
+    }
+    with patch("main.claim_granola_event_id", return_value=True) as mock_claim, patch(
+        "services.granola.webhook.get_note"
+    ) as mock_get, patch(
+        "services.granola.webhook.write_notes_by_journal"
+    ) as mock_write:
+        response, _ = _post_event(event)
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_claim.assert_called_once()
+    mock_get.assert_not_called()
+    mock_write.assert_not_called()
 
 
 def test_process_skips_404_note():

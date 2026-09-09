@@ -1,9 +1,10 @@
 """Granola webhook helpers: Standard Webhooks verify, event_id dedup, journal write.
 
 Docs: https://docs.granola.ai/webhooks
-Payloads carry no note body. After verify, GET /v1/notes/{id} and reuse the
-incremental journal writers (``format_granola_block``, ``### Transcript Notes``,
-3am PT rollover, ``<!-- granola:not_… -->`` dedup).
+Payloads carry no note body. After verify, write events (``note.generated``,
+``note.access_granted``) GET /v1/notes/{id} and reuse the incremental journal
+writers (``format_granola_block``, ``### Transcript Notes``, 3am PT rollover,
+``<!-- granola:not_… -->`` dedup). ``note.edited`` is a logged no-op.
 """
 
 from __future__ import annotations
@@ -20,14 +21,19 @@ from services.granola.sync import write_notes_by_journal
 
 logger = logging.getLogger(__name__)
 
-# Granola event types from https://docs.granola.ai/webhooks
-GRANOLA_NOTE_EVENTS = frozenset(
+# Granola event types from https://docs.granola.ai/webhooks.
+# All three are accepted at POST /granola/webhook (signature + 2xx + event_id
+# dedup). Only generated / newly shared notes write Transcript Notes.
+GRANOLA_NOTE_WRITE_EVENTS = frozenset(
     {
         "note.generated",
-        "note.edited",
         "note.access_granted",
     }
 )
+# Summary edits/regenerations are acknowledged but do not fetch or rewrite.
+# Folder-based routing for shared/business notes may come later.
+GRANOLA_NOTE_NOOP_EVENTS = frozenset({"note.edited"})
+GRANOLA_NOTE_EVENTS = GRANOLA_NOTE_WRITE_EVENTS | GRANOLA_NOTE_NOOP_EVENTS
 
 WHSEC_PREFIX = "whsec_"
 EVENT_DEDUP_KEY_PREFIX = "granola:webhook:event:"
@@ -127,7 +133,11 @@ def claim_granola_event_id(event_id: str) -> bool:
 
 
 def process_granola_webhook_event(data: dict) -> dict | None:
-    """Fetch the referenced note and append it under ``### Transcript Notes``.
+    """Handle a verified Granola note event.
+
+    ``note.generated`` and ``note.access_granted`` fetch the note and append it
+    under ``### Transcript Notes``. ``note.edited`` is a logged no-op (no fetch
+    or write) so summary tweaks do not rewrite the journal.
 
     Logs errors; never raises. Returns the write summary, or None when skipped.
     """
@@ -143,6 +153,15 @@ def process_granola_webhook_event(data: dict) -> dict | None:
 
     if event_type not in GRANOLA_NOTE_EVENTS:
         logger.info("Granola event ignored: %s", event_type)
+        return None
+
+    if event_type in GRANOLA_NOTE_NOOP_EVENTS:
+        logger.info(
+            "Granola event no-op: %s | note_id=%s | event_id=%s",
+            event_type,
+            note_id,
+            event_id,
+        )
         return None
 
     if not note_id:
