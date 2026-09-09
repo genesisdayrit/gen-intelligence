@@ -268,12 +268,21 @@ def _is_title_only_granola_line(line: str, keys: list[str]) -> bool:
     return stripped.startswith("- ") and _line_has_dedup_key(stripped, keys)
 
 
-def _is_full_block_marker_line(line: str, keys: list[str]) -> bool:
-    """``<!-- granola:not_… -->`` — summary block already written."""
+def _is_granola_html_comment(line: str, keys: list[str] | None = None) -> bool:
+    """True for ``<!-- granola:… -->``. Optional ``keys`` narrows to one note."""
     stripped = line.strip()
     if not (stripped.startswith("<!--") and "-->" in stripped):
         return False
-    return _line_has_dedup_key(stripped, keys)
+    if "granola:" not in stripped:
+        return False
+    if keys:
+        return _line_has_dedup_key(stripped, keys)
+    return True
+
+
+def _is_full_block_marker_line(line: str, keys: list[str]) -> bool:
+    """``<!-- granola:not_… -->`` — summary block already written."""
+    return _is_granola_html_comment(line, keys)
 
 
 def _ensure_blank_after_header(body: list[str]) -> list[str]:
@@ -314,6 +323,100 @@ def _append_block_to_section(section_body: list[str], block_lines: list[str]) ->
     return _with_note_separator(section_body, block_lines)
 
 
+def _heading_index_before_marker(
+    section_body: list[str], marker_idx: int, floor: int = 0
+) -> int:
+    """``####`` heading immediately before a granola HTML comment, else the marker."""
+    i = marker_idx - 1
+    while i >= floor and not section_body[i].strip():
+        i -= 1
+    if i >= floor and section_body[i].lstrip().startswith("####"):
+        return i
+    return marker_idx
+
+
+def _separator_index_before(
+    section_body: list[str], block_start: int, floor: int = 0
+) -> int:
+    """Index of a ``---`` sitting immediately before ``block_start``, else ``block_start``."""
+    i = block_start - 1
+    while i >= floor and not section_body[i].strip():
+        i -= 1
+    if i >= floor and section_body[i].strip() == "---":
+        return i
+    return block_start
+
+
+def _existing_block_span(
+    section_body: list[str], keys: list[str]
+) -> tuple[int, int] | None:
+    """``[start, end)`` of the note block identified by ``keys``, or None.
+
+    Start is the ``####`` heading (or the HTML comment if the heading is
+    missing). End is the next note's leading ``---`` / heading, or the
+    section tail. Next-note detection uses the next ``<!-- granola:… -->``
+    so ``###`` / ``---`` inside ``summary_markdown`` do not split the block.
+    """
+    marker_idx = next(
+        (i for i, line in enumerate(section_body) if _is_full_block_marker_line(line, keys)),
+        None,
+    )
+    if marker_idx is None:
+        return None
+    start = _heading_index_before_marker(section_body, marker_idx)
+    next_marker = next(
+        (
+            i
+            for i in range(marker_idx + 1, len(section_body))
+            if _is_granola_html_comment(section_body[i])
+        ),
+        None,
+    )
+    if next_marker is None:
+        return start, len(section_body)
+    next_heading = _heading_index_before_marker(
+        section_body, next_marker, floor=marker_idx + 1
+    )
+    end = _separator_index_before(section_body, next_heading, floor=marker_idx + 1)
+    return start, end
+
+
+def _strip_edge_separators(lines: list[str]) -> list[str]:
+    """Drop leading/trailing blank lines and ``---`` note separators."""
+    body = list(lines)
+    while body:
+        stripped = body[0].strip()
+        if stripped == "" or stripped == "---":
+            body.pop(0)
+            continue
+        break
+    while body:
+        stripped = body[-1].strip()
+        if stripped == "" or stripped == "---":
+            body.pop()
+            continue
+        break
+    return body
+
+
+def _replace_existing_block(
+    section_body: list[str],
+    keys: list[str],
+    block_lines: list[str],
+) -> list[str]:
+    """Swap one note block for ``block_lines``; keep neighbors and their order."""
+    span = _existing_block_span(section_body, keys)
+    if span is None:
+        return _append_block_to_section(section_body, block_lines)
+    start, end = span
+    prefix = _strip_edge_separators(section_body[:start])
+    suffix = _strip_edge_separators(section_body[end:])
+    body = _with_note_separator(prefix, block_lines)
+    if suffix:
+        body = _with_note_separator(body, suffix)
+    return body
+
+
 def _is_journal_sibling_header(line: str) -> bool:
     """True for real daily-journal ``###`` siblings, not summary-body ATX."""
     stripped = line.strip()
@@ -349,12 +452,15 @@ def insert_transcript_notes_bullet(
     content: str,
     bullet: str,
     keys: list[str] | None = None,
+    *,
+    replace_existing: bool = False,
 ) -> tuple[str, str]:
     """Insert a summary block under ``### Transcript Notes``.
 
     Returns ``(content, action)`` where action is ``inserted``,
-    ``replaced`` (legacy title-only bullet upgraded), or ``skipped``
-    (full block for this id already present).
+    ``replaced`` (legacy title-only bullet upgraded, or an existing
+    full block swapped when ``replace_existing``), or ``skipped``
+    (full block for this id already present and not replacing).
 
     Existing heading is reused in place (not moved). Missing heading is
     created at EOF. ``####`` note headings and ATX headings that belong
@@ -378,19 +484,23 @@ def insert_transcript_notes_bullet(
 
     section_body = lines[header_idx + 1 : section_end]
     if any(_is_full_block_marker_line(line, keys) for line in section_body):
-        return content, "skipped"
-
-    replace_idx = next(
-        (i for i, line in enumerate(section_body) if _is_title_only_granola_line(line, keys)),
-        None,
-    )
-    if replace_idx is not None:
-        new_body = _replace_title_only_line(section_body, replace_idx, block_lines)
+        if not replace_existing:
+            return content, "skipped"
+        new_body = _replace_existing_block(section_body, keys, block_lines)
+        action = "replaced"
     else:
-        new_body = _append_block_to_section(section_body, block_lines)
+        replace_idx = next(
+            (i for i, line in enumerate(section_body) if _is_title_only_granola_line(line, keys)),
+            None,
+        )
+        if replace_idx is not None:
+            new_body = _replace_title_only_line(section_body, replace_idx, block_lines)
+            action = "replaced"
+        else:
+            new_body = _append_block_to_section(section_body, block_lines)
+            action = "inserted"
     if new_body and new_body[-1].strip() and section_end < len(lines):
         new_body.append("")
-    action = "replaced" if replace_idx is not None else "inserted"
     updated = lines[: header_idx + 1] + new_body + lines[section_end:]
     return "\n".join(updated), action
 
@@ -419,6 +529,7 @@ def _empty_write_summary(selected: int = 0) -> dict:
     return {
         "selected": selected,
         "inserted": 0,
+        "replaced": 0,
         "skipped": 0,
         "skipped_missing_journal": 0,
         "files_written": 0,
@@ -431,10 +542,14 @@ def write_notes_by_journal(
     notes: list[dict],
     now: datetime | None = None,
     raise_errors: bool = False,
+    *,
+    replace_existing: bool = False,
 ) -> dict:
     """Append summary blocks grouped by journal file (one download/upload per day).
 
     Missing journal files are skipped — never created, never dumped onto today.
+    When ``replace_existing`` is true (``note.edited``), an existing
+    ``<!-- granola:not_… -->`` block is swapped in place instead of skipped.
     """
     summary = _empty_write_summary(selected=len(notes))
     if not notes:
@@ -462,15 +577,19 @@ def write_notes_by_journal(
                 continue
 
             original = content
-            file_counts = {"inserted": 0, "skipped": 0}
+            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
             for note in group:
                 block = format_granola_block(note)
                 if not block:
                     continue
                 content, action = insert_transcript_notes_bullet(
-                    content, block, granola_dedup_keys(note)
+                    content,
+                    block,
+                    granola_dedup_keys(note),
+                    replace_existing=replace_existing,
                 )
-                if action == "replaced":
+                if action == "replaced" and not replace_existing:
+                    # Title-only upgrade on the incremental/backfill path.
                     action = "inserted"
                 if action in file_counts:
                     file_counts[action] += 1
@@ -484,9 +603,10 @@ def write_notes_by_journal(
                 )
                 summary["files_written"] += 1
                 logger.info(
-                    "Granola sync wrote path=%s inserted=%s skipped=%s",
+                    "Granola sync wrote path=%s inserted=%s replaced=%s skipped=%s",
                     file_path,
                     file_counts["inserted"],
+                    file_counts["replaced"],
                     file_counts["skipped"],
                 )
             elif file_counts["skipped"]:
@@ -508,6 +628,7 @@ def _empty_sync_summary(
     return {
         "selected": 0,
         "inserted": 0,
+        "replaced": 0,
         "skipped": 0,
         "skipped_missing_journal": 0,
         "files_written": 0,
@@ -592,6 +713,7 @@ def run_granola_notes_sync(
         {
             "selected": result["selected"],
             "inserted": result["inserted"],
+            "replaced": result["replaced"],
             "skipped": result["skipped"],
             "skipped_missing_journal": result["skipped_missing_journal"],
             "files_written": result["files_written"],

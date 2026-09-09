@@ -952,7 +952,7 @@ def _granola_webhook_secret() -> str | None:
 
 
 def _process_granola_event(data: dict) -> None:
-    """Handle a verified Granola event (write or no-op). Logs errors; never raises."""
+    """Fetch a Granola note and write it to the journal. Logs errors; never raises."""
     process_granola_webhook_event(data)
 
 
@@ -967,11 +967,10 @@ async def granola_webhook(
     """Receive Granola note webhooks (Standard Webhooks).
 
     Verify the raw body, reject stale timestamps, dedup retries on
-    ``event_id``. ``note.generated`` and ``note.access_granted`` then fetch
-    ``GET /v1/notes/{id}`` and write under ``### Transcript Notes``.
-    ``note.edited`` is acknowledged (2xx) but is a no-op. Returns 2xx
-    immediately; journal I/O runs in the background so Granola's 15s
-    delivery window is met.
+    ``event_id``, then fetch ``GET /v1/notes/{id}`` and write under
+    ``### Transcript Notes``. ``note.edited`` replaces an existing block
+    for that id (or inserts if missing). Returns 2xx immediately; journal
+    I/O runs in the background so Granola's 15s delivery window is met.
     """
     payload = await request.body()
     secret = _granola_webhook_secret()

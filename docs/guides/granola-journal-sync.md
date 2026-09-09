@@ -1,6 +1,6 @@
 # Granola → Obsidian Journal Sync
 
-Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Subscribe Granola to `note.generated`, `note.edited`, and `note.access_granted`. `note.generated` and `note.access_granted` fetch `GET /v1/notes/{id}` and append a **summary block** under `### Transcript Notes` on the matching daily journal. `note.edited` is verified and acknowledged but is a **no-op** (no fetch, no rewrite) so summary tweaks do not overwrite Transcript Notes.
+Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Subscribe Granola to `note.generated`, `note.edited`, and `note.access_granted`. Each event fetches `GET /v1/notes/{id}`. Generated and newly shared notes append a **summary block** under `### Transcript Notes` on the matching daily journal. `note.edited` replaces the existing block for that granola id (or inserts if the original write was missed) so the journal stays in the same note order.
 
 Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (Redis last-run cursor) and full-history `backfill_granola_notes`. They are **not** on a cadence.
 
@@ -11,10 +11,10 @@ Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (R
 1. Granola POSTs `event_id`, `event_type`, `note_id`, `occurred_at` (no note body)
 2. Verify Standard Webhooks signature + reject stale `webhook-timestamp`
 3. Dedup retries on Redis `granola:webhook:event:{event_id}`
-4. `note.edited` stops here (logged no-op). `note.generated` and `note.access_granted` `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
+4. `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
 5. Date the note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
 6. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
-7. Append an idempotent summary block under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`
+7. Write under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`. Generated / access_granted skip an existing `<!-- granola:not_… -->` block; `note.edited` replaces that block in place (or inserts if missing)
 
 **Manual pull (safety net)**
 
@@ -158,12 +158,12 @@ curl http://localhost:8000/scheduler/jobs
 
 - Prefer `summary_markdown`; fall back to `summary_text` if markdown is empty. Private notes are not written. Never write the full transcript.
 - Separate notes with a horizontal rule (`---` with a blank line on each side). The first note has no leading `---`.
-- Dedup key: `granola:not_…` inside the HTML comment. A second run with the same id is skipped when that comment is already present.
+- Dedup key: `granola:not_…` inside the HTML comment. A second generated/access_granted/sync write with the same id is skipped when that comment is already present. `note.edited` replaces the existing block instead of skipping.
 - Upgrade: a legacy title-only line (`- [Title](url) granola:not_…`) for the same id is replaced with the summary block on the next sync.
 
 ## Log summary
 
-Each run logs: `selected`, `inserted`, `skipped`, `skipped_missing_journal`, `errors`, `cursor`, and the `updated_after` actually used.
+Each run logs: `selected`, `inserted`, `replaced`, `skipped`, `skipped_missing_journal`, `errors`, `cursor`, and the `updated_after` actually used. `replaced` is used by `note.edited` (in-place block swap); incremental/backfill title-only upgrades still count as `inserted`.
 
 ## Troubleshooting
 
