@@ -17,12 +17,12 @@ Docs: [Granola webhooks](https://docs.granola.ai/webhooks). Business and Enterpr
 2. Select **Set up a webhook**
 3. Subscribe to all three:
    - `note.generated` — first AI summary (writes Transcript Notes)
-   - `note.edited` — summary edited or regenerated (**accepted, no-op for now** — does not fetch or rewrite the journal)
+   - `note.edited` — summary edited or regenerated (replaces the existing Transcript Notes block for that note, or inserts if it was never written)
    - `note.access_granted` — a note is newly shared with you (writes Transcript Notes)
 4. Endpoint URL: `{WEBHOOK_BASE_URL}/granola/webhook`
 5. Create the webhook and copy the signing secret (`whsec_…`). It is shown only once.
 
-You can also create a folder-scoped webhook from a folder's **Integrations → Webhooks**, or register via `POST https://public-api.granola.ai/v1/webhook-endpoints` (see the Granola docs). Subscribe to all three events. `note.edited` is verified and acknowledged but does not rewrite Transcript Notes; folder-based routing for shared/business notes may be added later.
+You can also create a folder-scoped webhook from a folder's **Integrations → Webhooks**, or register via `POST https://public-api.granola.ai/v1/webhook-endpoints` (see the Granola docs). Subscribe to all three events. Folder-based routing for shared/business notes may be added later.
 
 ## 2. Environment variables
 
@@ -56,7 +56,7 @@ Look for `Granola webhook | event=… | note_id=…` and a write summary. The no
 1. Granola POSTs JSON: `event_id`, `event_type`, `note_id`, `occurred_at` (and, for `note.edited`, `data.changed_fields` — unused here).
 2. The endpoint verifies the Standard Webhooks signature on the **raw body**, then rejects timestamps older than five minutes.
 3. Retries reuse `event_id`. The first delivery is claimed in Redis (`granola:webhook:event:{event_id}`, 7-day TTL). Duplicates return `200` `{"status":"duplicate"}` and do not write again.
-4. The handler acknowledges with `202` within Granola's 15s window. For `note.generated` and `note.access_granted` it then `GET /v1/notes/{id}` with `GRANOLA_API_KEY` and reuses the same journal writers as the manual sync (`format_granola_block`, `### Transcript Notes`, 3am PT rollover, `<!-- granola:not_… -->` dedup). `note.edited` is a logged no-op (no fetch, no write) so summary tweaks do not rewrite Transcript Notes.
+4. The handler acknowledges with `202` within Granola's 15s window, then `GET /v1/notes/{id}` with `GRANOLA_API_KEY` and reuses the same journal writers as the manual sync (`format_granola_block`, `### Transcript Notes`, 3am PT rollover). `note.generated` and `note.access_granted` skip an existing `<!-- granola:not_… -->` block. `note.edited` replaces that block in place (same position; neighboring notes stay put) or inserts if the original write was missed.
 5. Missing journal files are skipped (not created, not dumped onto today). Private notes / transcripts are never written.
 
 ### Signature
@@ -95,7 +95,7 @@ See [Granola Journal Sync](./granola-journal-sync.md).
 
 - Check logs for `Granola webhook get note failed` (`GRANOLA_API_KEY` missing or HTTP error)
 - `skipped_missing_journal` means that day's journal file does not exist
-- An existing `<!-- granola:not_… -->` block is skipped. `note.edited` events are acknowledged but do not fetch or rewrite.
+- An existing `<!-- granola:not_… -->` block is skipped for `note.generated` / `note.access_granted` (and for the manual sync/backfill jobs). `note.edited` replaces that block with the freshly fetched summary.
 
 ### Duplicate deliveries
 

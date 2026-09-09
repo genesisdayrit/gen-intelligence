@@ -45,6 +45,7 @@ from services.granola.sync import (
     note_summary_body,
     seed_updated_after,
     sync_granola_notes,
+    write_notes_by_journal,
 )
 
 client = TestClient(app)
@@ -696,6 +697,251 @@ def test_second_note_is_separated_by_horizontal_rule():
     )
     assert skip_action == "skipped"
     assert skipped == updated
+
+
+# ---------------------------------------------------------------------------
+# Replace-on-edit (note.edited)
+# ---------------------------------------------------------------------------
+
+
+def _three_note_journal():
+    first = format_granola_block(_note(
+        note_id="not_first00000001",
+        title="First meeting",
+        web_url="https://notes.granola.ai/d/first",
+        summary_markdown="First summary",
+    ))
+    journal, _ = insert_transcript_notes_bullet(
+        SAMPLE_JOURNAL,
+        first,
+        ["granola:not_first00000001", "not_first00000001"],
+    )
+    second = format_granola_block(_note(
+        note_id="not_second0000002",
+        title="Second meeting",
+        web_url="https://notes.granola.ai/d/second",
+        summary_markdown="Second summary",
+    ))
+    journal, _ = insert_transcript_notes_bullet(
+        journal,
+        second,
+        ["granola:not_second0000002", "not_second0000002"],
+    )
+    third = format_granola_block(_note(
+        note_id="not_third00000003",
+        title="Third meeting",
+        web_url="https://notes.granola.ai/d/third",
+        summary_markdown="Third summary",
+    ))
+    journal, _ = insert_transcript_notes_bullet(
+        journal,
+        third,
+        ["granola:not_third00000003", "not_third00000003"],
+    )
+    return journal
+
+
+def test_replace_existing_swaps_block_in_place_and_keeps_neighbors():
+    journal = _three_note_journal()
+    edited = format_granola_block(_note(
+        note_id="not_second0000002",
+        title="Second meeting (edited)",
+        web_url="https://notes.granola.ai/d/second",
+        summary_markdown="### Updated heading\n\nEdited second summary",
+    ))
+    skipped, skip_action = insert_transcript_notes_bullet(
+        journal,
+        edited,
+        ["granola:not_second0000002", "not_second0000002"],
+    )
+    assert skip_action == "skipped"
+    assert skipped == journal
+
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        edited,
+        ["granola:not_second0000002", "not_second0000002"],
+        replace_existing=True,
+    )
+    assert action == "replaced"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER):]
+    first_title = "#### [First meeting](https://notes.granola.ai/d/first)"
+    second_title = "#### [Second meeting (edited)](https://notes.granola.ai/d/second)"
+    third_title = "#### [Third meeting](https://notes.granola.ai/d/third)"
+    assert section.index(first_title) < section.index(second_title)
+    assert section.index(second_title) < section.index(third_title)
+    assert "Edited second summary" in section
+    assert "Second summary" not in section
+    assert "First summary" in section
+    assert "Third summary" in section
+    assert "### Updated heading" in section
+    assert updated.count("<!-- granola:not_second0000002 -->") == 1
+    assert updated.count(TRANSCRIPT_NOTES_HEADER) == 1
+    assert updated.index("### Content Buffet:") < updated.index(TRANSCRIPT_NOTES_HEADER)
+
+
+def test_replace_existing_inserts_when_block_is_missing():
+    edited = format_granola_block(_note(
+        note_id="not_latewrite0001",
+        title="Late write",
+        web_url="https://notes.granola.ai/d/late",
+        summary_markdown="Arrived via edit",
+    ))
+    updated, action = insert_transcript_notes_bullet(
+        SAMPLE_JOURNAL,
+        edited,
+        ["granola:not_latewrite0001", "not_latewrite0001"],
+        replace_existing=True,
+    )
+    assert action == "inserted"
+    assert "#### [Late write](https://notes.granola.ai/d/late)" in updated
+    assert "<!-- granola:not_latewrite0001 -->" in updated
+    assert "Arrived via edit" in updated
+
+
+def test_replace_existing_first_and_last_keep_separator_shape():
+    journal = _three_note_journal()
+    first_edit = format_granola_block(_note(
+        note_id="not_first00000001",
+        title="First meeting",
+        web_url="https://notes.granola.ai/d/first",
+        summary_markdown="First summary rewritten",
+    ))
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        first_edit,
+        ["granola:not_first00000001", "not_first00000001"],
+        replace_existing=True,
+    )
+    assert action == "replaced"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER):]
+    assert section.startswith(
+        "### Transcript Notes\n"
+        "\n"
+        "#### [First meeting](https://notes.granola.ai/d/first)\n"
+        "<!-- granola:not_first00000001 -->\n"
+        "\n"
+        "First summary rewritten\n"
+        "\n"
+        "---\n"
+        "\n"
+        "#### [Second meeting](https://notes.granola.ai/d/second)\n"
+    )
+    assert "First summary\n" not in section
+
+    last_edit = format_granola_block(_note(
+        note_id="not_third00000003",
+        title="Third meeting",
+        web_url="https://notes.granola.ai/d/third",
+        summary_markdown="Third summary rewritten",
+    ))
+    updated, action = insert_transcript_notes_bullet(
+        updated,
+        last_edit,
+        ["granola:not_third00000003", "not_third00000003"],
+        replace_existing=True,
+    )
+    assert action == "replaced"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER):]
+    assert "Third summary rewritten" in section
+    assert section.index("Second summary") < section.index("Third summary rewritten")
+    assert "Third summary\n" not in section
+
+
+def test_replace_existing_does_not_split_on_hr_or_h3_in_summary():
+    """``---`` / ``###`` inside the edited note must not steal the next note."""
+    church = format_granola_block(_note(
+        note_id="not_church0000001",
+        title="Church reflection",
+        web_url="https://notes.granola.ai/d/church",
+        summary_markdown=(
+            "### Church and Spiritual Practice\n"
+            "\n"
+            "Old body\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Still the same note"
+        ),
+    ))
+    journal, _ = insert_transcript_notes_bullet(
+        SAMPLE_JOURNAL,
+        church,
+        ["granola:not_church0000001", "not_church0000001"],
+    )
+    later = format_granola_block(_note(
+        note_id="not_later00000002",
+        title="Later meeting",
+        web_url="https://notes.granola.ai/d/later",
+        summary_markdown="Later summary",
+    ))
+    journal, _ = insert_transcript_notes_bullet(
+        journal,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    edited = format_granola_block(_note(
+        note_id="not_church0000001",
+        title="Church reflection",
+        web_url="https://notes.granola.ai/d/church",
+        summary_markdown=(
+            "### Church and Spiritual Practice\n"
+            "\n"
+            "New body after edit\n"
+            "\n"
+            "---\n"
+            "\n"
+            "Still the same note"
+        ),
+    ))
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        edited,
+        ["granola:not_church0000001", "not_church0000001"],
+        replace_existing=True,
+    )
+    assert action == "replaced"
+    section = updated[updated.index(TRANSCRIPT_NOTES_HEADER):]
+    later_title = "#### [Later meeting](https://notes.granola.ai/d/later)"
+    assert "New body after edit" in section
+    assert "Old body" not in section
+    assert section.index("Still the same note") < section.index(later_title)
+    assert "Later summary" in section[section.index(later_title):]
+
+
+def test_write_notes_by_journal_replace_existing_uploads_new_summary():
+    sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
+    original = JOURNAL_WITH_SUMMARY_BLOCK
+    mock_dbx, uploaded, _store = _mock_dropbox({sep_path: original})
+    note = _note(
+        note_id="not_alreadyThere1",
+        title="Older meeting",
+        web_url="https://notes.granola.ai/d/old",
+        created_at="2026-09-05T20:00:00Z",
+        summary_markdown="Edited summary after granola regenerate",
+    )
+    with patch("services.granola.sync._get_dropbox_client", return_value=mock_dbx), patch(
+        "services.granola.sync._resolve_journal_folder",
+        return_value=JOURNAL_FOLDER,
+    ):
+        skipped = write_notes_by_journal([note])
+        replaced = write_notes_by_journal([note], replace_existing=True)
+
+    assert skipped["skipped"] == 1
+    assert skipped["inserted"] == 0
+    assert skipped["replaced"] == 0
+    assert skipped["files_written"] == 0
+    assert replaced["replaced"] == 1
+    assert replaced["inserted"] == 0
+    assert replaced["skipped"] == 0
+    assert replaced["files_written"] == 1
+    content = uploaded[0]["content"]
+    assert "Edited summary after granola regenerate" in content
+    assert "Already synced summary." not in content
+    assert "<!-- granola:not_alreadyThere1 -->" in content
+    assert "### Content Planning" in content
+    planning_idx = content.index("### Content Planning")
+    assert content.index("Edited summary after granola regenerate") < planning_idx
 
 
 # ---------------------------------------------------------------------------
