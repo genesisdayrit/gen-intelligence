@@ -142,12 +142,101 @@ def _update_daily_journal_properties(use_today=False):
     return update_daily_journal_properties(use_today=use_today)
 
 
+def _daily_prep():
+    from scripts.obsidian.workflows.daily_prep import daily_prep
+
+    return daily_prep()
+
+
+def _daily_reflection():
+    from scripts.obsidian.workflows.daily_reflection import daily_reflection
+
+    return daily_reflection()
+
+
+def _add_daily_review_section():
+    from scripts.obsidian.workflows.file_updates.add_daily_review_section import (
+        add_daily_review_section,
+    )
+
+    return add_daily_review_section()
+
+
+def _update_modified_files_today():
+    from scripts.obsidian.workflows.file_updates.update_modified_files_today import (
+        update_modified_files_today,
+    )
+
+    return update_modified_files_today()
+
+
+def _create_weeks():
+    from scripts.obsidian.workflows.file_creation.create_weeks import create_weeks
+
+    return create_weeks()
+
+
+def _create_newsletter_page():
+    from scripts.obsidian.workflows.file_creation.create_newsletter_page import (
+        create_newsletter_page,
+    )
+
+    return create_newsletter_page()
+
+
+def _create_new_cycle_page():
+    from scripts.obsidian.workflows.file_creation.create_new_cycle_page import (
+        create_new_cycle_page,
+    )
+
+    return create_new_cycle_page()
+
+
+def _create_weekly_health_review_page():
+    from scripts.obsidian.workflows.file_creation.create_weekly_health_review_page import (
+        create_weekly_health_review_page,
+    )
+
+    return create_weekly_health_review_page()
+
+
+def _create_weekly_map():
+    from scripts.obsidian.workflows.file_creation.create_weekly_map import (
+        create_weekly_map,
+    )
+
+    return create_weekly_map()
+
+
+def _create_cycle_and_cooling_period_pages():
+    from scripts.obsidian.workflows.file_creation.create_cycle_and_cooling_period_pages import (
+        create_cycle_and_cooling_period_pages,
+    )
+
+    return create_cycle_and_cooling_period_pages()
+
+
 # Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
 # Default False creates tomorrow's files (evening-before cadence).
 DAILY_CREATION_JOB_IDS = frozenset({
     "create_daily_journal",
     "create_daily_action",
     "update_daily_journal_properties",
+})
+
+# Remaining gd-second-brain-os crontab jobs migrated onto APScheduler
+# after the evening-before daily-creation cluster (PR 198).
+OBSIDIAN_CRON_MIGRATION_JOB_IDS = frozenset({
+    "daily_prep",
+    "daily_reflection",
+    "add_daily_review_section",
+    "update_modified_files_today",
+    "create_weeks",
+    "create_newsletter_page",
+    "create_new_cycle_page",
+    "create_weekly_health_review_page",
+    "create_weekly_map",
+    "create_cycle_and_cooling_period_pages",
 })
 
 
@@ -352,6 +441,128 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=18,
             minute=10,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "daily_prep",
+        "name": "Daily Prep Email (AM check-in)",
+        "func": _daily_prep,
+        # Live host: 30 14 * * * UTC. crontab_generation.py used 30 17 * * *.
+        # Fixed 10:30 local stays DST-stable (same pattern as 18:00 daily creation).
+        "trigger": CronTrigger(
+            hour=10,
+            minute=30,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "daily_reflection",
+        "name": "Daily Reflection Email (PM check-in)",
+        "func": _daily_reflection,
+        # Live host: 30 0 * * * UTC. crontab_generation.py used 30 3 * * *.
+        "trigger": CronTrigger(
+            hour=20,
+            minute=30,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "add_daily_review_section",
+        "name": "Add Daily Review Section to Daily Action",
+        "func": _add_daily_review_section,
+        # crontab_generation.py: 0 20 * * * UTC (commented 3:00pm ET / EST).
+        # This port writes the section if missing; not a no-op.
+        "trigger": CronTrigger(
+            hour=13,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "update_modified_files_today",
+        "name": "Update Folder-Journal Relations",
+        "func": _update_modified_files_today,
+        # Live host: */10. crontab_generation.py used 5 0 * * * UTC.
+        # */15 is less chatty than every 10m; paths_to_check lists 13
+        # Dropbox folders (non-recursive list_folder). Redis last-run
+        # cutoff keeps each pass incremental.
+        "trigger": CronTrigger(
+            minute="*/15",
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_weeks",
+        "name": "Create Week-Ending Page",
+        "func": _create_weeks,
+        # crontab_generation.py: 0 6 * * 1 (commented Mon 1:00am CT / CDT).
+        "trigger": CronTrigger(
+            day_of_week="sun",
+            hour=23,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_newsletter_page",
+        "name": "Create Weekly Newsletter Page",
+        "func": _create_newsletter_page,
+        # crontab_generation.py: 30 6 * * 5 (commented Fri 1:30am CT).
+        "trigger": CronTrigger(
+            day_of_week="thu",
+            hour=23,
+            minute=30,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_new_cycle_page",
+        "name": "Create Weekly Cycle Page",
+        "func": _create_new_cycle_page,
+        # crontab_generation.py: 30 8 * * 2 (commented Tue 3:30am CT).
+        "trigger": CronTrigger(
+            day_of_week="tue",
+            hour=1,
+            minute=30,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_weekly_health_review_page",
+        "name": "Create Weekly Health Review Page",
+        "func": _create_weekly_health_review_page,
+        # crontab_generation.py: 0 9 * * 2 (commented Tue 4:00am CT).
+        "trigger": CronTrigger(
+            day_of_week="tue",
+            hour=2,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_weekly_map",
+        "name": "Create Weekly Map Page",
+        "func": _create_weekly_map,
+        # crontab_generation.py: 0 6 * * 4 (commented Thu 1:00am CT).
+        "trigger": CronTrigger(
+            day_of_week="wed",
+            hour=23,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_cycle_and_cooling_period_pages",
+        "name": "Create 6-Week Cycle and Cooling Period Pages",
+        "func": _create_cycle_and_cooling_period_pages,
+        # Never in crontab_generation.py; live host runs 0 11 * * 6 UTC
+        # (Sat 11:00 UTC = Sat 04:00 PDT / Sat 03:00 PST, "Fri evening-ish").
+        # Sat 04:00 local is the PDT equivalent, DST-stable.
+        "trigger": CronTrigger(
+            day_of_week="sat",
+            hour=4,
+            minute=0,
             timezone=SYSTEM_TZ,
         ),
     },

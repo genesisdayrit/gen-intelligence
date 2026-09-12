@@ -19,7 +19,13 @@ from fastapi.testclient import TestClient
 
 from config import SYSTEM_TIMEZONE_STR
 from main import app
-from scheduler import DAILY_CREATION_JOB_IDS, SCHEDULED_JOBS, run_job_now, scheduler
+from scheduler import (
+    DAILY_CREATION_JOB_IDS,
+    OBSIDIAN_CRON_MIGRATION_JOB_IDS,
+    SCHEDULED_JOBS,
+    run_job_now,
+    scheduler,
+)
 
 
 @pytest.fixture(scope="module")
@@ -108,6 +114,52 @@ def test_daily_creation_modules_are_importable():
     assert callable(create_daily_journal)
     assert callable(create_daily_action)
     assert callable(update_daily_journal_properties)
+
+
+def test_obsidian_cron_migration_jobs_in_registry():
+    """Remaining gd-second-brain-os crontab jobs are defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
+        assert job_id in job_ids
+
+
+def test_obsidian_cron_migration_modules_are_importable():
+    """Ported workflow callables import as normal Python modules."""
+    from scripts.obsidian.workflows.daily_prep import daily_prep
+    from scripts.obsidian.workflows.daily_reflection import daily_reflection
+    from scripts.obsidian.workflows.file_creation.create_cycle_and_cooling_period_pages import (
+        create_cycle_and_cooling_period_pages,
+    )
+    from scripts.obsidian.workflows.file_creation.create_new_cycle_page import (
+        create_new_cycle_page,
+    )
+    from scripts.obsidian.workflows.file_creation.create_newsletter_page import (
+        create_newsletter_page,
+    )
+    from scripts.obsidian.workflows.file_creation.create_weekly_health_review_page import (
+        create_weekly_health_review_page,
+    )
+    from scripts.obsidian.workflows.file_creation.create_weekly_map import (
+        create_weekly_map,
+    )
+    from scripts.obsidian.workflows.file_creation.create_weeks import create_weeks
+    from scripts.obsidian.workflows.file_updates.add_daily_review_section import (
+        add_daily_review_section,
+    )
+    from scripts.obsidian.workflows.file_updates.update_modified_files_today import (
+        update_modified_files_today,
+    )
+
+    assert callable(daily_prep)
+    assert callable(daily_reflection)
+    assert callable(add_daily_review_section)
+    assert callable(update_modified_files_today)
+    assert callable(create_weeks)
+    assert callable(create_newsletter_page)
+    assert callable(create_new_cycle_page)
+    assert callable(create_weekly_health_review_page)
+    assert callable(create_weekly_map)
+    assert callable(create_cycle_and_cooling_period_pages)
 
 
 def test_job_definitions_have_required_fields():
@@ -216,6 +268,49 @@ def test_daily_creation_jobs_run_evening_before_in_system_timezone(client):
         assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
+def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
+    job = scheduler.get_job(job_id)
+    assert job is not None, f"Job {job_id} not registered"
+    trigger_str = str(job.trigger).lower()
+    if hour is not None:
+        assert f"hour='{hour}'" in trigger_str, trigger_str
+    if minute is not None:
+        assert f"minute='{minute}'" in trigger_str, trigger_str
+    if day_of_week is not None:
+        assert day_of_week in trigger_str, trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
+    """Migrated crontab jobs use fixed SYSTEM_TZ hours (DST-stable)."""
+    _assert_cron("daily_prep", hour="10", minute="30")
+    _assert_cron("daily_reflection", hour="20", minute="30")
+    _assert_cron("add_daily_review_section", hour="13", minute="0")
+    _assert_cron("create_weeks", day_of_week="sun", hour="23", minute="0")
+    _assert_cron("create_newsletter_page", day_of_week="thu", hour="23", minute="30")
+    _assert_cron("create_new_cycle_page", day_of_week="tue", hour="1", minute="30")
+    _assert_cron("create_weekly_health_review_page", day_of_week="tue", hour="2", minute="0")
+    _assert_cron("create_weekly_map", day_of_week="wed", hour="23", minute="0")
+    _assert_cron(
+        "create_cycle_and_cooling_period_pages",
+        day_of_week="sat",
+        hour="4",
+        minute="0",
+    )
+
+
+def test_update_modified_files_today_runs_every_15_minutes(client):
+    """Folder-journal relations run */15, not the live-host */10."""
+    job = scheduler.get_job("update_modified_files_today")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "*/15" in trigger_str, trigger_str
+    assert "*/10" not in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
 # ---------------------------------------------------------------------------
 # API endpoint tests (need lifespan via client fixture)
 # ---------------------------------------------------------------------------
@@ -303,6 +398,14 @@ def test_list_jobs_contains_daily_creation_jobs(client):
         assert job_id in job_ids
 
 
+def test_list_jobs_contains_obsidian_cron_migration_jobs(client):
+    """GET /scheduler/jobs includes the remaining migrated crontab jobs."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
+        assert job_id in job_ids
+
+
 def test_run_job_now_triggers_existing_job_without_executing_workflow():
     """run_job_now should reschedule a known job immediately when present."""
     fake_job = object()
@@ -349,3 +452,12 @@ def test_trigger_other_job_does_not_forward_use_today(client):
         )
     assert response.status_code == 200
     mock_run.assert_called_once_with("send_arxiv_email")
+
+
+def test_trigger_migrated_obsidian_job(client):
+    """POST /scheduler/jobs/{id}/run fires a migrated crontab job."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post("/scheduler/jobs/daily_prep/run")
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "daily_prep"
+    mock_run.assert_called_once_with("daily_prep")

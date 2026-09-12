@@ -76,4 +76,4 @@ The scheduled run creates tomorrow's files. If last night's run missed, trigger 
 
 - Scheduler entry: `app/scheduler.py`
 - Scripts: `app/scripts/obsidian/workflows/file_creation/` and `file_updates/`
-- Remaining `gd-second-brain-os` cron jobs (weekly pages, daily prep/reflection, folder-journal relations) are not on APScheduler yet
+- Remaining migrated crontab jobs (daily prep/reflection, weekly pages, folder-journal relations): [obsidian-scheduled-jobs.md](obsidian-scheduled-jobs.md)
