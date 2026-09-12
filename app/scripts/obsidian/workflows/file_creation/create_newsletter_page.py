@@ -5,7 +5,7 @@ Creates a newsletter file for the Sunday after next in the vault's
 _Weekly/_Newsletters folder. Skips creation if the file already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_newsletter_page
+    python -m scripts.obsidian.workflows.file_creation.create_newsletter_page
 """
 
 import argparse

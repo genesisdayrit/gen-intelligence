@@ -6,8 +6,8 @@ containing relationship links (journal, weekly cycle, long cycle, weekly map)
 and structured content prompts. Skips creation if the file already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_daily_action
-    python -m scripts.obsidian.workflows.file-creation.create_daily_action --today
+    python -m scripts.obsidian.workflows.file_creation.create_daily_action
+    python -m scripts.obsidian.workflows.file_creation.create_daily_action --today
 """
 
 import argparse

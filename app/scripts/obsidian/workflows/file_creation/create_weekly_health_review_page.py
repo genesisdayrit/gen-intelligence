@@ -6,7 +6,7 @@ in the vault's _Weekly/_Weekly-Health-Review folder. Auto-increments the
 review number and skips creation if a file with the same date range exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_weekly_health_review_page
+    python -m scripts.obsidian.workflows.file_creation.create_weekly_health_review_page
 """
 
 import argparse

@@ -118,6 +118,39 @@ def _backfill_granola_notes(updated_after=None, lookback_days=None, since=None):
     )
 
 
+def _create_daily_journal(use_today=False):
+    from scripts.obsidian.workflows.file_creation.create_daily_journal import (
+        create_daily_journal,
+    )
+
+    return create_daily_journal(use_today=use_today)
+
+
+def _create_daily_action(use_today=False):
+    from scripts.obsidian.workflows.file_creation.create_daily_action import (
+        create_daily_action,
+    )
+
+    return create_daily_action(use_today=use_today)
+
+
+def _update_daily_journal_properties(use_today=False):
+    from scripts.obsidian.workflows.file_updates.update_daily_journal_properties import (
+        update_daily_journal_properties,
+    )
+
+    return update_daily_journal_properties(use_today=use_today)
+
+
+# Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
+# Default False creates tomorrow's files (evening-before cadence).
+DAILY_CREATION_JOB_IDS = frozenset({
+    "create_daily_journal",
+    "create_daily_action",
+    "update_daily_journal_properties",
+})
+
+
 # ---------------------------------------------------------------------------
 # Job registry
 # ---------------------------------------------------------------------------
@@ -290,6 +323,38 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "create_daily_journal",
+        "name": "Create Daily Journal (tomorrow)",
+        "func": _create_daily_journal,
+        # Evening-before: 6:00pm system tz is 9:00pm ET year-round, matching
+        # the old crontab comment for 01:00 UTC during EDT.
+        "trigger": CronTrigger(
+            hour=18,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "create_daily_action",
+        "name": "Create Daily Action (tomorrow)",
+        "func": _create_daily_action,
+        "trigger": CronTrigger(
+            hour=18,
+            minute=5,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "update_daily_journal_properties",
+        "name": "Update Daily Journal Properties (tomorrow)",
+        "func": _update_daily_journal_properties,
+        "trigger": CronTrigger(
+            hour=18,
+            minute=10,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -365,7 +430,8 @@ def run_job_now(job_id, **kwargs):
     Optional kwargs are stored on the job (used by parameterized one-shots
     such as ``backfill_readwise_highlights``,
     ``backfill_knowledge_hub_buffet``, ``sync_granola_notes``,
-    and ``backfill_granola_notes``).
+    ``backfill_granola_notes``, and the daily creation jobs'
+    ``use_today`` recovery flag).
     """
     job = scheduler.get_job(job_id)
     if job is None:

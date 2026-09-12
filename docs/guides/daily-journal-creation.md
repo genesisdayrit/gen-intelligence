@@ -1,0 +1,79 @@
+# Daily Journal, Action, and Properties Creation
+
+Evening-before jobs that create tomorrow's Obsidian Daily Journal and Daily Action notes, then fill the journal's YAML properties. Migrated from `gd-second-brain-os` crontab onto APScheduler.
+
+## Overview
+
+Three staggered jobs run every evening in `SYSTEM_TIMEZONE` (default `America/Los_Angeles`):
+
+1. **18:00** `create_daily_journal` — copy `_Templates/daily-templates/daily_note_properties.md` into `_Daily/_Journal/{Mon D, YYYY}.md`
+2. **18:05** `create_daily_action` — create `DA YYYY-MM-DD.md` with YAML links to journal, weekly cycle, long cycle, and weekly map
+3. **18:10** `update_daily_journal_properties` — rewrite tomorrow's journal frontmatter with those same relationship links
+
+Default mode creates **tomorrow's** files, so they exist before midnight. All three skip work if the target file already exists (journal/action) or if the journal is missing (properties). Safe to re-run.
+
+This is the DST-aware equivalent of the old UTC crontab (`01:00` / `01:05` / `01:10` UTC, commented as 9:00pm ET). 6:00pm Pacific is 9:00pm Eastern year-round.
+
+## Prerequisites
+
+- Dropbox configured with Obsidian vault access
+- Redis running for Dropbox access-token caching
+- Vault folders ending in `_Daily`, `_Templates`, `_Daily-Action`
+
+## Environment Variables
+
+```bash
+DROPBOX_ACCESS_KEY=your_app_key
+DROPBOX_ACCESS_SECRET=your_app_secret
+DROPBOX_REFRESH_TOKEN=your_refresh_token
+DROPBOX_OBSIDIAN_VAULT_PATH=/Your_Vault
+SYSTEM_TIMEZONE=America/Los_Angeles
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
+## Manual Trigger
+
+```bash
+# Tomorrow's files (same as the scheduled run)
+curl -X POST http://localhost:8000/scheduler/jobs/create_daily_journal/run
+curl -X POST http://localhost:8000/scheduler/jobs/create_daily_action/run
+curl -X POST http://localhost:8000/scheduler/jobs/update_daily_journal_properties/run
+
+# Morning recovery: create/update today's files instead
+curl -X POST 'http://localhost:8000/scheduler/jobs/create_daily_journal/run?use_today=true'
+curl -X POST 'http://localhost:8000/scheduler/jobs/create_daily_action/run?use_today=true'
+curl -X POST 'http://localhost:8000/scheduler/jobs/update_daily_journal_properties/run?use_today=true'
+
+# Check next run times
+curl http://localhost:8000/scheduler/jobs
+```
+
+CLI equivalents (from `app/`):
+
+```bash
+python -m scripts.obsidian.workflows.file_creation.create_daily_journal
+python -m scripts.obsidian.workflows.file_creation.create_daily_journal --today
+python -m scripts.obsidian.workflows.file_creation.create_daily_action --today
+python -m scripts.obsidian.workflows.file_updates.update_daily_journal_properties --today
+```
+
+## Troubleshooting
+
+### Job not appearing in scheduler
+
+Restart the app so `start_scheduler()` re-registers jobs from `SCHEDULED_JOBS`.
+
+### Today's journal is missing in the morning
+
+The scheduled run creates tomorrow's files. If last night's run missed, trigger with `use_today=true` (same as the old `run_daily_creation_jobs.sh --today`).
+
+### Properties job skipped
+
+`update_daily_journal_properties` no-ops if the target journal is missing. Run journal creation first, wait for Dropbox to settle, then run properties.
+
+## Related
+
+- Scheduler entry: `app/scheduler.py`
+- Scripts: `app/scripts/obsidian/workflows/file_creation/` and `file_updates/`
+- Remaining `gd-second-brain-os` cron jobs (weekly pages, daily prep/reflection, folder-journal relations) are not on APScheduler yet

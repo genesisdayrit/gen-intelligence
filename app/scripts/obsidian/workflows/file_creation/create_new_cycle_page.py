@@ -6,7 +6,7 @@ vault's _Cycles/_Weekly-Cycles folder. Auto-increments the cycle number
 and skips creation if a file with the same date range exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_new_cycle_page
+    python -m scripts.obsidian.workflows.file_creation.create_new_cycle_page
 """
 
 import argparse

@@ -9,7 +9,7 @@ Paths to scan are loaded from a config file (paths_to_check.txt) located
 alongside this script, or can be overridden via OBSIDIAN_PATHS_FILE env var.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-updates.update_modified_files_today
+    python -m scripts.obsidian.workflows.file_updates.update_modified_files_today
 """
 
 import argparse

@@ -6,7 +6,7 @@ linking journal entries, outgoing/incoming links, and categorized content.
 Skips creation if the file already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_weeks
+    python -m scripts.obsidian.workflows.file_creation.create_weeks
 """
 
 import argparse
