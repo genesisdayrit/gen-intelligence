@@ -5,8 +5,8 @@ Creates tomorrow's (or today's) journal file from a template in the vault's
 _Templates/daily-templates/ folder. Skips creation if the file already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_daily_journal
-    python -m scripts.obsidian.workflows.file-creation.create_daily_journal --today
+    python -m scripts.obsidian.workflows.file_creation.create_daily_journal
+    python -m scripts.obsidian.workflows.file_creation.create_daily_journal --today
 """
 
 import argparse

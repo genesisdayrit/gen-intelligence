@@ -6,7 +6,7 @@ Daily Review section after the YAML frontmatter, and re-uploads the file.
 Skips if the section already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-updates.add_daily_review_section
+    python -m scripts.obsidian.workflows.file_updates.add_daily_review_section
 """
 
 import argparse

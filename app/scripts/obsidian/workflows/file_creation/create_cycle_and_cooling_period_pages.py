@@ -7,7 +7,7 @@ Manages the lifecycle of 6-week cycles and 2-week cooling periods by:
 3. Creating numbered cycle and cooling period files when future coverage is missing
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_cycle_and_cooling_period_pages
+    python -m scripts.obsidian.workflows.file_creation.create_cycle_and_cooling_period_pages
 """
 
 import argparse

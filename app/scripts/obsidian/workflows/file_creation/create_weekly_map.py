@@ -5,7 +5,7 @@ Creates a Weekly Map file for the Sunday after next using a template from
 the vault's _Templates/weekly-templates/ folder. Skips if file already exists.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-creation.create_weekly_map
+    python -m scripts.obsidian.workflows.file_creation.create_weekly_map
 """
 
 import argparse

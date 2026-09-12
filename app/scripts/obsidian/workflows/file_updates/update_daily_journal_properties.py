@@ -6,8 +6,8 @@ populates its YAML frontmatter with dynamic properties: day of week, date,
 weekly/cycle relationship links, Daily Action, and "On this Day" references.
 
 Usage:
-    python -m scripts.obsidian.workflows.file-updates.update_daily_journal_properties
-    python -m scripts.obsidian.workflows.file-updates.update_daily_journal_properties --today
+    python -m scripts.obsidian.workflows.file_updates.update_daily_journal_properties
+    python -m scripts.obsidian.workflows.file_updates.update_daily_journal_properties --today
 """
 
 import argparse

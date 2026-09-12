@@ -1225,6 +1225,7 @@ async def trigger_job(
     since: str | None = None,
     updated_after: str | None = None,
     lookback_days: int | None = None,
+    use_today: bool = False,
 ):
     """Trigger a scheduled job to run immediately.
 
@@ -1239,9 +1240,13 @@ async def trigger_job(
     omit for a full-history list), ``lookback_days`` (int, sets
     ``updated_after`` to now minus N days unless ``updated_after`` is
     explicit), and ``since`` (ISO date; skip notes whose journal day is
-    earlier). Other jobs ignore these query params.
+    earlier). Daily creation jobs (``create_daily_journal``,
+    ``create_daily_action``, ``update_daily_journal_properties``) accept
+    ``use_today`` (default false = tomorrow, matching the evening-before
+    cadence; true = today's files for morning recovery). Other jobs
+    ignore these query params.
     """
-    from scheduler import run_job_now
+    from scheduler import DAILY_CREATION_JOB_IDS, run_job_now
 
     kwargs = {}
     if job_id == "backfill_readwise_highlights":
@@ -1261,6 +1266,8 @@ async def trigger_job(
             "lookback_days": lookback_days,
             "since": since,
         }
+    elif job_id in DAILY_CREATION_JOB_IDS:
+        kwargs = {"use_today": use_today}
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:
@@ -1270,6 +1277,8 @@ async def trigger_job(
                 payload["updated_after"] = updated_after
             if "lookback_days" in kwargs:
                 payload["lookback_days"] = lookback_days
+            if "use_today" in kwargs:
+                payload["use_today"] = use_today
         return payload
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 

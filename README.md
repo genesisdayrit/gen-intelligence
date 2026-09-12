@@ -58,6 +58,7 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
 - [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)
 - [Weekly Cycle Sync](docs/guides/weekly-cycle-sync.md)
+- [Daily Journal Creation](docs/guides/daily-journal-creation.md) — evening-before journal, daily action, and journal properties jobs
 - [Ngrok Setup](docs/guides/ngrok-setup.md)
 - [Server Restart](docs/guides/server-restart.md)
 - [EC2 Docker Setup](docs/guides/ec2-docker-setup.md)
