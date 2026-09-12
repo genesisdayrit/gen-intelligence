@@ -1,1 +1,1 @@
-# Spotify Web API helpers (Sunday wrap-up saved tracks)
+# Spotify Web API helpers (Sunday wrap-up + library/playlist jobs)

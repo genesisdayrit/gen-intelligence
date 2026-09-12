@@ -216,6 +216,24 @@ def _create_cycle_and_cooling_period_pages():
     return create_cycle_and_cooling_period_pages()
 
 
+def _spotify_sync_shazam_to_library():
+    from services.spotify.sync import sync_shazam_to_library
+
+    return sync_shazam_to_library()
+
+
+def _spotify_sync_saved_today_to_half_year():
+    from services.spotify.sync import sync_saved_today_to_half_year
+
+    return sync_saved_today_to_half_year()
+
+
+def _spotify_create_half_year_playlist():
+    from services.spotify.sync import create_half_year_playlist
+
+    return create_half_year_playlist()
+
+
 # Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
 # Default False creates tomorrow's files (evening-before cadence).
 DAILY_CREATION_JOB_IDS = frozenset({
@@ -237,6 +255,14 @@ OBSIDIAN_CRON_MIGRATION_JOB_IDS = frozenset({
     "create_weekly_health_review_page",
     "create_weekly_map",
     "create_cycle_and_cooling_period_pages",
+})
+
+# personal-ec2 spotify-api crontab jobs. No token-refresh job — access
+# tokens refresh on demand from SPOTIFY_REFRESH_TOKEN.
+SPOTIFY_SCHEDULED_JOB_IDS = frozenset({
+    "spotify_sync_shazam_to_library",
+    "spotify_sync_saved_today_to_half_year",
+    "spotify_create_half_year_playlist",
 })
 
 
@@ -563,6 +589,39 @@ SCHEDULED_JOBS = [
             day_of_week="sat",
             hour=4,
             minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "spotify_sync_shazam_to_library",
+        "name": "Spotify: Shazam playlist → Liked Songs",
+        "func": _spotify_sync_shazam_to_library,
+        # Live host: */15. Fills Liked Songs before the +5m drain job.
+        "trigger": CronTrigger(
+            minute="*/15",
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "spotify_sync_saved_today_to_half_year",
+        "name": "Spotify: Liked Songs today → half-year playlist",
+        "func": _spotify_sync_saved_today_to_half_year,
+        # Live host: 5-59/15 (+5m offset so Shazam saves land first).
+        "trigger": CronTrigger(
+            minute="5,20,35,50",
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": "spotify_create_half_year_playlist",
+        "name": "Spotify: create half-year playlist",
+        "func": _spotify_create_half_year_playlist,
+        # Live host: 0 0 1 1,7 *. Quiet local hour after midnight.
+        "trigger": CronTrigger(
+            month="1,7",
+            day=1,
+            hour=0,
+            minute=5,
             timezone=SYSTEM_TZ,
         ),
     },

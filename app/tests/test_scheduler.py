@@ -23,6 +23,7 @@ from scheduler import (
     DAILY_CREATION_JOB_IDS,
     OBSIDIAN_CRON_MIGRATION_JOB_IDS,
     SCHEDULED_JOBS,
+    SPOTIFY_SCHEDULED_JOB_IDS,
     run_job_now,
     scheduler,
 )
@@ -160,6 +161,33 @@ def test_obsidian_cron_migration_modules_are_importable():
     assert callable(create_weekly_health_review_page)
     assert callable(create_weekly_map)
     assert callable(create_cycle_and_cooling_period_pages)
+
+
+def test_spotify_jobs_in_registry():
+    """Spotify crontab ports are defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    for job_id in SPOTIFY_SCHEDULED_JOB_IDS:
+        assert job_id in job_ids
+
+
+def test_no_spotify_token_refresh_job_is_registered():
+    """Access tokens refresh on demand — do not port */55 refresh_redis_token."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "refresh_redis_token" not in job_ids
+    assert not any("refresh" in job_id and "token" in job_id for job_id in job_ids)
+    assert not any("refresh" in job_id and "spotify" in job_id for job_id in job_ids)
+
+
+def test_spotify_sync_modules_are_importable():
+    from services.spotify.sync import (
+        create_half_year_playlist,
+        sync_saved_today_to_half_year,
+        sync_shazam_to_library,
+    )
+
+    assert callable(sync_shazam_to_library)
+    assert callable(sync_saved_today_to_half_year)
+    assert callable(create_half_year_playlist)
 
 
 def test_job_definitions_have_required_fields():
@@ -300,6 +328,34 @@ def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
     )
 
 
+def test_spotify_jobs_use_system_timezone_offsets(client):
+    """Shazam every 15m; drain at +5m; half-year create Jan/Jul 00:05."""
+    shazam = scheduler.get_job("spotify_sync_shazam_to_library")
+    assert shazam is not None
+    shazam_trigger = str(shazam.trigger).lower()
+    assert "*/15" in shazam_trigger, shazam_trigger
+    timezone_key = getattr(shazam.trigger.timezone, "key", str(shazam.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+    drain = scheduler.get_job("spotify_sync_saved_today_to_half_year")
+    assert drain is not None
+    drain_trigger = str(drain.trigger).lower()
+    assert "5" in drain_trigger and "20" in drain_trigger
+    assert "35" in drain_trigger and "50" in drain_trigger
+    drain_tz = getattr(drain.trigger.timezone, "key", str(drain.trigger.timezone))
+    assert drain_tz == SYSTEM_TIMEZONE_STR
+
+    create = scheduler.get_job("spotify_create_half_year_playlist")
+    assert create is not None
+    create_trigger = str(create.trigger).lower()
+    assert "month='1,7'" in create_trigger or "month='1,7" in create_trigger
+    assert "day='1'" in create_trigger
+    assert "hour='0'" in create_trigger
+    assert "minute='5'" in create_trigger
+    create_tz = getattr(create.trigger.timezone, "key", str(create.trigger.timezone))
+    assert create_tz == SYSTEM_TIMEZONE_STR
+
+
 def test_update_modified_files_today_runs_every_15_minutes(client):
     """Folder-journal relations run */15, not the live-host */10."""
     job = scheduler.get_job("update_modified_files_today")
@@ -396,6 +452,24 @@ def test_list_jobs_contains_daily_creation_jobs(client):
     job_ids = [j["id"] for j in response.json()["jobs"]]
     for job_id in DAILY_CREATION_JOB_IDS:
         assert job_id in job_ids
+
+
+def test_list_jobs_contains_spotify_jobs(client):
+    """GET /scheduler/jobs includes the Spotify library/playlist jobs."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    for job_id in SPOTIFY_SCHEDULED_JOB_IDS:
+        assert job_id in job_ids
+    assert "refresh_redis_token" not in job_ids
+
+
+def test_trigger_spotify_job(client):
+    """POST /scheduler/jobs/{id}/run fires a Spotify job."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post("/scheduler/jobs/spotify_sync_shazam_to_library/run")
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "spotify_sync_shazam_to_library"
+    mock_run.assert_called_once_with("spotify_sync_shazam_to_library")
 
 
 def test_list_jobs_contains_obsidian_cron_migration_jobs(client):
