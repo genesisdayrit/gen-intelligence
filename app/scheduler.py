@@ -148,12 +148,6 @@ def _daily_prep():
     return daily_prep()
 
 
-def _daily_reflection():
-    from scripts.obsidian.workflows.daily_reflection import daily_reflection
-
-    return daily_reflection()
-
-
 def _add_daily_review_section():
     from scripts.obsidian.workflows.file_updates.add_daily_review_section import (
         add_daily_review_section,
@@ -244,9 +238,11 @@ DAILY_CREATION_JOB_IDS = frozenset({
 
 # Remaining gd-second-brain-os crontab jobs migrated onto APScheduler
 # after the evening-before daily-creation cluster (PR 198).
+# daily_reflection is kept in scripts/obsidian/workflows/ but is not
+# scheduled (no-op for current setup). Re-add a wrapper + SCHEDULED_JOBS
+# entry to enable later.
 OBSIDIAN_CRON_MIGRATION_JOB_IDS = frozenset({
     "daily_prep",
-    "daily_reflection",
     "add_daily_review_section",
     "update_modified_files_today",
     "create_weeks",
@@ -478,17 +474,6 @@ SCHEDULED_JOBS = [
         # Fixed 10:30 local stays DST-stable (same pattern as 18:00 daily creation).
         "trigger": CronTrigger(
             hour=10,
-            minute=30,
-            timezone=SYSTEM_TZ,
-        ),
-    },
-    {
-        "id": "daily_reflection",
-        "name": "Daily Reflection Email (PM check-in)",
-        "func": _daily_reflection,
-        # Live host: 30 0 * * * UTC. crontab_generation.py used 30 3 * * *.
-        "trigger": CronTrigger(
-            hour=20,
             minute=30,
             timezone=SYSTEM_TZ,
         ),

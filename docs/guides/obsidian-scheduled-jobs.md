@@ -25,7 +25,6 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 | Job id | Local (`SYSTEM_TZ`) | Callable | What it does |
 |---|---|---|---|
 | `daily_prep` | Daily 10:30 | `scripts.obsidian.workflows.daily_prep.daily_prep` | AM Vision check-in email (daily action + weekly map + OpenAI). |
-| `daily_reflection` | Daily 20:30 | `scripts.obsidian.workflows.daily_reflection.daily_reflection` | PM Vision check-in email. |
 | `add_daily_review_section` | Daily 13:00 | `scripts.obsidian.workflows.file_updates.add_daily_review_section.add_daily_review_section` | Inserts a Daily Review section into today's DA file if missing. **This port is not a no-op** (the original second-brain copy may have been). |
 | `update_modified_files_today` | Every 15 minutes | `scripts.obsidian.workflows.file_updates.update_modified_files_today.update_modified_files_today` | Folder-journal relations: set `Journal:` YAML on files modified since last run. |
 | `create_weeks` | Sun 23:00 | `scripts.obsidian.workflows.file_creation.create_weeks.create_weeks` | Next Week-Ending Sunday page (skips if it exists). |
@@ -38,7 +37,8 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 ## Schedule choices
 
 - **Fixed local hours**, not a UTC-cron translation. Fire times stay aligned with Pacific (and Eastern, which stays 3 hours ahead year-round) and drift ±1h vs the old UTC crontab across DST.
-- **`daily_prep` 10:30 / `daily_reflection` 20:30** follow the suggested local hours from [PR #198](https://github.com/genesisdayrit/gen-intelligence/pull/198). Live host had drifted (`30 14 * * *` and `30 0 * * *` UTC); `crontab_generation.py` used `30 17 * * *` and `30 3 * * *`.
+- **`daily_prep` 10:30** follows the suggested local hour from [PR #198](https://github.com/genesisdayrit/gen-intelligence/pull/198). Live host had drifted (`30 14 * * *` UTC); `crontab_generation.py` used `30 17 * * *`.
+- **`daily_reflection` is intentionally not scheduled.** The script stays at `scripts.obsidian.workflows.daily_reflection` for manual runs (`python -m scripts.obsidian.workflows.daily_reflection`). It is not registered in `SCHEDULED_JOBS` (no-op / unused for the current setup). Re-enable later by adding a wrapper and a 20:30 `SYSTEM_TZ` entry.
 - **`add_daily_review_section` 13:00** matches the generation comment of 3:00pm ET (EST). The original UTC line was `0 20 * * *`.
 - **`update_modified_files_today` every 15 minutes** instead of the live-host `*/10`. `paths_to_check.txt` lists 13 Dropbox folders (non-recursive `list_folder`). Redis `last_run_folder_journal_relations_at` keeps each pass incremental. 15 minutes is less chatty than every 10 minutes and still near-real-time for `Journal:` links. Generation used a once-daily `5 0 * * *` UTC that did not match its "12:05am Eastern" comment.
 - **Weekly page jobs** use the PR #198 suggested local times (Sun 23:00, Thu 23:30, Tue 01:30, Tue 02:00, Wed 23:00).
@@ -63,7 +63,7 @@ After this app is deployed and `GET /scheduler/jobs` shows the new ids with a `n
 Checklist:
 
 - [ ] `daily_prep` (live `30 14 * * *`; generation `30 17 * * *`)
-- [ ] `daily_reflection` (live `30 0 * * *`; generation `30 3 * * *`)
+- [ ] `daily_reflection` crontab only if it is still firing (live `30 0 * * *`; generation `30 3 * * *`) — **not** on APScheduler; do not expect it on `GET /scheduler/jobs`
 - [ ] `add_daily_review_section` (`0 20 * * *`)
 - [ ] `update_modified_files_today` / folder-journal relations (live `*/10 * * * *`; generation `5 0 * * *`)
 - [ ] `create_weeks` (`0 6 * * 1`)
@@ -78,7 +78,7 @@ Leave the "still crontab-only" rows above on the host.
 
 ## Prerequisites
 
-Same as daily journal creation: Dropbox vault access, Redis for the access-token cache, `SYSTEM_TIMEZONE`, plus `GMAIL_ACCOUNT` / `GMAIL_PASSWORD` and OpenAI credentials for `daily_prep` / `daily_reflection`.
+Same as daily journal creation: Dropbox vault access, Redis for the access-token cache, `SYSTEM_TIMEZONE`, plus `GMAIL_ACCOUNT` / `GMAIL_PASSWORD` and OpenAI credentials for `daily_prep` (and for a manual `daily_reflection` run).
 
 ## Related
 
