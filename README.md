@@ -60,6 +60,7 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Weekly Cycle Sync](docs/guides/weekly-cycle-sync.md)
 - [Daily Journal Creation](docs/guides/daily-journal-creation.md) — evening-before journal, daily action, and journal properties jobs
 - [Obsidian Scheduled Jobs](docs/guides/obsidian-scheduled-jobs.md) — remaining `gd-second-brain-os` crontab jobs on APScheduler, plus what stays crontab-only
+- [Spotify Scheduled Jobs](docs/guides/spotify-scheduled-jobs.md) — Shazam → Liked Songs → half-year playlist; refresh-on-demand, no token-refresh cron
 - [Ngrok Setup](docs/guides/ngrok-setup.md)
 - [Server Restart](docs/guides/server-restart.md)
 - [EC2 Docker Setup](docs/guides/ec2-docker-setup.md)
