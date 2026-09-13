@@ -122,6 +122,8 @@ def test_obsidian_cron_migration_jobs_in_registry():
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
         assert job_id in job_ids
+    assert "daily_reflection" not in job_ids
+    assert "daily_reflection" not in OBSIDIAN_CRON_MIGRATION_JOB_IDS
 
 
 def test_obsidian_cron_migration_modules_are_importable():
@@ -313,7 +315,6 @@ def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
 def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
     """Migrated crontab jobs use fixed SYSTEM_TZ hours (DST-stable)."""
     _assert_cron("daily_prep", hour="10", minute="30")
-    _assert_cron("daily_reflection", hour="20", minute="30")
     _assert_cron("add_daily_review_section", hour="13", minute="0")
     _assert_cron("create_weeks", day_of_week="sun", hour="23", minute="0")
     _assert_cron("create_newsletter_page", day_of_week="thu", hour="23", minute="30")
@@ -478,6 +479,7 @@ def test_list_jobs_contains_obsidian_cron_migration_jobs(client):
     job_ids = [j["id"] for j in response.json()["jobs"]]
     for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
         assert job_id in job_ids
+    assert "daily_reflection" not in job_ids
 
 
 def test_run_job_now_triggers_existing_job_without_executing_workflow():
