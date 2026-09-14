@@ -122,6 +122,8 @@ def test_obsidian_cron_migration_jobs_in_registry():
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
         assert job_id in job_ids
+    assert "daily_prep" not in job_ids
+    assert "daily_prep" not in OBSIDIAN_CRON_MIGRATION_JOB_IDS
     assert "daily_reflection" not in job_ids
     assert "daily_reflection" not in OBSIDIAN_CRON_MIGRATION_JOB_IDS
 
@@ -314,7 +316,6 @@ def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
 
 def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
     """Migrated crontab jobs use fixed SYSTEM_TZ hours (DST-stable)."""
-    _assert_cron("daily_prep", hour="10", minute="30")
     _assert_cron("add_daily_review_section", hour="13", minute="0")
     _assert_cron("create_weeks", day_of_week="sun", hour="23", minute="0")
     _assert_cron("create_newsletter_page", day_of_week="thu", hour="23", minute="30")
@@ -479,6 +480,7 @@ def test_list_jobs_contains_obsidian_cron_migration_jobs(client):
     job_ids = [j["id"] for j in response.json()["jobs"]]
     for job_id in OBSIDIAN_CRON_MIGRATION_JOB_IDS:
         assert job_id in job_ids
+    assert "daily_prep" not in job_ids
     assert "daily_reflection" not in job_ids
 
 
@@ -533,7 +535,7 @@ def test_trigger_other_job_does_not_forward_use_today(client):
 def test_trigger_migrated_obsidian_job(client):
     """POST /scheduler/jobs/{id}/run fires a migrated crontab job."""
     with patch("scheduler.run_job_now", return_value=True) as mock_run:
-        response = client.post("/scheduler/jobs/daily_prep/run")
+        response = client.post("/scheduler/jobs/add_daily_review_section/run")
     assert response.status_code == 200
-    assert response.json()["job_id"] == "daily_prep"
-    mock_run.assert_called_once_with("daily_prep")
+    assert response.json()["job_id"] == "add_daily_review_section"
+    mock_run.assert_called_once_with("add_daily_review_section")
