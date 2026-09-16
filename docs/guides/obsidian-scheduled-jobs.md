@@ -15,7 +15,7 @@ curl -X POST http://localhost:8000/scheduler/jobs/add_daily_review_section/run
 |---|---|---|
 | `create_daily_journal` | Daily 18:00 | Tomorrow's journal. See [daily-journal-creation.md](daily-journal-creation.md). |
 | `create_daily_action` | Daily 18:05 | Tomorrow's DA file. |
-| `update_daily_journal_properties` | Daily 18:10 | Tomorrow's journal YAML. |
+| `update_daily_journal_properties` | Daily 18:10 | Tomorrow's journal YAML (relationship links, Daily Action, On this Day, Previous/Next Day). |
 | `send_essay_ideas_from_journal` | Daily 04:30 | Already on APScheduler; remapped from old `25 1 * * *` UTC. |
 
 Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ignore that flag.

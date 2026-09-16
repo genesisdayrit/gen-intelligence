@@ -3,7 +3,8 @@
 
 Finds tomorrow's (or today's) journal file in the Dropbox-synced vault, then
 populates its YAML frontmatter with dynamic properties: day of week, date,
-weekly/cycle relationship links, Daily Action, and "On this Day" references.
+weekly/cycle relationship links, Daily Action, "On this Day", and Previous/Next
+Day journal wikilinks.
 
 Usage:
     python -m scripts.obsidian.workflows.file_updates.update_daily_journal_properties
@@ -93,13 +94,30 @@ def _get_target_iso_date(use_today: bool = False) -> str:
     return _get_target_day(use_today).strftime('%Y-%m-%d')
 
 
+def _format_journal_stem(day: datetime) -> str:
+    """Format a date as the journal filename stem (e.g. 'Mar 6, 2026').
+
+    Uses ``%-d`` (no leading zero) on Linux/macOS and ``%#d`` on Windows.
+    """
+    try:
+        return day.strftime('%b %-d, %Y')
+    except Exception:
+        return day.strftime('%b %#d, %Y')
+
+
 def _get_target_filename(use_today: bool = False) -> str:
     """Format target day's date to match the journal filename format (e.g. 'Mar 6, 2026.md')."""
-    target_day = _get_target_day(use_today)
-    try:
-        return target_day.strftime('%b %-d, %Y.md')
-    except Exception:
-        return target_day.strftime('%b %#d, %Y.md')
+    return f"{_format_journal_stem(_get_target_day(use_today))}.md"
+
+
+def _get_previous_day_filename(use_today: bool = False) -> str:
+    """Filename stem for the day before the target day (e.g. 'Mar 5, 2026')."""
+    return _format_journal_stem(_get_target_day(use_today) - timedelta(days=1))
+
+
+def _get_next_day_filename(use_today: bool = False) -> str:
+    """Filename stem for the day after the target day (e.g. 'Mar 7, 2026')."""
+    return _format_journal_stem(_get_target_day(use_today) + timedelta(days=1))
 
 
 def _get_week_ending_sunday(use_today: bool = False) -> str:
@@ -145,11 +163,7 @@ def _get_one_year_ago_date(use_today: bool = False) -> datetime:
 
 def _get_one_year_ago_filename(use_today: bool = False) -> str:
     """Format one year ago date for the 'On this Day' property."""
-    one_year_ago = _get_one_year_ago_date(use_today)
-    try:
-        return one_year_ago.strftime('%b %-d, %Y')
-    except Exception:
-        return one_year_ago.strftime('%b %#d, %Y')
+    return _format_journal_stem(_get_one_year_ago_date(use_today))
 
 
 # ===== Dropbox File/Folder Helpers =====
@@ -323,11 +337,25 @@ def _extract_yaml_metadata(file_content: str) -> tuple[dict | None, str | None]:
 
 
 def _update_yaml_metadata(metadata: dict, dynamic_mappings: dict, use_today: bool = False) -> dict:
-    """Update YAML metadata with date info, dynamic mappings, Daily Action, and On this Day."""
+    """Update YAML metadata with date info, dynamic mappings, and journal links.
+
+    Sets Day of Week, Date, weekly/cycle mappings, Daily Action, On this Day,
+    and Previous/Next Day wikilinks relative to the target day (tomorrow by
+    default, or today when ``use_today`` is True).
+    """
     metadata["Day of Week"] = _get_day_of_week(use_today)
     metadata["Date"] = _get_target_iso_date(use_today)
 
-    list_keys = {"Weeks", "_Weekly Health Reviews", "_Cycles", "_Long-Cycle", "Daily Action", "On this Day"}
+    list_keys = {
+        "Weeks",
+        "_Weekly Health Reviews",
+        "_Cycles",
+        "_Long-Cycle",
+        "Daily Action",
+        "On this Day",
+        "Previous Day",
+        "Next Day",
+    }
 
     for key, relationship in dynamic_mappings.items():
         if key in list_keys:
@@ -340,6 +368,10 @@ def _update_yaml_metadata(metadata: dict, dynamic_mappings: dict, use_today: boo
 
     one_year_ago_filename = _get_one_year_ago_filename(use_today)
     metadata["On this Day"] = [f"[[{one_year_ago_filename}]]"]
+
+    # Adjacent-day journal references, relative to the target day.
+    metadata["Previous Day"] = [f"[[{_get_previous_day_filename(use_today)}]]"]
+    metadata["Next Day"] = [f"[[{_get_next_day_filename(use_today)}]]"]
 
     return metadata
 

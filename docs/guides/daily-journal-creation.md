@@ -8,9 +8,20 @@ Three staggered jobs run every evening in `SYSTEM_TIMEZONE` (default `America/Lo
 
 1. **18:00** `create_daily_journal` — copy `_Templates/daily-templates/daily_note_properties.md` into `_Daily/_Journal/{Mon D, YYYY}.md`
 2. **18:05** `create_daily_action` — create `DA YYYY-MM-DD.md` with YAML links to journal, weekly cycle, long cycle, and weekly map
-3. **18:10** `update_daily_journal_properties` — rewrite tomorrow's journal frontmatter with those same relationship links
+3. **18:10** `update_daily_journal_properties` — rewrite tomorrow's journal frontmatter with those same relationship links, plus Day of Week, Date, Daily Action, On this Day, Previous Day, and Next Day
 
 Default mode creates **tomorrow's** files, so they exist before midnight. All three skip work if the target file already exists (journal/action) or if the journal is missing (properties). Safe to re-run.
+
+`update_daily_journal_properties` writes adjacent-day journal wikilinks relative to the target day (tomorrow by default, or today with `--today` / `use_today=true`):
+
+```yaml
+Previous Day:
+- '[[Sep 16, 2026]]'
+Next Day:
+- '[[Sep 18, 2026]]'
+```
+
+Journals created after the Hub port but before this restore may still have `Previous Day: null` / `Next Day: null`. Re-running the nightly job only fills the next target day. Historical nulls need a one-shot backfill — the reference script is `gd-second-brain-os/dropbox-api/tests/backfill_adjacent_day_properties.py` (date-range, `--only-missing`, `--dry-run`). After deploy, ask Gen Intelligence to run that (or a Hub port) for the affected range.
 
 This is the DST-aware equivalent of the old UTC crontab (`01:00` / `01:05` / `01:10` UTC, commented as 9:00pm ET). 6:00pm Pacific is 9:00pm Eastern year-round.
 
