@@ -431,6 +431,76 @@ def test_granola_provider_calls_existing_incremental_sync():
     assert result["processed"] == 3
 
 
+def test_granola_since_check_is_idempotent_on_second_pass():
+    ctx = _ctx()
+    responses = [
+        {"selected": 1, "inserted": 1, "skipped": 0, "errors": []},
+        {"selected": 1, "inserted": 0, "skipped": 1, "errors": []},
+    ]
+    with patch(
+        "services.granola.sync.sync_granola_notes",
+        side_effect=responses,
+    ) as mock_sync:
+        first = GranolaSinceCheckProvider().reconcile(ctx)
+        second = GranolaSinceCheckProvider().reconcile(ctx)
+    assert first["inserted"] == 1
+    assert second["skipped"] == 1
+    assert mock_sync.call_count == 2
+    assert mock_sync.call_args_list[0].kwargs["updated_after"] == ctx.since
+    assert mock_sync.call_args_list[1].kwargs["updated_after"] == ctx.since
+
+
+def test_runner_drains_deferred_queue_then_since_checks():
+    """One hourly pass: drain enqueue-time queue, then Readwise + Granola since-check."""
+    fake = FakeRedis()
+    now = datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
+
+    with (
+        patch("services.obsidian.reconcile.queue.redis_client", fake),
+        patch("services.obsidian.reconcile.runner.redis_client", fake),
+        patch("services.obsidian.reconcile.queue._default_replay", return_value=True),
+        patch(
+            "services.readwise.export.iter_export_highlights",
+            return_value=[{"id": 1, "text": "hi", "book_id": 2}],
+        ) as export,
+        patch("services.readwise.reader.iter_reader_documents", return_value=[]),
+        patch(
+            "services.obsidian.add_readwise_buffet.append_readwise_buffet",
+            return_value={"success": True, "action": "skipped"},
+        ) as writer,
+        patch(
+            "services.granola.sync.sync_granola_notes",
+            return_value={"selected": 0, "inserted": 0, "skipped": 0, "errors": []},
+        ) as granola,
+    ):
+        enqueue_deferred(
+            source="todoist",
+            kind="completed",
+            payload_ref="Task",
+            target="/vault/DA 2026-09-01.md",
+            payload={"task_content": "Task", "journal_date": "Sep 1, 2026"},
+            enqueued_at="2026-09-01T10:00:00Z",
+        )
+        result = reconcile_missed_obsidian_writes(
+            now=now,
+            providers=[
+                DeferredDropboxProvider(),
+                ReadwiseSinceCheckProvider(),
+                GranolaSinceCheckProvider(),
+            ],
+        )
+
+    names = [row["provider"] for row in result["providers"]]
+    assert names == ["deferred_dropbox", "readwise", "granola"]
+    assert result["providers"][0]["succeeded"] == 1
+    assert fake.hgetall(DEFERRED_HASH_KEY) == {}
+    export.assert_called_with(updated_after=result["since"])
+    writer.assert_called()
+    granola.assert_called_once_with(updated_after=result["since"], now=now)
+    assert result["watermark_advanced"] is True
+    assert fake.get(WATERMARK_KEY) == "2026-09-19T18:00:00Z"
+
+
 def test_default_replay_dispatches_conflict_guard_sources():
     from services.obsidian.reconcile.queue import _default_replay
 
@@ -453,6 +523,26 @@ def test_default_replay_dispatches_conflict_guard_sources():
             "services.obsidian.add_manus_task.upsert_manus_task",
             return_value={"daily_action_success": True, "daily_action_action": "inserted"},
         ) as manus,
+        patch(
+            "services.obsidian.add_youtube_link.add_youtube_link",
+            return_value={"success": True, "action": "updated"},
+        ) as youtube,
+        patch(
+            "scripts.obsidian.workflows.file_updates.update_daily_journal_properties.update_daily_journal_properties",
+            return_value=True,
+        ) as journal_props,
+        patch(
+            "services.obsidian.add_daily_action_issues_touched.upsert_daily_action_issue_touched",
+            return_value={"success": True, "action": "inserted"},
+        ) as issues,
+        patch(
+            "scripts.obsidian.workflows.file_updates.add_daily_review_section.add_daily_review_section",
+            return_value=True,
+        ) as review,
+        patch(
+            "services.obsidian.update_telegram_log.update_telegram_log",
+            return_value=True,
+        ) as telegram_update,
     ):
         assert _default_replay(
             {"source": "granola", "kind": "journal_note", "payload": {"id": "not_1"}}
@@ -492,12 +582,49 @@ def test_default_replay_dispatches_conflict_guard_sources():
                 },
             }
         )
+        assert _default_replay(
+            {
+                "source": "youtube",
+                "kind": "kh_update",
+                "payload_ref": "https://youtu.be/abcdefghijk",
+                "payload": {"url": "https://youtu.be/abcdefghijk"},
+            }
+        )
+        assert _default_replay(
+            {"source": "journal_properties", "kind": "journal_properties", "payload": {"use_today": True}}
+        )
+        assert _default_replay(
+            {
+                "source": "daily_action",
+                "kind": "issues_touched",
+                "payload": {
+                    "issue_identifier": "GD-1",
+                    "project_name": "P",
+                    "issue_title": "T",
+                    "status_name": "Todo",
+                    "issue_url": "https://linear.app/x/issue/gd-1",
+                },
+            }
+        )
+        assert _default_replay({"source": "daily_action", "kind": "review_section", "payload": {}})
+        assert _default_replay(
+            {
+                "source": "telegram",
+                "kind": "log_update",
+                "payload": {"message_id": 9, "new_text": "edited"},
+            }
+        )
 
     granola.assert_called_once()
     share.assert_called_once()
     todoist.assert_called_once_with("Task")
     telegram.assert_called_once()
     manus.assert_called_once()
+    youtube.assert_called_once()
+    journal_props.assert_called_once_with(use_today=True)
+    issues.assert_called_once()
+    review.assert_called_once()
+    telegram_update.assert_called_once_with(9, "edited")
 
 
 def test_deferred_dropbox_provider_drains_queue():

@@ -444,6 +444,54 @@ def test_shared_link_already_linked_today_does_not_double():
     mock_dbx.files_upload.assert_not_called()
 
 
+def _rev_conflict_api_error():
+    reason = dropbox.files.WriteError.conflict(dropbox.files.WriteConflictError.file)
+    failed = dropbox.files.UploadWriteFailed(reason=reason, upload_session_id="sess")
+    return dropbox.exceptions.ApiError(
+        "req", dropbox.files.UploadError.path(failed), "", ""
+    )
+
+
+def test_shared_link_update_rev_conflict_retries_then_enqueues():
+    mock_dbx, _uploads = _mock_dbx(
+        kh_exists=True,
+        kh_content=_existing_kh(journal_dates=["Jan 1, 2026"]),
+    )
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    with (
+        _patched(_shared_patches(mock_dbx, title="My Article"), "services.obsidian.add_shared_link.datetime"),
+        patch("services.obsidian.utils.dropbox_rev_safe.record_deferred_write") as mock_enqueue,
+    ):
+        result = add_shared_link("https://example.com/article", title="My Article")
+
+    assert result["success"] is True
+    assert result["action"] == "deferred"
+    assert mock_dbx.files_upload.call_count == 2
+    for call in mock_dbx.files_upload.call_args_list:
+        assert call.kwargs["mode"].is_update()
+        assert not call.kwargs["mode"].is_overwrite()
+    mock_enqueue.assert_called()
+    assert mock_enqueue.call_args.kwargs["source"] == "share_link"
+
+
+def test_shared_link_create_conflict_uses_add_and_enqueues():
+    mock_dbx, _uploads = _mock_dbx(kh_exists=False)
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    with (
+        _patched(_shared_patches(mock_dbx, title="My Article"), "services.obsidian.add_shared_link.datetime"),
+        patch("services.obsidian.utils.dropbox_rev_safe.record_deferred_write") as mock_enqueue,
+    ):
+        result = add_shared_link("https://example.com/article", title="My Article")
+
+    assert result["success"] is True
+    assert result["action"] == "deferred"
+    mode = mock_dbx.files_upload.call_args.kwargs["mode"]
+    assert mode.is_add()
+    assert not mode.is_overwrite()
+    mock_enqueue.assert_called()
+    assert mock_enqueue.call_args.kwargs["kind"] == "kh_create"
+
+
 def test_shared_link_missing_journal_does_not_fail_kh_write():
     mock_dbx, uploads = _mock_dbx(kh_exists=False, journal_missing=True)
     with _patched(_shared_patches(mock_dbx, title="My Article"), "services.obsidian.add_shared_link.datetime"):
@@ -553,6 +601,28 @@ def test_youtube_link_update_appends_buffet_wikilink():
     assert kh["mode"].is_update()
     assert not kh["mode"].is_overwrite()
     assert kh["autorename"] is False
+
+
+def test_youtube_link_update_rev_conflict_retries_then_enqueues():
+    mock_dbx, _uploads = _mock_dbx(
+        kh_exists=True,
+        kh_content=_existing_kh(journal_dates=["Jan 1, 2026"], title="Cool Video"),
+    )
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    with (
+        _patched(_youtube_patches(mock_dbx, title="Cool Video"), "services.obsidian.add_youtube_link.datetime"),
+        patch("services.obsidian.utils.dropbox_rev_safe.record_deferred_write") as mock_enqueue,
+    ):
+        result = add_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
+
+    assert result["success"] is True
+    assert result["action"] == "deferred"
+    assert mock_dbx.files_upload.call_count == 2
+    for call in mock_dbx.files_upload.call_args_list:
+        assert call.kwargs["mode"].is_update()
+        assert not call.kwargs["mode"].is_overwrite()
+    mock_enqueue.assert_called()
+    assert mock_enqueue.call_args.kwargs["source"] == "youtube"
 
 
 def test_youtube_link_reuses_title_only_stem_note():
