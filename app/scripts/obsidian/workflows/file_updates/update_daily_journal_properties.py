@@ -25,6 +25,8 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -420,32 +422,49 @@ def update_daily_journal_properties(use_today: bool = False) -> bool:
 
         logger.info(f"{day_desc.capitalize()} journal found at: {journal_file_path}")
 
-        # Step 2: Download and parse YAML frontmatter
-        _, response = dbx.files_download(journal_file_path)
-        file_content = response.content.decode('utf-8')
-
-        metadata, remaining_content = _extract_yaml_metadata(file_content)
-        if metadata is None:
-            logger.error("No valid YAML metadata found in journal file.")
-            return False
-
-        # Step 3: Generate dynamic mappings
+        # Step 2: Generate dynamic mappings (Dropbox lookups other than this journal)
         logger.info("Journal found — proceeding with dynamic mappings lookup...")
         dynamic_mappings = _get_dynamic_mappings(dbx, vault_path, use_today)
         logger.info(f"Dynamic mappings: {dynamic_mappings}")
 
-        # Step 4: Update YAML metadata
-        updated_metadata = _update_yaml_metadata(metadata, dynamic_mappings, use_today)
-
-        # Step 5: Upload updated file
-        yaml_str = yaml.safe_dump(updated_metadata, default_flow_style=False, sort_keys=False)
-        new_content = f"---\n{yaml_str}---\n{remaining_content}"
         upload_path = os.path.join(os.path.dirname(journal_file_path), journal_file_name)
-        dbx.files_upload(
-            new_content.encode('utf-8'),
+
+        def apply_properties(content: str):
+            metadata, remaining_content = _extract_yaml_metadata(content)
+            if metadata is None:
+                return None, False
+            updated_metadata = _update_yaml_metadata(metadata, dynamic_mappings, use_today)
+            yaml_str = yaml.safe_dump(
+                updated_metadata, default_flow_style=False, sort_keys=False
+            )
+            return f"---\n{yaml_str}---\n{remaining_content}", True
+
+        status, has_yaml, _updated = update_with_retry(
+            dbx,
             upload_path,
-            mode=dropbox.files.WriteMode.overwrite
+            apply_properties,
+            defer={
+                "source": "journal_properties",
+                "kind": "journal_properties",
+                "payload_ref": journal_file_name or upload_path,
+                "target": upload_path,
+                "payload": {"use_today": use_today},
+            },
         )
+        if status == "error":
+            logger.error("No Dropbox rev on download for %s; skipping overwrite.", upload_path)
+            return False
+        if status == "missing":
+            raise FileNotFoundError(f"No journal file found for target date ({target_filename})")
+        if has_yaml is False:
+            logger.error("No valid YAML metadata found in journal file.")
+            return False
+        if status == "deferred":
+            logger.warning(
+                "Deferred daily journal properties for %s (rev conflict; no overwrite)",
+                upload_path,
+            )
+            return True
         logger.info(f"Updated file uploaded successfully: {upload_path}")
         return True
 
