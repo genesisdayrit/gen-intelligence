@@ -274,6 +274,19 @@ def _default_replay(item: dict[str, Any]) -> bool:
             and result.get("daily_action_action") not in {"deferred"}
         )
 
+    if source == "spotify" or kind == "music_of_the_day":
+        from services.spotify.music_of_the_day import write_music_of_the_day
+
+        payload = payload if isinstance(payload, dict) else {}
+        date_value = payload.get("date") or item.get("payload_ref")
+        result = write_music_of_the_day(date=date_value)
+        return result.get("status") in {
+            "updated",
+            "skipped",
+            "empty",
+            "skipped_missing_journal",
+        }
+
     if source == "daily_action":
         payload = payload if isinstance(payload, dict) else {}
         if kind == "review_section":

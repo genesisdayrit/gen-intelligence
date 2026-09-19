@@ -247,19 +247,33 @@ def test_merge_empty_tracks_returns_none():
     assert merge_music_of_the_day_section(SAMPLE_JOURNAL, []) is None
 
 
+def _write_motd(tracks, mock_dbx):
+    return (
+        patch(
+            "services.spotify.music_of_the_day.get_spotify_access_token",
+            return_value="tok",
+        ),
+        patch(
+            "services.spotify.music_of_the_day.liked_tracks_for_local_day",
+            return_value=tracks,
+        ),
+        patch(
+            "services.spotify.music_of_the_day._get_dropbox_client",
+            return_value=mock_dbx,
+        ),
+        patch(
+            "services.spotify.music_of_the_day._resolve_journal_folder",
+            return_value=JOURNAL_FOLDER,
+        ),
+        patch("services.spotify.music_of_the_day.record_deferred_write"),
+    )
+
+
 def test_empty_day_skips_dropbox_entirely():
     mock_dbx = MagicMock()
+    token, liked, dbx, folder, enqueue = _write_motd([], mock_dbx)
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=[],
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ):
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "empty"
@@ -267,6 +281,7 @@ def test_empty_day_skips_dropbox_entirely():
     assert result["journal"] == "Sep 19, 2026.md"
     mock_dbx.files_download.assert_not_called()
     mock_dbx.files_upload.assert_not_called()
+    mock_enqueue.assert_not_called()
 
 
 def test_write_builds_section_and_uploads_rev_safe():
@@ -283,25 +298,16 @@ def test_write_builds_section_and_uploads_rev_safe():
     mock_dbx.files_download.return_value = _download(SAMPLE_JOURNAL)
     mock_dbx.files_upload.return_value = MagicMock()
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=tracks,
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ), patch(
-        "services.spotify.music_of_the_day._resolve_journal_folder",
-        return_value=JOURNAL_FOLDER,
-    ):
+    token, liked, dbx, folder, enqueue = _write_motd(tracks, mock_dbx)
+
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "updated"
     assert result["tracks"] == 1
     assert result["inserted"] == 1
     mock_dbx.files_upload.assert_called_once()
+    mock_enqueue.assert_not_called()
     _assert_update_mode(mock_dbx.files_upload.call_args, REV_MATCH)
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
     assert MUSIC_OF_THE_DAY_HEADER in uploaded
@@ -332,24 +338,15 @@ def test_write_idempotent_second_run_skips_upload():
     mock_dbx = MagicMock()
     mock_dbx.files_download.return_value = _download(journal)
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=tracks,
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ), patch(
-        "services.spotify.music_of_the_day._resolve_journal_folder",
-        return_value=JOURNAL_FOLDER,
-    ):
+    token, liked, dbx, folder, enqueue = _write_motd(tracks, mock_dbx)
+
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "skipped"
     assert result["inserted"] == 0
     mock_dbx.files_upload.assert_not_called()
+    mock_enqueue.assert_not_called()
 
 
 def test_rev_conflict_retries_once_then_succeeds():
@@ -372,19 +369,9 @@ def test_rev_conflict_retries_once_then_succeeds():
         MagicMock(),
     ]
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=tracks,
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ), patch(
-        "services.spotify.music_of_the_day._resolve_journal_folder",
-        return_value=JOURNAL_FOLDER,
-    ):
+    token, liked, dbx, folder, enqueue = _write_motd(tracks, mock_dbx)
+
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "updated"
@@ -392,6 +379,7 @@ def test_rev_conflict_retries_once_then_succeeds():
     assert mock_dbx.files_upload.call_count == 2
     _assert_update_mode(mock_dbx.files_upload.call_args_list[0], REV_STALE)
     _assert_update_mode(mock_dbx.files_upload.call_args_list[1], REV_NEW)
+    mock_enqueue.assert_not_called()
 
 
 def test_rev_conflict_after_retry_defers():
@@ -408,25 +396,22 @@ def test_rev_conflict_after_retry_defers():
     mock_dbx.files_download.return_value = _download(SAMPLE_JOURNAL, rev=REV_STALE)
     mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=tracks,
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ), patch(
-        "services.spotify.music_of_the_day._resolve_journal_folder",
-        return_value=JOURNAL_FOLDER,
-    ):
+    token, liked, dbx, folder, enqueue = _write_motd(tracks, mock_dbx)
+
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "deferred"
     assert mock_dbx.files_upload.call_count == 2
     for call in mock_dbx.files_upload.call_args_list:
         assert not call.kwargs["mode"].is_overwrite()
+    mock_enqueue.assert_called_once_with(
+        source="spotify",
+        kind="music_of_the_day",
+        payload_ref="2026-09-19",
+        target=JOURNAL_PATH,
+        payload={"date": "2026-09-19"},
+    )
 
 
 def test_missing_journal_skips_upload():
@@ -442,20 +427,11 @@ def test_missing_journal_skips_upload():
     mock_dbx = MagicMock()
     mock_dbx.files_download.side_effect = FileNotFoundError("Journal not found")
 
-    with patch(
-        "services.spotify.music_of_the_day.get_spotify_access_token",
-        return_value="tok",
-    ), patch(
-        "services.spotify.music_of_the_day.liked_tracks_for_local_day",
-        return_value=tracks,
-    ), patch(
-        "services.spotify.music_of_the_day._get_dropbox_client",
-        return_value=mock_dbx,
-    ), patch(
-        "services.spotify.music_of_the_day._resolve_journal_folder",
-        return_value=JOURNAL_FOLDER,
-    ):
+    token, liked, dbx, folder, enqueue = _write_motd(tracks, mock_dbx)
+
+    with token, liked, dbx, folder, enqueue as mock_enqueue:
         result = write_music_of_the_day(date="2026-09-19")
 
     assert result["status"] == "skipped_missing_journal"
     mock_dbx.files_upload.assert_not_called()
+    mock_enqueue.assert_not_called()

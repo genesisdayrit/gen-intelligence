@@ -95,7 +95,7 @@ curl -X POST 'http://localhost:8000/scheduler/jobs/spotify_music_of_the_day/run?
 - **Failed save:** the watermark does not move past the failed track; the job raises and retries that track next run.
 - **Half-year names:** January–June → `{year} - 1/2`; July–December → `{year} - 2/2`.
 - **Logging:** never print tokens, refresh tokens, or `Authorization` headers. Historical `cron.log` on the host may contain tokens — do not copy those lines into hub logs.
-- **Music of the Day:** at 03:00 local, write Liked Songs saved on the previous calendar day into `01_Daily/_Journal/{Mon D, YYYY}.md` under a stable `### Music of the Day` header. Lines are `- [Title](https://open.spotify.com/track/…) — Artist`. Re-runs only append missing track ids/URLs. No likes that day → no Dropbox write. Missing journal → skip (do not create). Uploads are rev-safe (`WriteMode.update`); one immediate retry after re-download, then defer. The next scheduled run is a different day, so recover a deferred date with `?date=YYYY-MM-DD`.
+- **Music of the Day:** at 03:00 local, write Liked Songs saved on the previous calendar day into `01_Daily/_Journal/{Mon D, YYYY}.md` under a stable `### Music of the Day` header. Lines are `- [Title](https://open.spotify.com/track/…) — Artist`. Re-runs only append missing track ids/URLs. No likes that day → no Dropbox write. Missing journal → skip (do not create). Uploads are rev-safe (`WriteMode.update`); one immediate retry after re-download, then enqueue the same journal day on Redis `obsidian_reconcile:deferred` for the hourly reconcile drain. Manual fallback: `?date=YYYY-MM-DD`.
 
 ## Cutover checklist
 

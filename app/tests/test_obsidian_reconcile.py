@@ -627,6 +627,52 @@ def test_default_replay_dispatches_conflict_guard_sources():
     telegram_update.assert_called_once_with(9, "edited")
 
 
+@pytest.mark.parametrize(
+    "status",
+    ["updated", "skipped", "empty", "skipped_missing_journal"],
+)
+def test_default_replay_music_of_the_day_success_statuses(status):
+    from services.obsidian.reconcile.queue import _default_replay
+
+    with patch(
+        "services.spotify.music_of_the_day.write_music_of_the_day",
+        return_value={"status": status, "inserted": 0},
+    ) as mock_write:
+        ok = _default_replay(
+            {
+                "source": "spotify",
+                "kind": "music_of_the_day",
+                "payload_ref": "2026-09-19",
+                "target": "/vault/Sep 19, 2026.md",
+                "payload": {"date": "2026-09-19"},
+            }
+        )
+
+    assert ok is True
+    mock_write.assert_called_once_with(date="2026-09-19")
+
+
+def test_default_replay_music_of_the_day_still_deferred_is_failure():
+    from services.obsidian.reconcile.queue import _default_replay
+
+    with patch(
+        "services.spotify.music_of_the_day.write_music_of_the_day",
+        return_value={"status": "deferred", "inserted": 0},
+    ) as mock_write:
+        ok = _default_replay(
+            {
+                "source": "spotify",
+                "kind": "music_of_the_day",
+                "payload_ref": "2026-09-19",
+                "target": "/vault/Sep 19, 2026.md",
+                "payload": {"date": "2026-09-19"},
+            }
+        )
+
+    assert ok is False
+    mock_write.assert_called_once_with(date="2026-09-19")
+
+
 def test_deferred_dropbox_provider_drains_queue():
     ctx = _ctx(batch_size=10)
     with patch(
