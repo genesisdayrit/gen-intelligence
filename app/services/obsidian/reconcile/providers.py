@@ -3,7 +3,9 @@
 Add a source later by implementing ``ReconcileProvider`` (or subclass
 ``StubProvider`` / ``BaseReconcileProvider``) and appending it to
 ``default_providers()``. The hourly runner walks that list with a shared
-watermark and a per-run batch budget.
+``last_reconcile_check_at`` watermark and a per-run batch budget.
+Since-checks use ``ctx.since`` (``updated_at > watermark``), never a
+today-only or same-calendar-day gate.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ class ReconcileProvider(Protocol):
     name: str
 
     def reconcile(self, ctx: ReconcileContext) -> dict:
-        """Process up to ``ctx.batch_size`` items updated since ``ctx.since``."""
+        """Process up to ``ctx.batch_size`` items with ``updated_at > ctx.since``."""
 
 
 @dataclass
@@ -72,7 +74,12 @@ class StubProvider(BaseReconcileProvider):
 
 
 class DeferredDropboxProvider(BaseReconcileProvider):
-    """Drain Redis items enqueued after a rev-safe immediate retry still deferred."""
+    """Drain Redis items enqueued after a rev-safe immediate retry still deferred.
+
+    Order is oldest ``enqueued_at`` first, then attempts / dead-letter.
+    No journal-date or calendar-day gate — a deferred write from last
+    week is still replayed.
+    """
 
     name = "deferred_dropbox"
 
@@ -108,7 +115,7 @@ def _stamp_document(payload: dict) -> dict:
 
 
 class ReadwiseSinceCheckProvider(BaseReconcileProvider):
-    """Pull highlights/docs updated since the watermark; same writers as webhooks."""
+    """Pull highlights/docs with ``updated_after=ctx.since`` (shared watermark)."""
 
     name = "readwise"
 
@@ -174,7 +181,11 @@ class ReadwiseSinceCheckProvider(BaseReconcileProvider):
 
 
 class GranolaSinceCheckProvider(BaseReconcileProvider):
-    """Reuse the existing incremental sync (idempotent ``granola:not_…`` blocks)."""
+    """Reuse incremental sync with the shared watermark as ``updated_after``.
+
+    Passes ``ctx.since`` so this path is since-last-check, not Granola's
+    empty-Redis 15m seed and not a journal-date filter.
+    """
 
     name = "granola"
 

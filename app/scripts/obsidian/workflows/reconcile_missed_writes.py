@@ -25,7 +25,10 @@ def main() -> None:
     parser.add_argument(
         "--since",
         default=None,
-        help="UTC ISO watermark override (default: Redis last_check_at or now-1h)",
+        help=(
+            "UTC ISO last_reconcile_check_at override "
+            "(default: Redis watermark, or now-1h on first run only)"
+        ),
     )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

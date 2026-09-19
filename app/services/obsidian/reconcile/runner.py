@@ -16,10 +16,16 @@ from services.obsidian.reconcile.queue import format_utc_iso
 
 logger = logging.getLogger(__name__)
 
-WATERMARK_KEY = "obsidian_reconcile:last_check_at"
+# Shared since-last-check cursor. Not a rolling 1h window and not a
+# calendar-day gate. Subsequent runs use whatever gap actually elapsed
+# (1h, 3h, or longer if the job was down).
+WATERMARK_KEY = "obsidian_reconcile:last_reconcile_check_at"
 BATCH_SIZE_PER_PROVIDER = 50
 TOTAL_BATCH_CAP = 100
-DEFAULT_LOOKBACK = timedelta(hours=1)
+# First run only: empty Redis seeds ``updated_at > now−1h`` so we do not
+# dump source history. After that, ``resolve_since`` is purely the stored
+# watermark (or a manual ``?since=`` override).
+BOOTSTRAP_LOOKBACK = timedelta(hours=1)
 
 
 def utc_now(now: datetime | None = None) -> datetime:
@@ -31,7 +37,7 @@ def utc_now(now: datetime | None = None) -> datetime:
 
 
 def get_watermark() -> str | None:
-    """Return the last completed run start (UTC ISO), or None."""
+    """Return ``last_reconcile_check_at`` (UTC ISO of last successful run start)."""
     try:
         value = redis_client.get(WATERMARK_KEY)
     except Exception:
@@ -44,7 +50,7 @@ def get_watermark() -> str | None:
 
 
 def set_watermark(value: str) -> bool:
-    """Persist ``obsidian_reconcile:last_check_at``."""
+    """Persist ``last_reconcile_check_at`` after a successful run."""
     try:
         redis_client.set(WATERMARK_KEY, value)
         return True
@@ -59,16 +65,20 @@ def resolve_since(
     now: datetime | None = None,
     stored: str | None = None,
 ) -> str:
-    """Resolve the shared since cursor.
+    """Resolve the shared since-last-check cursor.
 
-    Precedence: explicit ``since`` (manual ``?since=``) → stored watermark →
-    now−1h so an empty Redis does not dump source history.
+    Precedence: explicit ``since`` (manual ``?since=``) → stored
+    ``last_reconcile_check_at`` → first-run bootstrap ``now−1h``.
+
+    The 1h lookback is **not** the primary window. A stored watermark
+    from 3h ago (job down) is used as-is. There is no today-only or
+    same-calendar-day gate.
     """
     if since is not None and str(since).strip():
         return str(since).strip()
     if stored and str(stored).strip():
         return str(stored).strip()
-    return format_utc_iso(utc_now(now) - DEFAULT_LOOKBACK)
+    return format_utc_iso(utc_now(now) - BOOTSTRAP_LOOKBACK)
 
 
 def _is_hard_error(result: dict) -> bool:
@@ -83,12 +93,16 @@ def reconcile_missed_obsidian_writes(
     batch_size: int = BATCH_SIZE_PER_PROVIDER,
     total_cap: int = TOTAL_BATCH_CAP,
 ) -> dict:
-    """Run every registered provider, then advance the shared watermark.
+    """Run every registered provider, then advance ``last_reconcile_check_at``.
 
-    ``since`` overrides the Redis watermark for this pass (manual
-    ``POST /scheduler/jobs/reconcile_missed_obsidian_writes/run?since=``).
-    The watermark is set to this run's start only when no required provider
-    reported a hard error, so a down export API does not skip a window.
+    Providers since-check ``updated_at > last_reconcile_check_at`` (or the
+    equivalent API cursor). ``since`` overrides that watermark for one
+    pass (manual ``?since=``). The watermark is set to this run's start
+    only when no required provider reported a hard error, so a down
+    export API does not skip a window.
+
+    Deferred-queue drain is independent of this cursor and of calendar
+    day — oldest ``enqueued_at`` / attempts, not journal date.
     """
     started = utc_now(now)
     run_started = format_utc_iso(started)

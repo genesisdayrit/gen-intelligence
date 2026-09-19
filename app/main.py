@@ -1249,8 +1249,8 @@ async def trigger_job(
     journal day; omit to write the previous calendar day in
     ``SYSTEM_TZ``). ``reconcile_missed_obsidian_writes`` accepts optional
     ``since`` (UTC ISO watermark override; omit to use Redis
-    ``obsidian_reconcile:last_check_at`` or now−1h). Other jobs ignore
-    these query params.
+    ``obsidian_reconcile:last_reconcile_check_at``, or now−1h on first
+    run only). Other jobs ignore these query params.
     """
     from scheduler import DAILY_CREATION_JOB_IDS, run_job_now
 

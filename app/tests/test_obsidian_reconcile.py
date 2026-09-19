@@ -208,6 +208,39 @@ def test_drain_batch_removes_success_bumps_failure_and_dead_letters():
         assert fake.hgetall(DEAD_HASH_KEY)
 
 
+def test_deferred_drain_does_not_date_gate_journal_day():
+    """A deferred item from last week is still drained — no today-only filter."""
+    fake = FakeRedis()
+    seen: list[dict] = []
+
+    def replay(item):
+        seen.append(item)
+        return True
+
+    with patch("services.obsidian.reconcile.queue.redis_client", fake):
+        enqueue_deferred(
+            source="readwise",
+            kind="journal_highlight",
+            payload_ref="old",
+            target="/vault/Sep 1, 2026.md",
+            payload={"journal_date": "Sep 1, 2026", "text": "old highlight"},
+            enqueued_at="2026-09-01T10:00:00Z",
+        )
+        enqueue_deferred(
+            source="granola",
+            kind="journal_note",
+            payload_ref="not_old",
+            target="/vault/Sep 12, 2026.md",
+            payload={"id": "not_old"},
+            enqueued_at="2026-09-12T08:00:00Z",
+        )
+        result = drain_deferred_batch(limit=10, replay_fn=replay)
+
+    assert result["succeeded"] == 2
+    assert [row["payload_ref"] for row in seen] == ["old", "not_old"]
+    assert seen[0]["payload"]["journal_date"] == "Sep 1, 2026"
+
+
 def test_record_deferred_write_uses_shared_queue():
     fake = FakeRedis()
     with patch("services.obsidian.reconcile.queue.redis_client", fake):
@@ -231,13 +264,44 @@ def test_record_deferred_write_uses_shared_queue():
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_since_prefers_override_then_watermark_then_lookback():
+def test_watermark_key_is_last_reconcile_check_at():
+    assert WATERMARK_KEY == "obsidian_reconcile:last_reconcile_check_at"
+
+
+def test_resolve_since_prefers_override_then_watermark_then_bootstrap():
     now = datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
     assert resolve_since("2026-09-01T00:00:00Z", now=now, stored="2026-09-19T17:00:00Z") == (
         "2026-09-01T00:00:00Z"
     )
     assert resolve_since(None, now=now, stored="2026-09-19T17:00:00Z") == "2026-09-19T17:00:00Z"
+    # First run only: empty watermark seeds now−1h. Not the primary window.
     assert resolve_since(None, now=now, stored=None) == "2026-09-19T17:00:00Z"
+    # Job was down 3h — use the stored cursor as-is, do not clamp to 1h.
+    assert resolve_since(None, now=now, stored="2026-09-19T15:00:00Z") == "2026-09-19T15:00:00Z"
+
+
+def test_first_run_bootstraps_one_hour_then_since_last_check_is_unclamped():
+    """Empty Redis seeds now−1h once; a later gap uses the watermark, not now−1h."""
+    fake = FakeRedis()
+    now_first = datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
+    with patch("services.obsidian.reconcile.runner.redis_client", fake):
+        first = reconcile_missed_obsidian_writes(
+            now=now_first,
+            providers=[StubProvider("share_link")],
+        )
+    assert first["since"] == "2026-09-19T17:00:00Z"
+    assert first["watermark_advanced"] is True
+    assert fake.get(WATERMARK_KEY) == "2026-09-19T18:00:00Z"
+
+    now_later = datetime(2026, 9, 19, 21, 0, tzinfo=timezone.utc)
+    with patch("services.obsidian.reconcile.runner.redis_client", fake):
+        second = reconcile_missed_obsidian_writes(
+            now=now_later,
+            providers=[StubProvider("share_link")],
+        )
+    assert second["since"] == "2026-09-19T18:00:00Z"
+    assert second["since"] != "2026-09-19T20:00:00Z"
+    assert fake.get(WATERMARK_KEY) == "2026-09-19T21:00:00Z"
 
 
 def test_watermark_advances_to_run_start_after_successful_providers():
@@ -302,8 +366,11 @@ def test_readwise_since_check_calls_webhook_writer_and_is_idempotent():
         patch(
             "services.readwise.export.iter_export_highlights",
             return_value=[highlight],
-        ),
-        patch("services.readwise.reader.iter_reader_documents", return_value=[]),
+        ) as export,
+        patch(
+            "services.readwise.reader.iter_reader_documents",
+            return_value=[],
+        ) as reader,
         patch(
             "services.obsidian.add_readwise_buffet.append_readwise_buffet",
             side_effect=fake_append,
@@ -313,6 +380,8 @@ def test_readwise_since_check_calls_webhook_writer_and_is_idempotent():
         first = provider.reconcile(ctx)
         second = provider.reconcile(ctx)
 
+    export.assert_called_with(updated_after=ctx.since)
+    reader.assert_called_with(updated_after=ctx.since)
     assert first["inserted"] == 1
     assert first["skipped"] == 0
     assert second["inserted"] == 0

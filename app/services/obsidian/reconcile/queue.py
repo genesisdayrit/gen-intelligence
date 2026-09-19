@@ -93,7 +93,11 @@ def enqueue_deferred(
 
 
 def list_deferred(*, include_dead: bool = False) -> list[dict[str, Any]]:
-    """Return queued items, oldest ``enqueued_at`` first."""
+    """Return queued items, oldest ``enqueued_at`` first.
+
+    No calendar-day or journal-date filter. Dead-lettered items
+    (``attempts >= MAX_ATTEMPTS``) are omitted unless ``include_dead``.
+    """
     raw_items = redis_client.hgetall(DEFERRED_HASH_KEY) or {}
     items: list[dict[str, Any]] = []
     for field, raw in raw_items.items():
@@ -322,7 +326,10 @@ def drain_deferred_batch(
     *,
     replay_fn: ReplayFn | None = None,
 ) -> dict[str, Any]:
-    """Process up to ``limit`` queued items. Dead-letter after ``MAX_ATTEMPTS``."""
+    """Process up to ``limit`` queued items. Dead-letter after ``MAX_ATTEMPTS``.
+
+    Selection is enqueue-time order, not journal date.
+    """
     replay = replay_fn or _default_replay
     summary = {
         "selected": 0,
