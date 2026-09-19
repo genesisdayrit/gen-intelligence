@@ -551,6 +551,34 @@ def test_h3_in_summary_does_not_swallow_following_journal_sibling():
     assert updated[planning_idx:].startswith("### Content Planning\n- plan something")
 
 
+def test_transcript_notes_stops_at_music_of_the_day():
+    """Music of the Day is a journal sibling so Granola does not swallow it."""
+    journal = (
+        JOURNAL_WITH_H3_IN_SUMMARY.rstrip()
+        + "\n\n### Music of the Day\n- [Song](https://open.spotify.com/track/abc) — Artist\n"
+    )
+    later = format_granola_block(
+        _note(
+            note_id="not_later00000002",
+            title="Later meeting",
+            web_url="https://notes.granola.ai/d/later",
+            summary_markdown="Later summary",
+        )
+    )
+    updated, action = insert_transcript_notes_bullet(
+        journal,
+        later,
+        ["granola:not_later00000002", "not_later00000002"],
+    )
+    assert action == "inserted"
+    music_idx = updated.index("### Music of the Day")
+    later_idx = updated.index("#### [Later meeting](https://notes.granola.ai/d/later)")
+    assert later_idx < music_idx
+    assert updated[music_idx:].startswith(
+        "### Music of the Day\n- [Song](https://open.spotify.com/track/abc) — Artist"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Summary block format / hydrate / upgrade
 # ---------------------------------------------------------------------------

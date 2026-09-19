@@ -183,6 +183,7 @@ def test_no_spotify_token_refresh_job_is_registered():
 
 
 def test_spotify_sync_modules_are_importable():
+    from services.spotify.music_of_the_day import write_music_of_the_day
     from services.spotify.sync import (
         create_half_year_playlist,
         sync_saved_today_to_half_year,
@@ -192,6 +193,7 @@ def test_spotify_sync_modules_are_importable():
     assert callable(sync_shazam_to_library)
     assert callable(sync_saved_today_to_half_year)
     assert callable(create_half_year_playlist)
+    assert callable(write_music_of_the_day)
 
 
 def test_job_definitions_have_required_fields():
@@ -357,6 +359,22 @@ def test_spotify_jobs_use_system_timezone_offsets(client):
     create_tz = getattr(create.trigger.timezone, "key", str(create.trigger.timezone))
     assert create_tz == SYSTEM_TIMEZONE_STR
 
+    music = scheduler.get_job("spotify_music_of_the_day")
+    assert music is not None
+    music_trigger = str(music.trigger).lower()
+    assert "hour='3'" in music_trigger
+    assert "minute='0'" in music_trigger
+    assert "*/15" not in music_trigger
+    music_tz = getattr(music.trigger.timezone, "key", str(music.trigger.timezone))
+    assert music_tz == SYSTEM_TIMEZONE_STR
+
+
+def test_spotify_music_of_the_day_runs_daily_at_3am_system_timezone(client):
+    """Music of the Day is once-daily at 03:00 local, not the 15m drain."""
+    _assert_cron("spotify_music_of_the_day", hour="3", minute="0")
+    job = scheduler.get_job("spotify_music_of_the_day")
+    assert "*/15" not in str(job.trigger)
+
 
 def test_update_modified_files_today_runs_every_15_minutes(client):
     """Folder-journal relations run */15, not the live-host */10."""
@@ -472,6 +490,39 @@ def test_trigger_spotify_job(client):
     assert response.status_code == 200
     assert response.json()["job_id"] == "spotify_sync_shazam_to_library"
     mock_run.assert_called_once_with("spotify_sync_shazam_to_library")
+
+
+def test_trigger_music_of_the_day_defaults_date_none(client):
+    """POST without date writes the previous calendar day."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post("/scheduler/jobs/spotify_music_of_the_day/run")
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "spotify_music_of_the_day"
+    assert response.json()["date"] is None
+    mock_run.assert_called_once_with("spotify_music_of_the_day", date=None)
+
+
+def test_trigger_music_of_the_day_forwards_date(client):
+    """POST ?date=YYYY-MM-DD writes that journal day."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            "/scheduler/jobs/spotify_music_of_the_day/run",
+            params={"date": "2026-09-19"},
+        )
+    assert response.status_code == 200
+    assert response.json()["date"] == "2026-09-19"
+    mock_run.assert_called_once_with("spotify_music_of_the_day", date="2026-09-19")
+
+
+def test_trigger_other_job_does_not_forward_music_of_the_day_date(client):
+    """date is ignored for jobs that are not Music of the Day."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            "/scheduler/jobs/send_arxiv_email/run",
+            params={"date": "2026-09-19"},
+        )
+    assert response.status_code == 200
+    mock_run.assert_called_once_with("send_arxiv_email")
 
 
 def test_list_jobs_contains_obsidian_cron_migration_jobs(client):
