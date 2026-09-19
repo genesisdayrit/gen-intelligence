@@ -15,6 +15,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 EXPORT_URL = "https://readwise.io/api/v2/export/"
+HIGHLIGHT_URL = "https://readwise.io/api/v2/highlights/{highlight_id}/"
 
 
 def _nonempty(value: object) -> str | None:
@@ -96,3 +97,41 @@ def iter_export_highlights(updated_after: str | None = None):
                 if not is_usable_export_highlight(book, highlight):
                     continue
                 yield highlight_from_export(book, highlight)
+
+
+def get_highlight(highlight_id: object) -> dict | None:
+    """GET /api/v2/highlights/{id}/. Missing token / 404 / errors → None."""
+    if highlight_id is None or highlight_id == "":
+        return None
+    try:
+        headers = _headers()
+    except EnvironmentError as exc:
+        logger.error("Readwise highlight lookup skipped: %s", exc)
+        return None
+    try:
+        response = requests.get(
+            HIGHLIGHT_URL.format(highlight_id=highlight_id),
+            headers=headers,
+            timeout=10,
+        )
+    except Exception:
+        logger.exception("Readwise highlight lookup failed for %s", highlight_id)
+        return None
+    if response.status_code == 404:
+        logger.info("Readwise highlight %s not found", highlight_id)
+        return None
+    if response.status_code != 200:
+        logger.info(
+            "Readwise highlight lookup %s returned %s",
+            highlight_id,
+            response.status_code,
+        )
+        return None
+    try:
+        data = response.json()
+    except Exception:
+        logger.exception("Readwise highlight lookup returned invalid JSON for %s", highlight_id)
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data

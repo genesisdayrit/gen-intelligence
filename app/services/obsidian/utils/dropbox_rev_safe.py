@@ -12,16 +12,23 @@ Other Obsidian writers can adopt ``upload_if_rev_matches`` the same way.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 import dropbox
+
+from services.obsidian.utils.deferred_writes import (
+    DeferredWriteContext,
+    enqueue_deferred_contexts,
+)
 
 logger = logging.getLogger(__name__)
 
 CONFLICTED_COPY_TOKEN = "conflicted copy"
 
 RevSafeStatus = Literal["updated", "deferred"]
+DeferArg = DeferredWriteContext | Sequence[DeferredWriteContext] | None
 
 
 @dataclass(frozen=True)
@@ -66,18 +73,28 @@ def write_mode_update(rev: str) -> dropbox.files.WriteMode:
     return dropbox.files.WriteMode.update(rev)
 
 
+def _enqueue_if_deferred(status: RevSafeStatus, defer: DeferArg) -> None:
+    """Enqueue hook so future rev-safe adopters get queueing for free."""
+    if status != "deferred" or defer is None:
+        return
+    enqueue_deferred_contexts(defer)
+
+
 def upload_if_rev_matches(
     dbx: dropbox.Dropbox,
     path: str,
     content: bytes,
     rev: str,
+    *,
+    defer: DeferArg = None,
 ) -> RevSafeUploadResult:
     """Upload ``content`` only if Dropbox still has ``rev``.
 
     Uses ``WriteMode.update(rev)`` with ``autorename=False`` so a mismatch
     is an error instead of a conflicted-copy filename. On conflict, leaves
-    the cloud file as Dropbox has it and returns ``deferred``. Other API
-    errors are re-raised.
+    the cloud file as Dropbox has it and returns ``deferred``. Pass
+    ``defer`` (source / kind / payload_ref) to enqueue after this attempt
+    so the scheduled reconcile can retry. Other API errors are re-raised.
     """
     mode = write_mode_update(rev)
     try:
@@ -97,6 +114,7 @@ def upload_if_rev_matches(
                 path,
                 rev,
             )
+            _enqueue_if_deferred("deferred", defer)
             return RevSafeUploadResult(status="deferred", path=path, rev=rev)
         raise
 
@@ -112,13 +130,16 @@ def upload_new_file(
     dbx: dropbox.Dropbox,
     path: str,
     content: bytes,
+    *,
+    defer: DeferArg = None,
 ) -> RevSafeUploadResult:
     """Create ``path`` only if it does not already exist.
 
     Uses ``WriteMode.add`` with ``autorename=False`` so a race that creates
     the file first is an error instead of an overwrite or a conflicted-copy
     filename. On conflict, leaves the cloud file as Dropbox has it and
-    returns ``deferred``. Other API errors are re-raised.
+    returns ``deferred``. Pass ``defer`` to enqueue for the scheduled
+    reconcile. Other API errors are re-raised.
     """
     try:
         metadata = dbx.files_upload(
@@ -135,6 +156,7 @@ def upload_new_file(
                 "cloud content wins; retry when the path is free.",
                 path,
             )
+            _enqueue_if_deferred("deferred", defer)
             return RevSafeUploadResult(status="deferred", path=path, rev="")
         raise
 

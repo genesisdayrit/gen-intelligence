@@ -2,7 +2,7 @@
 
 Live notes arrive via `POST {WEBHOOK_BASE_URL}/granola/webhook` (see [Granola Webhook Setup](./granola-webhook-setup.md)). Subscribe Granola to `note.generated`, `note.edited`, and `note.access_granted`. Each event fetches `GET /v1/notes/{id}`. Generated and newly shared notes append a **summary block** under `### Transcript Notes` on the matching daily journal. `note.edited` replaces the existing block for that granola id (or inserts if the original write was missed) so the journal stays in the same note order.
 
-Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (Redis last-run cursor) and full-history `backfill_granola_notes`. They are **not** on a cadence.
+Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (Redis last-run cursor) and full-history `backfill_granola_notes`. They are **not** on their own cadence. The 15-minute `reconcile_deferred_obsidian_writes` job calls the same incremental `sync_granola_notes` so webhook misses still land; the parked poll stays available via `POST /scheduler/jobs/sync_granola_notes/run`.
 
 ## Overview
 

@@ -387,6 +387,40 @@ def test_update_modified_files_today_runs_every_15_minutes(client):
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
+def test_reconcile_deferred_obsidian_writes_job_in_registry():
+    """The deferred-write reconcile job is defined in SCHEDULED_JOBS."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert "reconcile_deferred_obsidian_writes" in job_ids
+
+
+def test_reconcile_deferred_obsidian_writes_runs_every_15_minutes(client):
+    """Reconcile deferred Obsidian writes runs */15 in SYSTEM_TZ."""
+    job = scheduler.get_job("reconcile_deferred_obsidian_writes")
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "*/15" in trigger_str, trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_list_jobs_contains_reconcile_deferred_obsidian_writes(client):
+    """GET /scheduler/jobs includes the reconcile deferred writes job."""
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert "reconcile_deferred_obsidian_writes" in job_ids
+
+
+def test_trigger_reconcile_deferred_obsidian_writes(client):
+    """POST /scheduler/jobs/reconcile_deferred_obsidian_writes/run fires the job."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            "/scheduler/jobs/reconcile_deferred_obsidian_writes/run"
+        )
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "reconcile_deferred_obsidian_writes"
+    mock_run.assert_called_once_with("reconcile_deferred_obsidian_writes")
+
+
 # ---------------------------------------------------------------------------
 # API endpoint tests (need lifespan via client fixture)
 # ---------------------------------------------------------------------------

@@ -228,6 +228,14 @@ def _spotify_music_of_the_day(date=None):
     return write_music_of_the_day(date=date)
 
 
+def _reconcile_deferred_obsidian_writes():
+    from services.obsidian.reconcile_deferred_writes import (
+        reconcile_deferred_obsidian_writes,
+    )
+
+    return reconcile_deferred_obsidian_writes()
+
+
 # Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
 # Default False creates tomorrow's files (evening-before cadence).
 DAILY_CREATION_JOB_IDS = frozenset({
@@ -491,6 +499,18 @@ SCHEDULED_JOBS = [
         ),
     },
     {
+        "id": "reconcile_deferred_obsidian_writes",
+        "name": "Reconcile Deferred Obsidian Writes",
+        "func": _reconcile_deferred_obsidian_writes,
+        # Same */15 cadence as folder-journal relations. Drains the Redis
+        # deferred-write queue, then light Readwise / Granola since-checks
+        # so webhook misses still land. SYSTEM_TZ like every other job.
+        "trigger": CronTrigger(
+            minute="*/15",
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
         "id": "create_weeks",
         "name": "Create Week-Ending Page",
         "func": _create_weeks,
@@ -685,7 +705,8 @@ def run_job_now(job_id, **kwargs):
     such as ``backfill_readwise_highlights``,
     ``backfill_knowledge_hub_buffet``, ``sync_granola_notes``,
     ``backfill_granola_notes``, ``spotify_music_of_the_day`` (``date``),
-    and the daily creation jobs' ``use_today`` recovery flag).
+    ``reconcile_deferred_obsidian_writes``, and the daily creation jobs'
+    ``use_today`` recovery flag).
     """
     job = scheduler.get_job(job_id)
     if job is None:

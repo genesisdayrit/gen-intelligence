@@ -1247,7 +1247,8 @@ async def trigger_job(
     cadence; true = today's files for morning recovery).
     ``spotify_music_of_the_day`` accepts optional ``date`` (``YYYY-MM-DD``
     journal day; omit to write the previous calendar day in
-    ``SYSTEM_TZ``). Other jobs ignore these query params.
+    ``SYSTEM_TZ``). ``reconcile_deferred_obsidian_writes`` takes no extra
+    params. Other jobs ignore these query params.
     """
     from scheduler import DAILY_CREATION_JOB_IDS, run_job_now
 
