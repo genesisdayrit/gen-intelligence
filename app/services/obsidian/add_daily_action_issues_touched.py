@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
@@ -316,101 +317,106 @@ def upsert_daily_action_issue_touched(
         daily_folder = _find_daily_folder(dbx, vault_path)
         daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
         file_path = _get_today_daily_action_path(daily_action_folder)
-        file_content = _get_daily_action_content(dbx, file_path)
-
-        # Format the entry
-        entry_line = _format_issue_entry(issue_identifier, project_name, issue_title, status_name, issue_url)
-
-        # Parse YAML frontmatter
-        yaml_section, main_content = _parse_yaml_frontmatter(file_content)
-        lines = main_content.split('\n')
-
-        # Find Daily Review end line index
-        daily_review_end_line = _find_daily_review_end(main_content)
-        if daily_review_end_line is None:
-            daily_review_end_line = 0
-
-        # Check if this issue identifier already exists in the file
-        # Pattern: line starts with the identifier followed by a space
-        identifier_pattern = re.compile(rf'^\[{re.escape(issue_identifier)}\]\s')
-        existing_line_index = None
-        in_issues_section = False
-
-        for i, line in enumerate(lines):
-            if line.strip() == ISSUES_TOUCHED_HEADER:
-                in_issues_section = True
-                continue
-            if in_issues_section:
-                if line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
-                    break
-                if identifier_pattern.match(line):
-                    existing_line_index = i
-                    break
-
-        if existing_line_index is not None:
-            if not status_changed:
-                # No status change - skip (no-op)
-                return {"success": True, "action": "skipped"}
-
-            # Status changed - update the existing line
-            lines[existing_line_index] = entry_line
-            action = "updated"
-        else:
-            # Issue not found - insert new entry
-            if ISSUES_TOUCHED_HEADER in main_content:
-                # Section exists - append after existing entries
-                section_found = False
-                insert_index = None
-
-                for i, line in enumerate(lines):
-                    if line.strip() == ISSUES_TOUCHED_HEADER:
-                        section_found = True
-                        insert_index = i + 1
-                        continue
-
-                    if section_found:
-                        if line.strip() == '':
-                            break
-                        elif line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
-                            break
-                        else:
-                            # Content line - update insert position
-                            insert_index = i + 1
-
-                if insert_index is not None:
-                    lines.insert(insert_index, entry_line)
-                    # Ensure a blank line between entries and next section
-                    next_idx = insert_index + 1
-                    if next_idx < len(lines) and lines[next_idx].strip() != '':
-                        lines.insert(next_idx, '')
-            else:
-                # Section doesn't exist - create it
-                insert_pos = _find_issues_touched_insert_position(lines, daily_review_end_line)
-
-                new_lines = []
-                if insert_pos > 0 and lines[insert_pos - 1].strip() != '':
-                    new_lines.append('')
-                new_lines.append(ISSUES_TOUCHED_HEADER)
-                new_lines.append(entry_line)
-                if insert_pos < len(lines) and lines[insert_pos].strip() != '':
-                    new_lines.append('')
-
-                for j, new_line in enumerate(new_lines):
-                    lines.insert(insert_pos + j, new_line)
-
-            action = "inserted"
-
-        updated_main_content = '\n'.join(lines)
-        updated_content = yaml_section + updated_main_content
-
-        # Upload updated content
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite
+        entry_line = _format_issue_entry(
+            issue_identifier, project_name, issue_title, status_name, issue_url
         )
 
-        return {"success": True, "action": action}
+        def apply_issue(file_content: str):
+            yaml_section, main_content = _parse_yaml_frontmatter(file_content)
+            lines = main_content.split('\n')
+
+            daily_review_end_line = _find_daily_review_end(main_content)
+            if daily_review_end_line is None:
+                daily_review_end_line = 0
+
+            identifier_pattern = re.compile(rf'^\[{re.escape(issue_identifier)}\]\s')
+            existing_line_index = None
+            in_issues_section = False
+
+            for i, line in enumerate(lines):
+                if line.strip() == ISSUES_TOUCHED_HEADER:
+                    in_issues_section = True
+                    continue
+                if in_issues_section:
+                    if line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
+                        break
+                    if identifier_pattern.match(line):
+                        existing_line_index = i
+                        break
+
+            if existing_line_index is not None:
+                if not status_changed:
+                    return None, "skipped"
+                lines[existing_line_index] = entry_line
+                action = "updated"
+            else:
+                if ISSUES_TOUCHED_HEADER in main_content:
+                    section_found = False
+                    insert_index = None
+
+                    for i, line in enumerate(lines):
+                        if line.strip() == ISSUES_TOUCHED_HEADER:
+                            section_found = True
+                            insert_index = i + 1
+                            continue
+
+                        if section_found:
+                            if line.strip() == '':
+                                break
+                            elif line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
+                                break
+                            else:
+                                insert_index = i + 1
+
+                    if insert_index is not None:
+                        lines.insert(insert_index, entry_line)
+                        next_idx = insert_index + 1
+                        if next_idx < len(lines) and lines[next_idx].strip() != '':
+                            lines.insert(next_idx, '')
+                else:
+                    insert_pos = _find_issues_touched_insert_position(lines, daily_review_end_line)
+
+                    new_lines = []
+                    if insert_pos > 0 and lines[insert_pos - 1].strip() != '':
+                        new_lines.append('')
+                    new_lines.append(ISSUES_TOUCHED_HEADER)
+                    new_lines.append(entry_line)
+                    if insert_pos < len(lines) and lines[insert_pos].strip() != '':
+                        new_lines.append('')
+
+                    for j, new_line in enumerate(new_lines):
+                        lines.insert(insert_pos + j, new_line)
+
+                action = "inserted"
+
+            return yaml_section + '\n'.join(lines), action
+
+        status, action, _updated = update_with_retry(
+            dbx,
+            file_path,
+            apply_issue,
+            defer={
+                "source": "daily_action",
+                "kind": "issues_touched",
+                "payload_ref": issue_identifier,
+                "target": file_path,
+                "payload": {
+                    "issue_identifier": issue_identifier,
+                    "project_name": project_name,
+                    "issue_title": issue_title,
+                    "status_name": status_name,
+                    "issue_url": issue_url,
+                    "status_changed": status_changed,
+                },
+            },
+        )
+        if status == "missing":
+            return {"success": False, "action": None, "error": f"File not found: {file_path}"}
+        if status == "error":
+            return {"success": False, "action": None, "error": f"No Dropbox rev on download for {file_path}"}
+        if status == "deferred":
+            return {"success": True, "action": "deferred"}
+        return {"success": True, "action": action or "skipped"}
 
     except Exception as e:
         return {"success": False, "action": None, "error": str(e)}

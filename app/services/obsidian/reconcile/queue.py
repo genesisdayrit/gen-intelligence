@@ -167,6 +167,141 @@ def _default_replay(item: dict[str, Any]) -> bool:
         )
         return result.get("action") not in {"deferred", "error"}
 
+    if source == "granola" or kind == "journal_note":
+        from services.granola.sync import write_notes_by_journal
+
+        if not isinstance(payload, dict):
+            return False
+        result = write_notes_by_journal([payload], raise_errors=False)
+        return not result.get("errors") and int(result.get("deferred") or 0) == 0
+
+    if source == "share_link":
+        from services.obsidian.add_shared_link import add_shared_link
+
+        payload = payload if isinstance(payload, dict) else {}
+        result = add_shared_link(
+            str(payload.get("url") or item.get("payload_ref") or ""),
+            payload.get("title"),
+            journal_date=payload.get("journal_date"),
+            extra_frontmatter=payload.get("extra_frontmatter"),
+        )
+        return bool(result.get("success")) and result.get("action") not in {"deferred", "error"}
+
+    if source == "youtube":
+        from services.obsidian.add_youtube_link import (
+            add_youtube_link,
+            apply_youtube_extra_frontmatter,
+        )
+
+        payload = payload if isinstance(payload, dict) else {}
+        if kind == "kh_extra":
+            result = apply_youtube_extra_frontmatter(
+                str(payload.get("file_path") or target),
+                payload.get("extra_frontmatter"),
+            )
+        else:
+            result = add_youtube_link(
+                str(payload.get("url") or item.get("payload_ref") or ""),
+                journal_date=payload.get("journal_date"),
+                extra_frontmatter=payload.get("extra_frontmatter"),
+                note_title=payload.get("note_title"),
+                note_author=payload.get("note_author"),
+            )
+        return bool(result.get("success")) and result.get("action") not in {"deferred", "error"}
+
+    if source == "journal_properties" or kind == "journal_properties":
+        from scripts.obsidian.workflows.file_updates.update_daily_journal_properties import (
+            update_daily_journal_properties,
+        )
+
+        use_today = True
+        if isinstance(payload, dict):
+            use_today = bool(payload.get("use_today", True))
+        return bool(update_daily_journal_properties(use_today=use_today))
+
+    if source == "todoist":
+        payload = payload if isinstance(payload, dict) else {}
+        task_content = str(payload.get("task_content") or item.get("payload_ref") or "")
+        if kind == "uncompleted":
+            from services.obsidian.remove_todoist_completed import remove_todoist_completed
+
+            remove_todoist_completed(task_content)
+            return True
+        from services.obsidian.add_todoist_completed import append_todoist_completed
+
+        append_todoist_completed(task_content)
+        return True
+
+    if source == "telegram":
+        payload = payload if isinstance(payload, dict) else {}
+        if kind == "log_update":
+            from services.obsidian.update_telegram_log import update_telegram_log
+
+            return bool(
+                update_telegram_log(
+                    int(payload.get("message_id") or item.get("payload_ref") or 0),
+                    str(payload.get("new_text") or ""),
+                )
+            )
+        from services.obsidian.add_telegram_log import append_telegram_log
+
+        append_telegram_log(
+            str(payload.get("message_text") or item.get("payload_ref") or ""),
+            payload.get("message_id"),
+        )
+        return True
+
+    if source == "manus":
+        from services.obsidian.add_manus_task import upsert_manus_task
+
+        payload = payload if isinstance(payload, dict) else {}
+        result = upsert_manus_task(
+            str(payload.get("task_id") or item.get("payload_ref") or ""),
+            str(payload.get("task_title") or ""),
+            str(payload.get("task_url") or ""),
+        )
+        if kind == "weekly_cycle":
+            return (
+                bool(result.get("weekly_cycle_success"))
+                and result.get("weekly_cycle_action") not in {"deferred"}
+            )
+        return (
+            bool(result.get("daily_action_success"))
+            and result.get("daily_action_action") not in {"deferred"}
+        )
+
+    if source == "daily_action":
+        payload = payload if isinstance(payload, dict) else {}
+        if kind == "review_section":
+            from scripts.obsidian.workflows.file_updates.add_daily_review_section import (
+                add_daily_review_section,
+            )
+
+            return bool(add_daily_review_section())
+        if kind == "issues_touched":
+            from services.obsidian.add_daily_action_issues_touched import (
+                upsert_daily_action_issue_touched,
+            )
+
+            result = upsert_daily_action_issue_touched(
+                issue_identifier=str(payload.get("issue_identifier") or item.get("payload_ref") or ""),
+                project_name=str(payload.get("project_name") or ""),
+                issue_title=str(payload.get("issue_title") or ""),
+                status_name=str(payload.get("status_name") or ""),
+                issue_url=str(payload.get("issue_url") or ""),
+                status_changed=bool(payload.get("status_changed", True)),
+            )
+            return bool(result.get("success")) and result.get("action") not in {"deferred"}
+        from services.obsidian.add_daily_action_updates import upsert_daily_action_update
+
+        result = upsert_daily_action_update(
+            str(payload.get("section_type") or "initiative"),
+            str(payload.get("url") or item.get("payload_ref") or ""),
+            str(payload.get("parent_name") or ""),
+            str(payload.get("content") or ""),
+        )
+        return bool(result.get("success")) and result.get("action") not in {"deferred"}
+
     if isinstance(payload, dict) and (source == "readwise" or payload.get("text") or payload.get("title")):
         from services.obsidian.add_readwise_buffet import append_readwise_buffet
 

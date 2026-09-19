@@ -21,6 +21,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -171,26 +173,39 @@ def add_daily_review_section() -> bool:
         file_name = f"DA {today_date_str}.md"
         dropbox_file_path = f"{action_folder}/{file_name}"
 
-        # Download current content
-        _, response = dbx.files_download(dropbox_file_path)
-        current_content = response.content.decode('utf-8')
+        def apply_review(content: str):
+            if "Daily Review:" in content:
+                logger.info(
+                    f"Daily Review section already exists in '{file_name}'. No changes made."
+                )
+                return None, True
+            yaml_section, main_content = _parse_yaml_frontmatter(content)
+            return yaml_section + DAILY_REVIEW_CONTENT + main_content, True
 
-        # Check if daily review section already exists
-        if "Daily Review:" in current_content:
-            logger.info(f"Daily Review section already exists in '{file_name}'. No changes made.")
-            return True
-
-        # Parse and insert review section after YAML frontmatter
-        yaml_section, main_content = _parse_yaml_frontmatter(current_content)
-        updated_content = yaml_section + DAILY_REVIEW_CONTENT + main_content
-
-        # Upload updated file
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
+        status, _meta, _updated = update_with_retry(
+            dbx,
             dropbox_file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            apply_review,
+            defer={
+                "source": "daily_action",
+                "kind": "review_section",
+                "payload_ref": file_name,
+                "target": dropbox_file_path,
+            },
         )
-        logger.info(f"Successfully added 'Daily Review' section to '{file_name}'.")
+        if status == "missing":
+            raise FileNotFoundError(f"Could not find today's file in Dropbox: {dropbox_file_path}")
+        if status == "error":
+            logger.error("No Dropbox rev on download for %s; skipping overwrite.", dropbox_file_path)
+            return False
+        if status == "deferred":
+            logger.warning(
+                "Deferred Daily Review section for %s (rev conflict; no overwrite)",
+                dropbox_file_path,
+            )
+            return True
+        if status == "updated":
+            logger.info(f"Successfully added 'Daily Review' section to '{file_name}'.")
         return True
 
     except Exception as e:

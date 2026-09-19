@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
@@ -223,7 +224,6 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
         daily_folder = _find_daily_folder(dbx, vault_path)
         daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
         file_path = _get_today_daily_action_path(daily_action_folder)
-        file_content = _get_daily_action_content(dbx, file_path)
 
         # Format the log entry with timestamp
         system_tz = pytz.timezone(timezone_str)
@@ -248,129 +248,119 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
             indented_content = '\n'.join(line for line in content_lines if line.strip())
             log_entry = f"{header_line}\n{indented_content}"
 
-        # Parse YAML frontmatter
-        yaml_section, main_content = _parse_yaml_frontmatter(file_content)
+        def apply_update(file_content: str):
+            yaml_section, main_content = _parse_yaml_frontmatter(file_content)
+            lines = main_content.split('\n')
 
-        lines = main_content.split('\n')
+            daily_review_end_line = _find_daily_review_end(main_content)
+            if daily_review_end_line is None:
+                daily_review_end_line = 0
 
-        # Find Daily Review end line index
-        daily_review_end_line = _find_daily_review_end(main_content)
-        if daily_review_end_line is None:
-            daily_review_end_line = 0  # Start from beginning if no Daily Review
-
-        # Check if this URL already exists in the file (for update)
-        existing_line_index = None
-        for i, line in enumerate(lines):
-            if url in line:
-                existing_line_index = i
-                break
-
-        if existing_line_index is not None:
-            # Update existing entry - need to find and replace the entire block
-            # Entry ends at: next timestamp [HH:MM], section header #, separator ---, or template boundary
-            entry_end = existing_line_index + 1
-            for i in range(existing_line_index + 1, len(lines)):
-                line = lines[i]
-                if LOG_ENTRY_PATTERN.match(line):
-                    # Next entry starts here
-                    break
-                elif _is_section_header(line):
-                    break
-                elif is_template_boundary(line):
-                    break
-                else:
-                    # Content line or blank line - part of this entry
-                    entry_end = i + 1
-
-            # Remove all lines of the old entry
-            del lines[existing_line_index:entry_end]
-            # Insert new entry at the same position
-            lines.insert(existing_line_index, log_entry)
-            # Add blank line after if next line is another entry, section header, or template boundary
-            next_line_index = existing_line_index + 1
-            if next_line_index < len(lines):
-                next_line = lines[next_line_index]
-                if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or is_template_boundary(next_line):
-                    lines.insert(next_line_index, '')
-            action = "updated"
-        else:
-            # Insert new entry - need to find or create the appropriate section
-            target_header = _get_section_header(section_type)
-            section_order = _get_section_order()
-
-            # Find existing headers in the content (after Daily Review)
-            header_positions = {}
+            existing_line_index = None
             for i, line in enumerate(lines):
-                if i < daily_review_end_line:
-                    continue
-                for header in section_order:
-                    if line.strip() == header:
-                        header_positions[header] = i
+                if url in line:
+                    existing_line_index = i
+                    break
 
-            if target_header in header_positions:
-                # Header exists - insert after all existing entries
-                # Entry boundaries: only timestamp lines [HH:MM], section headers #, separator ---, or template boundary
-                # Everything else (content, blank lines, user notes) belongs to the section
-                header_index = header_positions[target_header]
-                insert_index = header_index + 1
-                for i in range(header_index + 1, len(lines)):
+            if existing_line_index is not None:
+                entry_end = existing_line_index + 1
+                for i in range(existing_line_index + 1, len(lines)):
                     line = lines[i]
-                    if _is_section_header(line):
+                    if LOG_ENTRY_PATTERN.match(line):
+                        break
+                    elif _is_section_header(line):
                         break
                     elif is_template_boundary(line):
                         break
                     else:
-                        # Any other line (content, blank, notes) - keep going
-                        insert_index = i + 1
-                # Add blank line before new entry if there isn't one already
-                if insert_index > 0 and lines[insert_index - 1].strip() != '':
-                    lines.insert(insert_index, '')
-                    insert_index += 1
-                lines.insert(insert_index, log_entry)
-                # Add blank line after if next line is a section header or template boundary
-                next_line_index = insert_index + 1
+                        entry_end = i + 1
+
+                del lines[existing_line_index:entry_end]
+                lines.insert(existing_line_index, log_entry)
+                next_line_index = existing_line_index + 1
                 if next_line_index < len(lines):
-                    if _is_section_header(lines[next_line_index]) or is_template_boundary(lines[next_line_index]):
+                    next_line = lines[next_line_index]
+                    if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or is_template_boundary(next_line):
                         lines.insert(next_line_index, '')
+                action = "updated"
             else:
-                # Header doesn't exist - need to create it in the right position
-                # Find where to insert based on section order
-                target_order_index = section_order.index(target_header)
+                target_header = _get_section_header(section_type)
+                section_order = _get_section_order()
 
-                # Find the first existing header that comes after our target
-                insert_before_index = None
-                for later_header in section_order[target_order_index + 1:]:
-                    if later_header in header_positions:
-                        insert_before_index = header_positions[later_header]
-                        break
+                header_positions = {}
+                for i, line in enumerate(lines):
+                    if i < daily_review_end_line:
+                        continue
+                    for header in section_order:
+                        if line.strip() == header:
+                            header_positions[header] = i
 
-                if insert_before_index is not None:
-                    # Insert before the next section
-                    # Add: blank line, header, entry, blank line
-                    lines.insert(insert_before_index, '')
-                    lines.insert(insert_before_index, log_entry)
-                    lines.insert(insert_before_index, target_header)
-                    lines.insert(insert_before_index, '')
+                if target_header in header_positions:
+                    header_index = header_positions[target_header]
+                    insert_index = header_index + 1
+                    for i in range(header_index + 1, len(lines)):
+                        line = lines[i]
+                        if _is_section_header(line):
+                            break
+                        elif is_template_boundary(line):
+                            break
+                        else:
+                            insert_index = i + 1
+                    if insert_index > 0 and lines[insert_index - 1].strip() != '':
+                        lines.insert(insert_index, '')
+                        insert_index += 1
+                    lines.insert(insert_index, log_entry)
+                    next_line_index = insert_index + 1
+                    if next_line_index < len(lines):
+                        if _is_section_header(lines[next_line_index]) or is_template_boundary(lines[next_line_index]):
+                            lines.insert(next_line_index, '')
                 else:
-                    # No later headers exist - insert after Daily Review section
-                    insert_pos = daily_review_end_line
-                    # Insert: blank line, header, entry, blank line
-                    new_lines = ['', target_header, log_entry, '']
-                    for j, new_line in enumerate(new_lines):
-                        lines.insert(insert_pos + j, new_line)
+                    target_order_index = section_order.index(target_header)
 
-            action = "inserted"
+                    insert_before_index = None
+                    for later_header in section_order[target_order_index + 1:]:
+                        if later_header in header_positions:
+                            insert_before_index = header_positions[later_header]
+                            break
 
-        updated_main_content = '\n'.join(lines)
-        updated_content = yaml_section + updated_main_content
+                    if insert_before_index is not None:
+                        lines.insert(insert_before_index, '')
+                        lines.insert(insert_before_index, log_entry)
+                        lines.insert(insert_before_index, target_header)
+                        lines.insert(insert_before_index, '')
+                    else:
+                        insert_pos = daily_review_end_line
+                        new_lines = ['', target_header, log_entry, '']
+                        for j, new_line in enumerate(new_lines):
+                            lines.insert(insert_pos + j, new_line)
 
-        # Upload updated content
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
+                action = "inserted"
+
+            return yaml_section + '\n'.join(lines), action
+
+        status, action, _updated = update_with_retry(
+            dbx,
             file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            apply_update,
+            defer={
+                "source": "daily_action",
+                "kind": "update",
+                "payload_ref": url,
+                "target": file_path,
+                "payload": {
+                    "section_type": section_type,
+                    "url": url,
+                    "parent_name": parent_name,
+                    "content": content,
+                },
+            },
         )
-
+        if status == "missing":
+            return {"success": False, "action": None, "error": f"File not found: {file_path}"}
+        if status == "error":
+            return {"success": False, "action": None, "error": f"No Dropbox rev on download for {file_path}"}
+        if status == "deferred":
+            return {"success": True, "action": "deferred"}
         return {"success": True, "action": action}
 
     except Exception as e:

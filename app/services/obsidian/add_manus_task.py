@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
@@ -211,104 +212,103 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
         daily_folder = _find_daily_folder(dbx, vault_path)
         daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
         file_path = _get_today_daily_action_path(daily_action_folder)
-        file_content = _get_file_content(dbx, file_path)
-
-        # Format the entry
         log_entry = f"- {task_title} ([{task_id}]({task_url}))"
 
-        # Parse YAML frontmatter
-        yaml_section, main_content = _parse_yaml_frontmatter(file_content)
+        def apply_daily(content: str):
+            yaml_section, main_content = _parse_yaml_frontmatter(content)
+            lines = main_content.split('\n')
 
-        lines = main_content.split('\n')
+            daily_review_end_line = _find_daily_review_end(main_content)
+            if daily_review_end_line is None:
+                daily_review_end_line = 0
 
-        # Find Daily Review end line index
-        daily_review_end_line = _find_daily_review_end(main_content)
-        if daily_review_end_line is None:
-            daily_review_end_line = 0
+            for line in lines:
+                if task_url in line:
+                    return None, "skipped"
 
-        # Check if this URL already exists in the file (deduplication)
-        for line in lines:
-            if task_url in line:
-                return {"success": True, "action": "skipped"}
+            target_header = DAILY_ACTION_HEADER
+            section_order = _get_daily_section_order()
 
-        # Insert new entry - find or create the Manus Tasks section
-        target_header = DAILY_ACTION_HEADER
-        section_order = _get_daily_section_order()
+            header_positions = {}
+            for i, line in enumerate(lines):
+                if i < daily_review_end_line:
+                    continue
+                for header in section_order:
+                    if line.strip() == header:
+                        header_positions[header] = i
 
-        # Find existing headers in the content (after Daily Review)
-        header_positions = {}
-        for i, line in enumerate(lines):
-            if i < daily_review_end_line:
-                continue
-            for header in section_order:
-                if line.strip() == header:
-                    header_positions[header] = i
-
-        if target_header in header_positions:
-            # Header exists - insert after existing task entries (skip trailing blank lines)
-            header_index = header_positions[target_header]
-            insert_index = header_index + 1
-            for i in range(header_index + 1, len(lines)):
-                line = lines[i]
-                if line.strip().startswith('#'):
-                    break
-                elif line.strip() == '---':
-                    break
-                elif is_template_boundary(line):
-                    break
-                elif line.strip() == '':
-                    # Don't advance past blank lines — insert before them
-                    break
-                else:
-                    insert_index = i + 1
-            lines.insert(insert_index, log_entry)
-            # Ensure a blank line between entries and next section
-            next_idx = insert_index + 1
-            if next_idx < len(lines) and lines[next_idx].strip() != '':
-                lines.insert(next_idx, '')
-        else:
-            # Header doesn't exist - create it in the right position
-            target_order_index = section_order.index(target_header)
-
-            # Find the first existing header that comes after our target
-            insert_before_index = None
-            for later_header in section_order[target_order_index + 1:]:
-                if later_header in header_positions:
-                    insert_before_index = header_positions[later_header]
-                    break
-
-            if insert_before_index is not None:
-                # Insert before the next section
-                lines.insert(insert_before_index, '')
-                lines.insert(insert_before_index, log_entry)
-                lines.insert(insert_before_index, target_header)
-                lines.insert(insert_before_index, '')
+            if target_header in header_positions:
+                header_index = header_positions[target_header]
+                insert_index = header_index + 1
+                for i in range(header_index + 1, len(lines)):
+                    line = lines[i]
+                    if line.strip().startswith('#'):
+                        break
+                    elif line.strip() == '---':
+                        break
+                    elif is_template_boundary(line):
+                        break
+                    elif line.strip() == '':
+                        break
+                    else:
+                        insert_index = i + 1
+                lines.insert(insert_index, log_entry)
+                next_idx = insert_index + 1
+                if next_idx < len(lines) and lines[next_idx].strip() != '':
+                    lines.insert(next_idx, '')
             else:
-                # Walk forward — `is_template_boundary` matches any `Vision Objective N`, so backwards would land on the last instead of the first.
-                insert_pos = None
-                for i in range(daily_review_end_line, len(lines)):
-                    if is_template_boundary(lines[i]):
-                        insert_pos = i
+                target_order_index = section_order.index(target_header)
+
+                insert_before_index = None
+                for later_header in section_order[target_order_index + 1:]:
+                    if later_header in header_positions:
+                        insert_before_index = header_positions[later_header]
                         break
 
-                if insert_pos is None:
-                    insert_pos = daily_review_end_line
+                if insert_before_index is not None:
+                    lines.insert(insert_before_index, '')
+                    lines.insert(insert_before_index, log_entry)
+                    lines.insert(insert_before_index, target_header)
+                    lines.insert(insert_before_index, '')
+                else:
+                    insert_pos = None
+                    for i in range(daily_review_end_line, len(lines)):
+                        if is_template_boundary(lines[i]):
+                            insert_pos = i
+                            break
 
-                new_lines = ['', target_header, log_entry, '']
-                for j, new_line in enumerate(new_lines):
-                    lines.insert(insert_pos + j, new_line)
+                    if insert_pos is None:
+                        insert_pos = daily_review_end_line
 
-        updated_main_content = '\n'.join(lines)
-        updated_content = yaml_section + updated_main_content
+                    new_lines = ['', target_header, log_entry, '']
+                    for j, new_line in enumerate(new_lines):
+                        lines.insert(insert_pos + j, new_line)
 
-        # Upload updated content
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
+            return yaml_section + '\n'.join(lines), "inserted"
+
+        status, action, _updated = update_with_retry(
+            dbx,
             file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            apply_daily,
+            defer={
+                "source": "manus",
+                "kind": "daily_action",
+                "payload_ref": task_id,
+                "target": file_path,
+                "payload": {
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "task_url": task_url,
+                },
+            },
         )
-
-        return {"success": True, "action": "inserted"}
+        if status == "missing":
+            return {"success": False, "action": None, "error": f"File not found: {file_path}"}
+        if status == "error":
+            return {"success": False, "action": None, "error": f"No Dropbox rev on download for {file_path}"}
+        if status == "deferred":
+            return {"success": True, "action": "deferred"}
+        return {"success": True, "action": action or "skipped"}
 
     except Exception as e:
         return {"success": False, "action": None, "error": str(e)}
@@ -414,111 +414,114 @@ def _upsert_weekly_cycle_manus(task_id: str, task_title: str, task_url: str) -> 
         date_range = _format_date_range(cycle_start, cycle_end)
 
         file_path, _ = _find_weekly_cycle_file(dbx, weekly_cycles_folder, date_range)
-        file_content = _get_file_content(dbx, file_path)
-
-        # Format the entry
         log_entry = f"- {task_title} ([{task_id}]({task_url}))"
-
-        # Get current day name and find the section
         day_name = _get_current_day_name(system_tz)
         day_section_header = f"### {day_name} -"
 
-        lines = file_content.split('\n')
-        day_section_start = None
-        day_section_end = None
+        def apply_weekly(content: str):
+            lines = content.split('\n')
+            day_section_start = None
+            day_section_end = None
 
-        # Find the day section boundaries
-        for i, line in enumerate(lines):
-            if line.strip() == day_section_header:
-                day_section_start = i
-                continue
+            for i, line in enumerate(lines):
+                if line.strip() == day_section_header:
+                    day_section_start = i
+                    continue
 
-            if day_section_start is not None and day_section_end is None:
-                if line.strip() == '---':
-                    day_section_end = i
-                    break
+                if day_section_start is not None and day_section_end is None:
+                    if line.strip() == '---':
+                        day_section_end = i
+                        break
 
-        if day_section_start is None:
-            raise ValueError(f"Could not find day section '{day_section_header}' in weekly cycle file")
+            if day_section_start is None:
+                raise ValueError(
+                    f"Could not find day section '{day_section_header}' in weekly cycle file"
+                )
 
-        if day_section_end is None:
-            day_section_end = len(lines)
+            if day_section_end is None:
+                day_section_end = len(lines)
 
-        # Check if this URL already exists in the day section (deduplication)
-        for i in range(day_section_start, day_section_end):
-            if task_url in lines[i]:
-                return {"success": True, "action": "skipped"}
+            for i in range(day_section_start, day_section_end):
+                if task_url in lines[i]:
+                    return None, "skipped"
 
-        # Insert new entry - find or create the Manus Tasks section
-        target_header = WEEKLY_CYCLE_HEADER
-        section_order = _get_weekly_section_order()
+            target_header = WEEKLY_CYCLE_HEADER
+            section_order = _get_weekly_section_order()
 
-        # Find existing headers in the day section
-        header_positions = {}
-        for i in range(day_section_start, day_section_end):
-            for header in section_order:
-                if lines[i].strip() == header:
-                    header_positions[header] = i
+            header_positions = {}
+            for i in range(day_section_start, day_section_end):
+                for header in section_order:
+                    if lines[i].strip() == header:
+                        header_positions[header] = i
 
-        if target_header in header_positions:
-            # Header exists - insert after existing task entries (skip trailing blank lines)
-            header_index = header_positions[target_header]
-            insert_index = header_index + 1
-            for i in range(header_index + 1, day_section_end):
-                line = lines[i]
-                if line.strip().startswith('#'):
-                    break
-                elif line.strip() == '':
-                    break
-                else:
-                    insert_index = i + 1
-            lines.insert(insert_index, log_entry)
-            # Ensure a blank line between entries and next section
-            next_idx = insert_index + 1
-            if next_idx < len(lines) and lines[next_idx].strip() != '':
-                lines.insert(next_idx, '')
-        else:
-            # Header doesn't exist - create it in the right position
-            target_order_index = section_order.index(target_header)
-
-            # Find the first existing header that comes after our target
-            insert_before_index = None
-            for later_header in section_order[target_order_index + 1:]:
-                if later_header in header_positions:
-                    insert_before_index = header_positions[later_header]
-                    break
-
-            if insert_before_index is not None:
-                # Insert before the next section
-                lines.insert(insert_before_index, '')
-                lines.insert(insert_before_index, log_entry)
-                lines.insert(insert_before_index, target_header)
-                lines.insert(insert_before_index, '')
+            if target_header in header_positions:
+                header_index = header_positions[target_header]
+                insert_index = header_index + 1
+                for i in range(header_index + 1, day_section_end):
+                    line = lines[i]
+                    if line.strip().startswith('#'):
+                        break
+                    elif line.strip() == '':
+                        break
+                    else:
+                        insert_index = i + 1
+                lines.insert(insert_index, log_entry)
+                next_idx = insert_index + 1
+                if next_idx < len(lines) and lines[next_idx].strip() != '':
+                    lines.insert(next_idx, '')
             else:
-                # No later headers exist - insert before the --- separator or at end of section
-                insert_pos = day_section_end
-                for i in range(day_section_end - 1, day_section_start, -1):
-                    if lines[i].strip() == '---':
-                        insert_pos = i
-                        break
-                    elif lines[i].strip() != '':
-                        insert_pos = i + 1
+                target_order_index = section_order.index(target_header)
+
+                insert_before_index = None
+                for later_header in section_order[target_order_index + 1:]:
+                    if later_header in header_positions:
+                        insert_before_index = header_positions[later_header]
                         break
 
-                new_lines = ['', target_header, log_entry, '']
-                for j, new_line in enumerate(new_lines):
-                    lines.insert(insert_pos + j, new_line)
+                if insert_before_index is not None:
+                    lines.insert(insert_before_index, '')
+                    lines.insert(insert_before_index, log_entry)
+                    lines.insert(insert_before_index, target_header)
+                    lines.insert(insert_before_index, '')
+                else:
+                    insert_pos = day_section_end
+                    for i in range(day_section_end - 1, day_section_start, -1):
+                        if lines[i].strip() == '---':
+                            insert_pos = i
+                            break
+                        elif lines[i].strip() != '':
+                            insert_pos = i + 1
+                            break
 
-        updated_content = '\n'.join(lines)
+                    new_lines = ['', target_header, log_entry, '']
+                    for j, new_line in enumerate(new_lines):
+                        lines.insert(insert_pos + j, new_line)
 
-        # Upload updated content
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
+            return '\n'.join(lines), "inserted"
+
+        status, action, _updated = update_with_retry(
+            dbx,
             file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            apply_weekly,
+            defer={
+                "source": "manus",
+                "kind": "weekly_cycle",
+                "payload_ref": task_id,
+                "target": file_path,
+                "payload": {
+                    "task_id": task_id,
+                    "task_title": task_title,
+                    "task_url": task_url,
+                },
+            },
         )
-
-        return {"success": True, "action": "inserted"}
+        if status == "missing":
+            return {"success": False, "action": None, "error": f"File not found: {file_path}"}
+        if status == "error":
+            return {"success": False, "action": None, "error": f"No Dropbox rev on download for {file_path}"}
+        if status == "deferred":
+            return {"success": True, "action": "deferred"}
+        return {"success": True, "action": action or "skipped"}
 
     except Exception as e:
         return {"success": False, "action": None, "error": str(e)}

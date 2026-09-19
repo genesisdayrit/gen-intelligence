@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dedup_helpers import extract_task_contents_from_section, is_task_duplicate
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import is_template_boundary
 
 load_dotenv()
@@ -291,14 +292,7 @@ def append_todoist_completed(task_content: str, target_dt: datetime | None = Non
     daily_folder = _find_daily_folder(dbx, vault_path)
     daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
     file_path = _get_today_daily_action_path(daily_action_folder, target_dt)
-    content = _get_daily_action_content(dbx, file_path)
 
-    # Dedup check
-    existing_tasks = extract_task_contents_from_section(content, TODOIST_COMPLETED_HEADER)
-    if is_task_duplicate(task_content, existing_tasks):
-        return
-
-    # Format the log entry with timestamp
     system_tz = pytz.timezone(timezone_str)
     if target_dt is not None:
         now = target_dt.astimezone(system_tz)
@@ -307,66 +301,67 @@ def append_todoist_completed(task_content: str, target_dt: datetime | None = Non
     timestamp = now.strftime("%H:%M %p")
     log_entry = f"[{timestamp}] {task_content}"
 
-    # Parse YAML frontmatter
-    yaml_section, main_content = _parse_yaml_frontmatter(content)
-    lines = main_content.split('\n')
+    def apply_todoist(content: str):
+        existing_tasks = extract_task_contents_from_section(content, TODOIST_COMPLETED_HEADER)
+        if is_task_duplicate(task_content, existing_tasks):
+            return None, "skipped"
 
-    # Find Daily Review end line for positioning reference
-    daily_review_end_line = _find_daily_review_end_line(main_content)
-    if daily_review_end_line is None:
-        daily_review_end_line = 0
+        yaml_section, main_content = _parse_yaml_frontmatter(content)
+        lines = main_content.split('\n')
 
-    # Check if Todoist section already exists
-    if TODOIST_COMPLETED_HEADER in main_content:
-        # Append to existing section
-        section_found = False
-        insert_index = None
+        daily_review_end_line = _find_daily_review_end_line(main_content)
+        if daily_review_end_line is None:
+            daily_review_end_line = 0
 
-        # First pass: find the insert position
-        for i, line in enumerate(lines):
-            if line.strip() == TODOIST_COMPLETED_HEADER:
-                section_found = True
-                insert_index = i + 1
-                continue
+        if TODOIST_COMPLETED_HEADER in main_content:
+            section_found = False
+            insert_index = None
 
-            if section_found:
-                if LOG_ENTRY_PATTERN.match(line):
-                    # This is a log entry, update insert position
+            for i, line in enumerate(lines):
+                if line.strip() == TODOIST_COMPLETED_HEADER:
+                    section_found = True
                     insert_index = i + 1
-                elif line.strip() == '':
-                    # Empty line, keep looking
                     continue
-                else:
-                    # Any other content (heading, text, ---) = end of section
-                    break
 
-        # Insert at the found position
-        if insert_index is not None:
-            lines.insert(insert_index, log_entry)
-    else:
-        # Create new section - find correct position
-        insert_pos = _find_todoist_insert_position(lines, daily_review_end_line)
+                if section_found:
+                    if LOG_ENTRY_PATTERN.match(line):
+                        insert_index = i + 1
+                    elif line.strip() == '':
+                        continue
+                    else:
+                        break
 
-        # Insert: blank line (if needed), header, entry, blank line
-        new_lines = []
-        if insert_pos > 0 and lines[insert_pos - 1].strip() != '':
-            new_lines.append('')
-        new_lines.append(TODOIST_COMPLETED_HEADER)
-        new_lines.append(log_entry)
-        # Add trailing blank line if next content isn't a blank line
-        if insert_pos < len(lines) and lines[insert_pos].strip() != '':
-            new_lines.append('')
+            if insert_index is not None:
+                lines.insert(insert_index, log_entry)
+        else:
+            insert_pos = _find_todoist_insert_position(lines, daily_review_end_line)
 
-        for j, new_line in enumerate(new_lines):
-            lines.insert(insert_pos + j, new_line)
+            new_lines = []
+            if insert_pos > 0 and lines[insert_pos - 1].strip() != '':
+                new_lines.append('')
+            new_lines.append(TODOIST_COMPLETED_HEADER)
+            new_lines.append(log_entry)
+            if insert_pos < len(lines) and lines[insert_pos].strip() != '':
+                new_lines.append('')
 
-    updated_main_content = '\n'.join(lines)
+            for j, new_line in enumerate(new_lines):
+                lines.insert(insert_pos + j, new_line)
 
-    # Reassemble and upload
-    updated_content = yaml_section + updated_main_content
+        return yaml_section + '\n'.join(lines), "inserted"
 
-    dbx.files_upload(
-        updated_content.encode('utf-8'),
+    status, _action, _updated = update_with_retry(
+        dbx,
         file_path,
-        mode=dropbox.files.WriteMode.overwrite
+        apply_todoist,
+        defer={
+            "source": "todoist",
+            "kind": "completed",
+            "payload_ref": task_content,
+            "target": file_path,
+            "payload": {"task_content": task_content},
+        },
     )
+    if status == "missing":
+        raise FileNotFoundError(f"Daily Action not found: {file_path}")
+    if status == "error":
+        raise ValueError(f"No Dropbox rev on download for {file_path}")
