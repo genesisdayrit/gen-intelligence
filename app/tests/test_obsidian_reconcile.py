@@ -362,6 +362,75 @@ def test_granola_provider_calls_existing_incremental_sync():
     assert result["processed"] == 3
 
 
+def test_default_replay_dispatches_conflict_guard_sources():
+    from services.obsidian.reconcile.queue import _default_replay
+
+    with (
+        patch(
+            "services.granola.sync.write_notes_by_journal",
+            return_value={"errors": [], "deferred": 0},
+        ) as granola,
+        patch(
+            "services.obsidian.add_shared_link.add_shared_link",
+            return_value={"success": True, "action": "updated"},
+        ) as share,
+        patch(
+            "services.obsidian.add_todoist_completed.append_todoist_completed",
+        ) as todoist,
+        patch(
+            "services.obsidian.add_telegram_log.append_telegram_log",
+        ) as telegram,
+        patch(
+            "services.obsidian.add_manus_task.upsert_manus_task",
+            return_value={"daily_action_success": True, "daily_action_action": "inserted"},
+        ) as manus,
+    ):
+        assert _default_replay(
+            {"source": "granola", "kind": "journal_note", "payload": {"id": "not_1"}}
+        )
+        assert _default_replay(
+            {
+                "source": "share_link",
+                "kind": "kh_update",
+                "payload_ref": "https://example.com",
+                "target": "/kh/a.md",
+                "payload": {"url": "https://example.com"},
+            }
+        )
+        assert _default_replay(
+            {
+                "source": "todoist",
+                "kind": "completed",
+                "payload_ref": "Task",
+                "payload": {"task_content": "Task"},
+            }
+        )
+        assert _default_replay(
+            {
+                "source": "telegram",
+                "kind": "log",
+                "payload": {"message_text": "[01:00 PM] hi", "message_id": 9},
+            }
+        )
+        assert _default_replay(
+            {
+                "source": "manus",
+                "kind": "daily_action",
+                "payload": {
+                    "task_id": "abc",
+                    "task_title": "T",
+                    "task_url": "https://manus.im/app/abc",
+                },
+            }
+        )
+
+    granola.assert_called_once()
+    share.assert_called_once()
+    todoist.assert_called_once_with("Task")
+    telegram.assert_called_once()
+    manus.assert_called_once()
+
+
 def test_deferred_dropbox_provider_drains_queue():
     ctx = _ctx(batch_size=10)
     with patch(

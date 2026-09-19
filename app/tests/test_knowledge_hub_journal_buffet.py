@@ -402,6 +402,9 @@ def test_shared_link_create_appends_buffet_wikilink():
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     assert "[source]" not in section
     assert "[readwise]" not in section
+    assert kh["mode"].is_add()
+    assert not kh["mode"].is_overwrite()
+    assert kh["autorename"] is False
 
 
 def test_shared_link_update_appends_buffet_wikilink():
@@ -420,6 +423,10 @@ def test_shared_link_update_appends_buffet_wikilink():
     assert journal is not None
     assert "- [[My Article]]" in journal["content"]
     assert journal["path"].endswith(f"{JOURNAL_DATE}.md")
+    assert kh["mode"].is_update()
+    assert kh["mode"].get_update() == "aaaaaaaaaaaaaaaa"
+    assert not kh["mode"].is_overwrite()
+    assert kh["autorename"] is False
 
 
 def test_shared_link_already_linked_today_does_not_double():
@@ -522,6 +529,9 @@ def test_youtube_link_create_appends_buffet_wikilink():
     assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "](http" not in section
     assert "youtube.com" not in section
+    assert kh["mode"].is_add()
+    assert not kh["mode"].is_overwrite()
+    assert kh["autorename"] is False
 
 
 def test_youtube_link_update_appends_buffet_wikilink():
@@ -539,6 +549,10 @@ def test_youtube_link_update_appends_buffet_wikilink():
     section = journal["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     assert f"- [[{YOUTUBE_STEM}]]" in section
     assert "](http" not in section
+    kh = _kh_upload(uploads)
+    assert kh["mode"].is_update()
+    assert not kh["mode"].is_overwrite()
+    assert kh["autorename"] is False
 
 
 def test_youtube_link_reuses_title_only_stem_note():

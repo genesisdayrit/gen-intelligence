@@ -1269,7 +1269,7 @@ def test_readwise_journal_rev_mismatch_enqueues_after_immediate_retry():
     with (
         _journal_folder_patches(mock_dbx),
         patch(
-            "services.obsidian.add_readwise_buffet.record_deferred_write"
+            "services.obsidian.utils.dropbox_rev_safe.record_deferred_write"
         ) as mock_enqueue,
     ):
         result = append_readwise_buffet(payload, now=now)

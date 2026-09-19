@@ -10,9 +10,12 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.obsidian.utils.dropbox_rev_safe import (  # noqa: E402
+    create_or_defer,
+    download_text_with_rev,
     is_conflicted_copy_path,
     is_dropbox_write_conflict,
     record_deferred_write,
+    update_with_retry,
     upload_if_rev_matches,
     upload_new_file,
     write_mode_update,
@@ -192,3 +195,89 @@ def test_record_deferred_write_swallows_redis_errors():
             payload_ref="111",
             target="/vault/note.md",
         )
+
+
+def _download(content: str, *, rev: str = REV_MATCH, path: str = "/vault/note.md"):
+    metadata = MagicMock()
+    metadata.rev = rev
+    metadata.path_display = path
+    response = MagicMock()
+    response.content = content.encode("utf-8")
+    return metadata, response
+
+
+def test_download_text_with_rev_requires_rev():
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download("hello", rev=REV_MATCH)
+    note = download_text_with_rev(mock_dbx, "/vault/note.md")
+    assert note.content == "hello"
+    assert note.rev == REV_MATCH
+
+
+def test_update_with_retry_uses_update_mode_then_succeeds():
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download("old")
+    mock_dbx.files_upload.return_value = MagicMock()
+
+    status, meta, updated = update_with_retry(
+        mock_dbx, "/vault/note.md", lambda content: (content + "\nnew", "wrote")
+    )
+
+    assert status == "updated"
+    assert meta == "wrote"
+    assert updated.endswith("new")
+    kwargs = mock_dbx.files_upload.call_args.kwargs
+    assert kwargs["mode"].is_update()
+    assert kwargs["mode"].get_update() == REV_MATCH
+    assert not kwargs["mode"].is_overwrite()
+    assert kwargs["autorename"] is False
+
+
+def test_update_with_retry_rematches_once_then_enqueues():
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download("old", rev=REV_STALE)
+    mock_dbx.files_upload.side_effect = _real_rev_conflict_api_error()
+
+    with patch(
+        "services.obsidian.utils.dropbox_rev_safe.record_deferred_write"
+    ) as mock_enqueue:
+        status, _meta, _content = update_with_retry(
+            mock_dbx,
+            "/vault/note.md",
+            lambda content: (content + "\nnew", None),
+            defer={
+                "source": "granola",
+                "kind": "journal_note",
+                "payload_ref": "not_1",
+                "target": "/vault/note.md",
+            },
+        )
+
+    assert status == "deferred"
+    assert mock_dbx.files_upload.call_count == 2
+    for call in mock_dbx.files_upload.call_args_list:
+        assert call.kwargs["mode"].is_update()
+        assert not call.kwargs["mode"].is_overwrite()
+    mock_enqueue.assert_called_once()
+    assert mock_enqueue.call_args.kwargs["source"] == "granola"
+
+
+def test_create_or_defer_uses_add_and_enqueues_on_conflict():
+    mock_dbx = MagicMock()
+    mock_dbx.files_upload.side_effect = _real_rev_conflict_api_error()
+
+    with patch(
+        "services.obsidian.utils.dropbox_rev_safe.record_deferred_write"
+    ) as mock_enqueue:
+        created = create_or_defer(
+            mock_dbx,
+            "/vault/new.md",
+            "created",
+            defer={"source": "share_link", "kind": "kh_create", "payload_ref": "u"},
+        )
+
+    assert created is False
+    mode = mock_dbx.files_upload.call_args.kwargs["mode"]
+    assert mode.is_add()
+    assert not mode.is_overwrite()
+    mock_enqueue.assert_called_once()

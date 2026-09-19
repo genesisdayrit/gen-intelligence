@@ -14,7 +14,7 @@ Manual year-2099 jobs remain as safety nets: incremental `sync_granola_notes` (R
 4. `GET /v1/notes/{id}` with `GRANOLA_API_KEY`
 5. Date the note with meeting start when present (`calendar_event.scheduled_start_time`, or `meeting_start` / `meetingStartAt`), else `created_at`
 6. Convert to `SYSTEM_TIMEZONE` and apply the 3am local rollover (`get_effective_date` / `DAY_ROLLOVER_HOUR=3`)
-7. Write under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md`. Generated / access_granted skip an existing `<!-- granola:not_… -->` block; `note.edited` replaces that block in place (or inserts if missing)
+7. Write under `### Transcript Notes` on `01_Daily/_Journal/{Mon D, YYYY}.md` using the shared rev-safe helper (`WriteMode.update(rev)`, one rematch, then enqueue). Generated / access_granted skip an existing `<!-- granola:not_… -->` block; `note.edited` replaces that block in place (or inserts if missing). The hub never overwrites blindly and never creates a conflicted copy.
 
 **Manual pull (safety net)**
 

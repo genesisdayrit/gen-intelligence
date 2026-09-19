@@ -42,13 +42,18 @@ def _run_upsert(file_content, task_id="abc123", task_title="Test Task", task_url
 
     mock_dbx = MagicMock()
 
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = "/test/vault/_Daily/_Daily-Action/DA 2026-05-24.md"
     response = MagicMock()
     response.content = file_content.encode("utf-8")
-    mock_dbx.files_download.return_value = (None, response)
+    mock_dbx.files_download.return_value = (metadata, response)
 
-    def capture_upload(data, path, mode=None):
+    def capture_upload(data, path, mode=None, autorename=None):
         uploaded["content"] = data.decode("utf-8")
         uploaded["path"] = path
+        uploaded["mode"] = mode
+        uploaded["autorename"] = autorename
 
     mock_dbx.files_upload.side_effect = capture_upload
 
@@ -60,7 +65,7 @@ def _run_upsert(file_content, task_id="abc123", task_title="Test Task", task_url
         from services.obsidian.add_manus_task import _upsert_daily_action_manus
         result = _upsert_daily_action_manus(task_id, task_title, task_url)
 
-    return result, uploaded.get("content")
+    return result, uploaded.get("content"), uploaded
 
 
 # ----------------------------------------------------------------------------
@@ -95,11 +100,14 @@ Daily Review:
 Other:
 -
 """
-    result, uploaded = _run_upsert(content)
+    result, uploaded, meta = _run_upsert(content)
 
     assert result["success"] is True
     assert result["action"] == "inserted"
     assert uploaded is not None
+    assert meta["mode"].is_update()
+    assert not meta["mode"].is_overwrite()
+    assert meta["autorename"] is False
 
     header_pos = uploaded.index(DAILY_ACTION_HEADER)
     initiative_pos = uploaded.index(DAILY_INITIATIVE_HEADER)
@@ -138,7 +146,7 @@ Daily Review:
 {VO3}
 -
 """
-    result, uploaded = _run_upsert(content)
+    result, uploaded, _ = _run_upsert(content)
 
     assert result["success"] is True
     assert result["action"] == "inserted"
@@ -173,7 +181,7 @@ Daily Review:
 Vision Objective 3 (more text):
 -
 """
-    result, uploaded = _run_upsert(content)
+    result, uploaded, _ = _run_upsert(content)
 
     assert result["success"] is True
     assert result["action"] == "inserted"
@@ -201,7 +209,7 @@ Daily Review:
 
 Some other notes here.
 """
-    result, uploaded = _run_upsert(content)
+    result, uploaded, _ = _run_upsert(content)
 
     assert result["success"] is True
     assert result["action"] == "inserted"
@@ -236,7 +244,7 @@ Daily Review:
 {VO1}
 -
 """
-    result, uploaded = _run_upsert(content, task_url=dup_url)
+    result, uploaded, _ = _run_upsert(content, task_url=dup_url)
 
     assert result["success"] is True
     assert result["action"] == "skipped"
