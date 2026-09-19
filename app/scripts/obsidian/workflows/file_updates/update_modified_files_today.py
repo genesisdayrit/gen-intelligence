@@ -25,9 +25,16 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.dropbox_rev_safe import upload_if_rev_matches
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+STATUS_UPDATED = "updated"
+STATUS_SKIPPED = "skipped"
+STATUS_DEFERRED = "deferred"
+STATUS_ERROR = "error"
 
 # Redis configuration
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -160,89 +167,142 @@ def _get_modified_files_since_cutoff(dbx: dropbox.Dropbox, paths: list[str], cut
 
 # ===== Journal Updater =====
 
-def _update_journal_property(dbx: dropbox.Dropbox, file_path: str):
-    """Download file, add/update Journal frontmatter with modification date, re-upload."""
+def _format_modification_date(client_modified: datetime) -> str:
+    """Format Dropbox client_modified as an Obsidian journal wikilink stem."""
+    client_modified_utc = client_modified
+    if client_modified_utc.tzinfo is None:
+        client_modified_utc = client_modified_utc.replace(tzinfo=pytz.utc)
+
+    tz_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
     try:
-        metadata, response = dbx.files_download(file_path)
-        content = response.content.decode('utf-8')
-        original_path_display = metadata.path_display
+        local_tz = pytz.timezone(tz_str)
+    except pytz.UnknownTimeZoneError:
+        logger.warning(f"Unknown time zone '{tz_str}', falling back to 'America/Los_Angeles'")
+        local_tz = pytz.timezone("America/Los_Angeles")
 
-        # Force client_modified to UTC if naive
-        client_modified_utc = metadata.client_modified
-        if client_modified_utc.tzinfo is None:
-            client_modified_utc = client_modified_utc.replace(tzinfo=pytz.utc)
+    client_modified_local = client_modified_utc.astimezone(local_tz)
+    try:
+        return client_modified_local.strftime("%b %-d, %Y")
+    except ValueError:
+        return client_modified_local.strftime("%b %#d, %Y")
 
-        # Convert to local timezone
-        tz_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
-        try:
-            local_tz = pytz.timezone(tz_str)
-        except pytz.UnknownTimeZoneError:
-            logger.warning(f"Unknown time zone '{tz_str}', falling back to 'America/Los_Angeles'")
-            local_tz = pytz.timezone("America/Los_Angeles")
 
-        client_modified_local = client_modified_utc.astimezone(local_tz)
+def _apply_journal_date(content: str, formatted_date: str) -> str | None:
+    """Return content with Journal YAML updated, or None if already correct."""
+    properties_match = re.search(r'---(.*?)---', content, re.DOTALL)
+    if properties_match:
+        properties_section = properties_match.group(1)
 
-        try:
-            formatted_date = client_modified_local.strftime("%b %-d, %Y")
-        except ValueError:
-            formatted_date = client_modified_local.strftime("%b %#d, %Y")
+        if f"[[{formatted_date}]]" in properties_section:
+            return None
 
-        # Parse and update frontmatter
-        properties_match = re.search(r'---(.*?)---', content, re.DOTALL)
-        if properties_match:
-            properties_section = properties_match.group(1)
+        journal_match = re.search(r'Journal:\s*(.*?)(?=\n\S|$)', properties_section, re.DOTALL)
+        if journal_match:
+            journal_entries_raw = journal_match.group(1).splitlines()
 
-            # Check if date already exists
-            if f"[[{formatted_date}]]" in properties_section:
-                logger.info(f"Date [[{formatted_date}]] already exists for: {file_path}")
-                return
+            journal_values = []
+            for line in journal_entries_raw:
+                line = line.strip()
+                if line:
+                    if line.startswith('- '):
+                        line = line[2:].strip()
+                    if line.startswith('"') and line.endswith('"'):
+                        line = line[1:-1]
+                    if line.startswith('[[') and line.endswith(']]'):
+                        journal_values.append(line)
 
-            # Look for existing Journal property
-            journal_match = re.search(r'Journal:\s*(.*?)(?=\n\S|$)', properties_section, re.DOTALL)
-            if journal_match:
-                journal_entries_raw = journal_match.group(1).splitlines()
+            new_entry = f"[[{formatted_date}]]"
+            if new_entry not in journal_values:
+                journal_values.append(new_entry)
 
-                journal_values = []
-                for line in journal_entries_raw:
-                    line = line.strip()
-                    if line:
-                        if line.startswith('- '):
-                            line = line[2:].strip()
-                        if line.startswith('"') and line.endswith('"'):
-                            line = line[1:-1]
-                        if line.startswith('[[') and line.endswith(']]'):
-                            journal_values.append(line)
-
-                new_entry = f"[[{formatted_date}]]"
-                if new_entry not in journal_values:
-                    journal_values.append(new_entry)
-
-                formatted_entries = [f'  - "{value}"' for value in journal_values]
-                updated_journal = "Journal:\n" + "\n".join(formatted_entries)
-                updated_properties = re.sub(
-                    r'Journal:\s*(.*?)(?=\n\S|$)',
-                    updated_journal,
-                    properties_section,
-                    flags=re.DOTALL
-                )
-            else:
-                updated_properties = properties_section + f'\nJournal:\n    - "[[{formatted_date}]]"'
-
-            body_after_frontmatter = content.split('---', 2)[2].strip()
-            updated_content = f"---\n{updated_properties.strip()}\n---\n{body_after_frontmatter}"
+            formatted_entries = [f'  - "{value}"' for value in journal_values]
+            updated_journal = "Journal:\n" + "\n".join(formatted_entries)
+            updated_properties = re.sub(
+                r'Journal:\s*(.*?)(?=\n\S|$)',
+                updated_journal,
+                properties_section,
+                flags=re.DOTALL
+            )
         else:
-            updated_content = f'---\nJournal:\n    - "[[{formatted_date}]]"\n---\n{content}'
+            updated_properties = properties_section + f'\nJournal:\n    - "[[{formatted_date}]]"'
 
-        # Overwrite in Dropbox
-        dbx.files_upload(
-            updated_content.encode('utf-8'),
-            original_path_display,
-            mode=dropbox.files.WriteMode.overwrite
+        body_after_frontmatter = content.split('---', 2)[2].strip()
+        updated_content = f"---\n{updated_properties.strip()}\n---\n{body_after_frontmatter}"
+    else:
+        updated_content = f'---\nJournal:\n    - "[[{formatted_date}]]"\n---\n{content}'
+
+    if updated_content == content:
+        return None
+    return updated_content
+
+
+def _update_journal_property_once(dbx: dropbox.Dropbox, file_path: str) -> str:
+    """Download, apply Journal YAML if needed, upload only when the rev still matches."""
+    metadata, response = dbx.files_download(file_path)
+    content = response.content.decode('utf-8')
+    original_path_display = metadata.path_display
+    downloaded_rev = getattr(metadata, "rev", None)
+    if not downloaded_rev:
+        logger.error(
+            "No Dropbox rev on download for %s; skipping upload to avoid overwrite.",
+            file_path,
         )
-        logger.info(f"Updated Journal property for file: {metadata.name}")
+        return STATUS_ERROR
 
-    except Exception as e:
-        logger.error(f"Error updating file {file_path}: {e}")
+    formatted_date = _format_modification_date(metadata.client_modified)
+    updated_content = _apply_journal_date(content, formatted_date)
+    if updated_content is None:
+        logger.info(f"Date [[{formatted_date}]] already exists for: {file_path}")
+        return STATUS_SKIPPED
+
+    result = upload_if_rev_matches(
+        dbx,
+        original_path_display,
+        updated_content.encode('utf-8'),
+        downloaded_rev,
+    )
+    if result.status == "deferred":
+        return STATUS_DEFERRED
+
+    logger.info(f"Updated Journal property for file: {metadata.name}")
+    return STATUS_UPDATED
+
+
+def _update_journal_property(
+    dbx: dropbox.Dropbox,
+    file_path: str,
+    *,
+    max_attempts: int = 2,
+) -> str:
+    """Add/update Journal frontmatter with a rev-safe upload.
+
+    On rev mismatch, does not overwrite and does not create a conflicted copy.
+    Optionally re-downloads once and retries; otherwise the next 15-minute run
+    can apply YAML when the rev matches again.
+
+    Returns:
+        One of STATUS_UPDATED, STATUS_SKIPPED, STATUS_DEFERRED, STATUS_ERROR.
+    """
+    status = STATUS_ERROR
+    for attempt in range(1, max_attempts + 1):
+        try:
+            status = _update_journal_property_once(dbx, file_path)
+        except Exception as e:
+            logger.error(f"Error updating file {file_path}: {e}")
+            return STATUS_ERROR
+        if status != STATUS_DEFERRED or attempt >= max_attempts:
+            if status == STATUS_DEFERRED:
+                logger.warning(
+                    "Deferring Journal YAML for %s until a later sync; "
+                    "cloud file left unchanged (no overwrite / no conflicted copy).",
+                    file_path,
+                )
+            return status
+        logger.info(
+            "Rev conflict on %s; re-downloading once to apply Journal YAML to latest content.",
+            file_path,
+        )
+    return status
 
 
 # ===== Main =====
@@ -278,9 +338,24 @@ def update_modified_files_today() -> bool:
 
         if modified_files:
             logger.info(f"Found {len(modified_files)} modified file(s) in cutoff window.")
+            counts = {
+                STATUS_UPDATED: 0,
+                STATUS_SKIPPED: 0,
+                STATUS_DEFERRED: 0,
+                STATUS_ERROR: 0,
+            }
             for file_path in modified_files:
                 logger.info(f"Processing file: {file_path}")
-                _update_journal_property(dbx, file_path)
+                status = _update_journal_property(dbx, file_path)
+                counts[status] = counts.get(status, 0) + 1
+            logger.info(
+                "Folder-journal relations finished: %s updated, %s skipped "
+                "(already correct), %s deferred (rev conflict), %s errors.",
+                counts[STATUS_UPDATED],
+                counts[STATUS_SKIPPED],
+                counts[STATUS_DEFERRED],
+                counts[STATUS_ERROR],
+            )
         else:
             logger.info("No files were modified in the cutoff window.")
 

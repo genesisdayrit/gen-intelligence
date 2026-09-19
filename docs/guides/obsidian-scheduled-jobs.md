@@ -25,7 +25,7 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 | Job id | Local (`SYSTEM_TZ`) | Callable | What it does |
 |---|---|---|---|
 | `add_daily_review_section` | Daily 13:00 | `scripts.obsidian.workflows.file_updates.add_daily_review_section.add_daily_review_section` | Inserts a Daily Review section into today's DA file if missing. **This port is not a no-op** (the original second-brain copy may have been). |
-| `update_modified_files_today` | Every 15 minutes | `scripts.obsidian.workflows.file_updates.update_modified_files_today.update_modified_files_today` | Folder-journal relations: set `Journal:` YAML on files modified since last run. |
+| `update_modified_files_today` | Every 15 minutes | `scripts.obsidian.workflows.file_updates.update_modified_files_today.update_modified_files_today` | Folder-journal relations: set `Journal:` YAML on files modified since last run. Rev-safe Dropbox update (no overwrite / no conflicted copies). |
 | `create_weeks` | Sun 23:00 | `scripts.obsidian.workflows.file_creation.create_weeks.create_weeks` | Next Week-Ending Sunday page (skips if it exists). |
 | `create_newsletter_page` | Thu 23:30 | `scripts.obsidian.workflows.file_creation.create_newsletter_page.create_newsletter_page` | Newsletter for the Sunday after next. |
 | `create_new_cycle_page` | Tue 01:30 | `scripts.obsidian.workflows.file_creation.create_new_cycle_page.create_new_cycle_page` | Next Wed–Tue weekly cycle page. |
@@ -45,6 +45,7 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 - **Fixed local hours**, not a UTC-cron translation. Fire times stay aligned with Pacific (and Eastern, which stays 3 hours ahead year-round) and drift ±1h vs the old UTC crontab across DST.
 - **`add_daily_review_section` 13:00** matches the generation comment of 3:00pm ET (EST). The original UTC line was `0 20 * * *`.
 - **`update_modified_files_today` every 15 minutes** instead of the live-host `*/10`. `paths_to_check.txt` lists 13 Dropbox folders (non-recursive `list_folder`). Redis `last_run_folder_journal_relations_at` keeps each pass incremental. 15 minutes is less chatty than every 10 minutes and still near-real-time for `Journal:` links. Generation used a once-daily `5 0 * * *` UTC that did not match its "12:05am Eastern" comment.
+- **Rev-safe uploads on folder-journal relations.** That job captures each file's Dropbox `rev` on download and writes with `WriteMode.update(rev)` (`autorename=False`) via `services.obsidian.utils.dropbox_rev_safe`. If Obsidian or Dropbox desktop changed the file after download, the hub does **not** `WriteMode.overwrite` and does **not** create `Name (conflicted copy).md`. It logs the file as deferred (latest cloud content wins) and retries on the next 15-minute run, or once immediately after a re-download. Other Obsidian writers still use overwrite and can adopt the same helper later.
 - **Weekly page jobs** use the PR #198 suggested local times (Sun 23:00, Thu 23:30, Tue 01:30, Tue 02:00, Wed 23:00).
 - **`create_cycle_and_cooling_period_pages` Sat 04:00** is the PDT equivalent of the live-host `0 11 * * 6` UTC (Sat 11:00 UTC = Sat 04:00 PDT / Sat 03:00 PST, described as Friday-evening-ish). Included because the live host still runs it, even though generation never emitted that line.
 
