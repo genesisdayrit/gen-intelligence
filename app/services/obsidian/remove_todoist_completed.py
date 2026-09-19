@@ -10,6 +10,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
+
 load_dotenv()
 
 # Redis configuration
@@ -127,79 +129,70 @@ def remove_todoist_completed(task_content: str) -> bool:
     daily_action_folder = _find_daily_action_folder(dbx, daily_folder)
     file_path = _get_today_daily_action_path(daily_action_folder)
 
-    try:
-        content = _get_daily_action_content(dbx, file_path)
-    except FileNotFoundError:
-        # No Daily Action file for today, nothing to remove
-        return False
+    def apply_remove(content: str):
+        if TODOIST_COMPLETED_HEADER not in content:
+            return None, False
 
-    # Check if Todoist section exists
-    if TODOIST_COMPLETED_HEADER not in content:
-        return False
+        lines = content.split('\n')
+        updated_lines = []
+        task_removed = False
+        in_todoist_section = False
 
-    # Find and remove the line containing the task content
-    lines = content.split('\n')
-    updated_lines = []
-    task_removed = False
-    in_todoist_section = False
+        for line in lines:
+            if line.strip() == TODOIST_COMPLETED_HEADER:
+                in_todoist_section = True
+                updated_lines.append(line)
+                continue
 
-    for line in lines:
-        if line.strip() == TODOIST_COMPLETED_HEADER:
-            in_todoist_section = True
+            if in_todoist_section:
+                if re.match(r'^\[\d{2}:\d{2}', line) and task_content in line:
+                    task_removed = True
+                    continue
+                if line.strip() and not re.match(r'^\[\d{2}:\d{2}', line) and line.strip() != '':
+                    in_todoist_section = False
+
             updated_lines.append(line)
-            continue
 
-        if in_todoist_section:
-            # Check if this line contains the task content (after timestamp)
-            # Pattern: [HH:MM AM/PM] task content
-            if re.match(r'^\[\d{2}:\d{2}', line) and task_content in line:
-                # Skip this line (remove it)
-                task_removed = True
-                continue
-            # Check if we've exited the section (hit another header or non-log content)
-            if line.strip() and not re.match(r'^\[\d{2}:\d{2}', line) and line.strip() != '':
-                in_todoist_section = False
+        if not task_removed:
+            return None, False
 
-        updated_lines.append(line)
+        final_lines = []
+        i = 0
+        while i < len(updated_lines):
+            line = updated_lines[i]
+            if line.strip() == TODOIST_COMPLETED_HEADER:
+                section_has_entries = False
+                for j in range(i + 1, len(updated_lines)):
+                    next_line = updated_lines[j]
+                    if re.match(r'^\[\d{2}:\d{2}', next_line):
+                        section_has_entries = True
+                        break
+                    if next_line.strip() and not next_line.strip() == '':
+                        break
 
-    if not task_removed:
-        return False
-
-    # Check if the section is now empty (only header with no entries)
-    # If so, remove the entire section
-    final_lines = []
-    skip_next_empty = False
-    i = 0
-    while i < len(updated_lines):
-        line = updated_lines[i]
-        if line.strip() == TODOIST_COMPLETED_HEADER:
-            # Check if the section is empty (next lines are empty or start new section)
-            section_has_entries = False
-            for j in range(i + 1, len(updated_lines)):
-                next_line = updated_lines[j]
-                if re.match(r'^\[\d{2}:\d{2}', next_line):
-                    section_has_entries = True
-                    break
-                if next_line.strip() and not next_line.strip() == '':
-                    # Hit non-empty, non-log line = section ended
-                    break
-
-            if not section_has_entries:
-                # Skip the header and any following empty lines
-                i += 1
-                while i < len(updated_lines) and updated_lines[i].strip() == '':
+                if not section_has_entries:
                     i += 1
-                continue
+                    while i < len(updated_lines) and updated_lines[i].strip() == '':
+                        i += 1
+                    continue
 
-        final_lines.append(line)
-        i += 1
+            final_lines.append(line)
+            i += 1
 
-    updated_content = '\n'.join(final_lines)
+        return '\n'.join(final_lines), True
 
-    dbx.files_upload(
-        updated_content.encode('utf-8'),
+    status, removed, _updated = update_with_retry(
+        dbx,
         file_path,
-        mode=dropbox.files.WriteMode.overwrite
+        apply_remove,
+        defer={
+            "source": "todoist",
+            "kind": "uncompleted",
+            "payload_ref": task_content,
+            "target": file_path,
+            "payload": {"task_content": task_content},
+        },
     )
-
-    return True
+    if status in {"missing", "error", "skipped"}:
+        return False
+    return status in {"updated", "deferred"} and bool(removed)

@@ -209,15 +209,20 @@ def _run_daily_action_upsert(file_content, **kwargs):
 
     mock_dbx = MagicMock()
 
-    # Mock files_download to return the content
+    # Mock files_download to return the content plus a Dropbox rev
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = "/test/vault/01_daily/01_daily-action/DA 2026-02-12.md"
     response = MagicMock()
     response.content = file_content.encode('utf-8')
-    mock_dbx.files_download.return_value = (None, response)
+    mock_dbx.files_download.return_value = (metadata, response)
 
     # Track upload
-    def capture_upload(data, path, mode=None):
+    def capture_upload(data, path, mode=None, autorename=None):
         uploaded['content'] = data.decode('utf-8')
         uploaded['path'] = path
+        uploaded['mode'] = mode
+        uploaded['autorename'] = autorename
 
     mock_dbx.files_upload.side_effect = capture_upload
 
@@ -246,6 +251,9 @@ def test_insert_new_issue_creates_section():
 
     assert result["success"] is True
     assert result["action"] == "inserted"
+    assert uploaded["mode"].is_update()
+    assert not uploaded["mode"].is_overwrite()
+    assert uploaded["autorename"] is False
     content = uploaded.get('content', '')
     assert ISSUES_TOUCHED_HEADER in content
     assert "[GD-328] (Centralizing OS) - Add Issues Touched (In Progress)" in content

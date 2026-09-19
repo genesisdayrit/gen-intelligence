@@ -15,6 +15,11 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from .add_readwise_buffet import append_wikilink_to_journal_buffet, journal_filename
+from .utils.dropbox_rev_safe import (
+    create_or_defer,
+    download_text_with_rev,
+    update_with_retry,
+)
 from .utils.author_yaml import (
     author_frontmatter_value,
     author_yaml_field,
@@ -499,7 +504,7 @@ def add_shared_link(
     Returns:
         dict with keys:
             - success: bool
-            - action: str | None ("created", "updated", or "skipped")
+            - action: str | None ("created", "updated", "skipped", or "deferred")
             - error: str | None
             - file_path: str | None (relative path within vault)
             - vault_name: str | None (name of the Obsidian vault)
@@ -554,79 +559,83 @@ def add_shared_link(
             formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
         note_stem = filename.removesuffix(".md")
 
-        # Check if file already exists
-        if _file_exists(dbx, file_path):
+        defer_payload = {
+            "url": url,
+            "title": title,
+            "journal_date": formatted_local_date,
+            "extra_frontmatter": extra_frontmatter,
+        }
+
+        try:
+            note = download_text_with_rev(dbx, file_path)
+        except FileNotFoundError:
+            note = None
+
+        if note is not None:
             logger.info("File already exists, checking journal date: %s", file_path)
 
-            # Download existing file
-            existing_content = _get_file_content(dbx, file_path)
-            if existing_content is None:
-                logger.warning("Could not download existing file, skipping: %s", file_path)
-                result["success"] = True
-                result["action"] = "skipped"
-                return result
+            def apply_existing(content: str):
+                frontmatter, body = _extract_frontmatter(content)
+                today_link = f"[[{formatted_local_date}]]"
+                existing_journals = frontmatter.get("Journal", [])
+                if not isinstance(existing_journals, list):
+                    existing_journals = [existing_journals] if existing_journals else []
 
-            # Parse frontmatter and body
-            frontmatter, body = _extract_frontmatter(existing_content)
+                if today_link in existing_journals:
+                    logger.info("Today's date already linked, skipping: %s", file_path)
+                    return None, "skipped"
 
-            # Check if today's date is already linked
-            today_link = f"[[{formatted_local_date}]]"
-            existing_journals = frontmatter.get("Journal", [])
-            if not isinstance(existing_journals, list):
-                existing_journals = [existing_journals] if existing_journals else []
+                frontmatter = _update_journal_date(frontmatter, formatted_local_date)
 
-            if today_link in existing_journals:
-                logger.info("Today's date already linked, skipping: %s", file_path)
-                result["success"] = True
-                result["action"] = "skipped"
-                return result
+                existing_people = frontmatter.get("People", [])
+                if not isinstance(existing_people, list):
+                    existing_people = [existing_people] if existing_people else []
 
-            # Add today's date to journal
-            frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+                if not existing_people:
+                    people = _extract_people_from_article(extracted_title, author, body_text)
+                    if people:
+                        frontmatter["People"] = [
+                            f"[[{_sanitize_obsidian_link(name)}]]" for name in people
+                        ]
+                        logger.info("Backfilled People field for existing file: %s", file_path)
 
-            # NEW: Backfill missing fields (People, author) if empty
-            backfill_performed = False
+                existing_author = frontmatter.get("author", "")
+                prepared_author = _prepare_author_frontmatter_value(author)
+                if prepared_author and _should_write_author(existing_author, prepared_author):
+                    frontmatter["author"] = prepared_author
+                    logger.info("Backfilled author field for existing file: %s", file_path)
 
-            # Check if People is missing or empty
-            existing_people = frontmatter.get("People", [])
-            if not isinstance(existing_people, list):
-                existing_people = [existing_people] if existing_people else []
+                if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+                    logger.info("Backfilled extra frontmatter for existing file: %s", file_path)
 
-            if not existing_people:
-                # Extract people from web content we already have
-                people = _extract_people_from_article(extracted_title, author, body_text)
-                if people:
-                    frontmatter["People"] = [f"[[{_sanitize_obsidian_link(name)}]]" for name in people]
-                    backfill_performed = True
-                    logger.info("Backfilled People field for existing file: %s", file_path)
+                frontmatter["modified time"] = now_utc.isoformat()
+                return _rebuild_markdown(frontmatter, body), "updated"
 
-            # Check if author is missing/empty, or the same name as plain text (upgrade to wikilink)
-            existing_author = frontmatter.get("author", "")
-            prepared_author = _prepare_author_frontmatter_value(author)
-            if prepared_author and _should_write_author(existing_author, prepared_author):
-                frontmatter["author"] = prepared_author
-                backfill_performed = True
-                logger.info("Backfilled author field for existing file: %s", file_path)
-
-            if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
-                backfill_performed = True
-                logger.info("Backfilled extra frontmatter for existing file: %s", file_path)
-
-            # Also update modified_time
-            frontmatter["modified time"] = now_utc.isoformat()
-
-            # Rebuild and upload
-            updated_content = _rebuild_markdown(frontmatter, body)
-            dbx.files_upload(
-                updated_content.encode('utf-8'),
+            status, action, _updated = update_with_retry(
+                dbx,
                 file_path,
-                mode=dropbox.files.WriteMode.overwrite
+                apply_existing,
+                downloaded=note,
+                defer={
+                    "source": "share_link",
+                    "kind": "kh_update",
+                    "payload_ref": url,
+                    "target": file_path,
+                    "payload": defer_payload,
+                },
             )
-
-            logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+            if status == "error":
+                result["error"] = f"No Dropbox rev on download for {file_path}"
+                return result
+            if status == "deferred":
+                result["success"] = True
+                result["action"] = "deferred"
+                return result
+            if status == "updated":
+                logger.info("Updated existing file with new journal date: %s", file_path)
+                append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
-            result["action"] = "updated"
+            result["action"] = action or "skipped"
             return result
 
         # Build body section
@@ -678,12 +687,22 @@ Tags:
 {body_section}
 """
 
-        # Upload to Dropbox
-        dbx.files_upload(
-            markdown_content.encode('utf-8'),
+        created = create_or_defer(
+            dbx,
             file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            markdown_content,
+            defer={
+                "source": "share_link",
+                "kind": "kh_create",
+                "payload_ref": url,
+                "target": file_path,
+                "payload": defer_payload,
+            },
         )
+        if not created:
+            result["success"] = True
+            result["action"] = "deferred"
+            return result
 
         logger.info("Created shared link file: %s", file_path)
         append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)

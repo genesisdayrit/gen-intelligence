@@ -9,6 +9,8 @@ import redis
 import requests
 from dotenv import load_dotenv
 
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
+
 load_dotenv()
 
 # Redis configuration
@@ -119,53 +121,48 @@ def update_telegram_log(message_id: int, new_text: str) -> bool:
     journal_folder = f"{daily_folder}/_Journal"
     file_path = _get_today_journal_path(journal_folder)
 
-    try:
-        content = _get_journal_content(dbx, file_path)
-    except FileNotFoundError:
-        # No journal file for today
-        return False
+    def apply_update(content: str):
+        if TELEGRAM_LOGS_HEADER not in content:
+            return None, False
 
-    # Check if Telegram section exists
-    if TELEGRAM_LOGS_HEADER not in content:
-        return False
+        lines = content.split('\n')
+        updated_lines = []
+        entry_updated = False
+        in_telegram_section = False
+        timestamp_pattern = re.compile(rf'^\[{re.escape(timestamp)}\]')
 
-    # Find and update the line with matching timestamp
-    lines = content.split('\n')
-    updated_lines = []
-    entry_updated = False
-    in_telegram_section = False
-
-    # Pattern to match the timestamp at the start of a log entry
-    timestamp_pattern = re.compile(rf'^\[{re.escape(timestamp)}\]')
-
-    for line in lines:
-        if line.strip() == TELEGRAM_LOGS_HEADER:
-            in_telegram_section = True
-            updated_lines.append(line)
-            continue
-
-        if in_telegram_section:
-            # Check if this line has the matching timestamp
-            if timestamp_pattern.match(line) and not entry_updated:
-                # Replace with new content, preserving timestamp
-                updated_lines.append(f"[{timestamp}] {new_text}")
-                entry_updated = True
+        for line in lines:
+            if line.strip() == TELEGRAM_LOGS_HEADER:
+                in_telegram_section = True
+                updated_lines.append(line)
                 continue
-            # Check if we've exited the section (hit another header)
-            if line.startswith('#') or line.strip() == '---':
-                in_telegram_section = False
 
-        updated_lines.append(line)
+            if in_telegram_section:
+                if timestamp_pattern.match(line) and not entry_updated:
+                    updated_lines.append(f"[{timestamp}] {new_text}")
+                    entry_updated = True
+                    continue
+                if line.startswith('#') or line.strip() == '---':
+                    in_telegram_section = False
 
-    if not entry_updated:
-        return False
+            updated_lines.append(line)
 
-    updated_content = '\n'.join(updated_lines)
+        if not entry_updated:
+            return None, False
+        return '\n'.join(updated_lines), True
 
-    dbx.files_upload(
-        updated_content.encode('utf-8'),
+    status, updated, _content = update_with_retry(
+        dbx,
         file_path,
-        mode=dropbox.files.WriteMode.overwrite
+        apply_update,
+        defer={
+            "source": "telegram",
+            "kind": "log_update",
+            "payload_ref": str(message_id),
+            "target": file_path,
+            "payload": {"message_id": message_id, "new_text": new_text},
+        },
     )
-
-    return True
+    if status in {"missing", "error", "skipped"}:
+        return False
+    return status in {"updated", "deferred"} and bool(updated)

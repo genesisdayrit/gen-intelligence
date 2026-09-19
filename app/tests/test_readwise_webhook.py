@@ -1254,6 +1254,35 @@ def test_readwise_journal_rev_mismatch_defers_without_overwrite():
         assert not call.kwargs["mode"].is_overwrite()
 
 
+def test_readwise_journal_rev_mismatch_enqueues_after_immediate_retry():
+    """After the one-shot rematch still defers, enqueue for hourly reconcile."""
+    clear_book_cache()
+    stale_rev = "fedcba9876543210"
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download_with_rev(
+        SAMPLE_JOURNAL, rev=stale_rev
+    )
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    now = LA.localize(datetime(2026, 8, 22, 2, 30))
+    payload = _highlight_payload()
+
+    with (
+        _journal_folder_patches(mock_dbx),
+        patch(
+            "services.obsidian.utils.dropbox_rev_safe.record_deferred_write"
+        ) as mock_enqueue,
+    ):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["action"] == "deferred"
+    assert mock_enqueue.called
+    kwargs = mock_enqueue.call_args.kwargs
+    assert kwargs["source"] == "readwise"
+    assert kwargs["kind"] == "journal_highlight"
+    assert str(kwargs["payload_ref"]) == str(payload["id"])
+    assert kwargs["payload"]["id"] == payload["id"]
+
+
 def test_readwise_journal_rev_conflict_redownloads_and_merges():
     """On mismatch, re-download the latest journal and append into that content."""
     clear_book_cache()

@@ -108,6 +108,26 @@ def test_rev_conflict_does_not_overwrite_and_returns_deferred():
         assert not call.kwargs["mode"].is_overwrite()
 
 
+def test_rev_conflict_enqueues_after_immediate_retry_still_defers():
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download(
+        NOTE_WITHOUT_JOURNAL, rev=REV_STALE
+    )
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+
+    with patch(f"{MODULE}.record_deferred_write") as mock_enqueue:
+        status = mod._update_journal_property(mock_dbx, NOTE_PATH, max_attempts=2)
+
+    assert status == mod.STATUS_DEFERRED
+    assert mock_dbx.files_upload.call_count == 2
+    mock_enqueue.assert_called_once_with(
+        source="folder_journal",
+        kind="journal_yaml",
+        payload_ref=NOTE_PATH,
+        target=NOTE_PATH,
+    )
+
+
 def test_noop_when_journal_already_correct_skips_upload():
     mock_dbx = MagicMock()
     mock_dbx.files_download.return_value = _download(

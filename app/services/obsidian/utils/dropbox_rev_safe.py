@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Callable, Literal
 
 import dropbox
 
@@ -144,3 +144,177 @@ def upload_new_file(
         rev=getattr(metadata, "rev", "") or "",
         metadata=metadata,
     )
+
+
+def record_deferred_write(
+    *,
+    source: str,
+    kind: str,
+    payload_ref: str,
+    target: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Enqueue a hub write after the immediate rev-safe retry still deferred.
+
+    Never raises — a Redis outage must not fail the live webhook / job.
+    Dedup key is ``source:kind:payload_ref:target``.
+    """
+    try:
+        from services.obsidian.reconcile.queue import enqueue_deferred
+
+        enqueue_deferred(
+            source=source,
+            kind=kind,
+            payload_ref=payload_ref,
+            target=target,
+            payload=payload,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue deferred Obsidian write source=%s kind=%s ref=%s target=%s",
+            source,
+            kind,
+            payload_ref,
+            target,
+        )
+
+
+@dataclass(frozen=True)
+class DownloadedNote:
+    """Text note plus the Dropbox rev captured at download."""
+
+    path: str
+    content: str
+    rev: str
+
+
+def download_text_with_rev(dbx: dropbox.Dropbox, file_path: str) -> DownloadedNote:
+    """Download a note and capture the Dropbox rev for a later update() write."""
+    try:
+        metadata, response = dbx.files_download(file_path)
+    except dropbox.exceptions.ApiError as exc:
+        if isinstance(exc.error, dropbox.files.DownloadError):
+            raise FileNotFoundError(f"File not found: {file_path}") from exc
+        raise
+    content = response.content.decode("utf-8")
+    rev = getattr(metadata, "rev", None) if metadata is not None else None
+    if not isinstance(rev, str) or not rev:
+        raise ValueError(f"No Dropbox rev on download for {file_path}")
+    path_display = (
+        getattr(metadata, "path_display", None) if metadata is not None else None
+    )
+    return DownloadedNote(path=path_display or file_path, content=content, rev=rev)
+
+
+def as_defer_specs(file_path: str, defer: object | None, *, kind: str) -> list[dict[str, Any]]:
+    """Normalize a defer spec, list of specs, or path-only default."""
+    if defer is None:
+        return [
+            {
+                "source": "dropbox",
+                "kind": kind,
+                "payload_ref": file_path,
+                "target": file_path,
+            }
+        ]
+    if isinstance(defer, list):
+        return [spec for spec in defer if isinstance(spec, dict)]
+    if isinstance(defer, dict):
+        return [defer]
+    return []
+
+
+def enqueue_after_defer(file_path: str, defer: object | None, *, kind: str) -> None:
+    """Enqueue after the immediate rematch still deferred. Never raises."""
+    for spec in as_defer_specs(file_path, defer, kind=kind):
+        record_deferred_write(
+            source=str(spec.get("source") or "dropbox"),
+            kind=str(spec.get("kind") or kind),
+            payload_ref=str(spec.get("payload_ref") or file_path),
+            target=str(spec.get("target") or file_path),
+            payload=spec.get("payload") if isinstance(spec.get("payload"), dict) else None,
+        )
+
+
+def update_with_retry(
+    dbx: dropbox.Dropbox,
+    file_path: str,
+    apply_fn: Callable[[str], tuple[str | None, object]],
+    *,
+    downloaded: DownloadedNote | None = None,
+    max_attempts: int = 2,
+    defer: object | None = None,
+) -> tuple[str, object, str | None]:
+    """Download, merge, and upload only when the downloaded rev still matches.
+
+    ``apply_fn(content)`` returns ``(updated_or_none, meta)``. ``None`` means
+    nothing to write. On rev mismatch, re-downloads and re-applies the merge
+    instead of overwriting. After the immediate retry still defers, enqueues
+    for the hourly reconcile.
+
+    Returns ``(status, meta, content)`` where status is ``updated``,
+    ``skipped``, ``deferred``, ``missing``, or ``error``.
+    """
+    last_meta: object = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if downloaded is not None and attempt == 1:
+                note = downloaded
+            else:
+                note = download_text_with_rev(dbx, file_path)
+        except FileNotFoundError:
+            return "missing", last_meta, None
+        except ValueError:
+            logger.error(
+                "No Dropbox rev on download for %s; skipping upload to avoid overwrite.",
+                file_path,
+            )
+            return "error", last_meta, None
+
+        updated, last_meta = apply_fn(note.content)
+        if updated is None or updated == note.content:
+            return "skipped", last_meta, note.content
+
+        result = upload_if_rev_matches(
+            dbx,
+            note.path,
+            updated.encode("utf-8"),
+            note.rev,
+        )
+        if result.status == "updated":
+            return "updated", last_meta, updated
+        if attempt < max_attempts:
+            logger.info(
+                "Rev conflict on %s; re-downloading to merge into latest content.",
+                file_path,
+            )
+            continue
+        logger.warning(
+            "Deferring write for %s; cloud file left unchanged "
+            "(no overwrite / no conflicted copy).",
+            file_path,
+        )
+        enqueue_after_defer(file_path, defer, kind="rev_safe_update")
+        return "deferred", last_meta, note.content
+    enqueue_after_defer(file_path, defer, kind="rev_safe_update")
+    return "deferred", last_meta, None
+
+
+def create_or_defer(
+    dbx: dropbox.Dropbox,
+    file_path: str,
+    content: str,
+    *,
+    defer: object | None = None,
+) -> bool:
+    """Create a new note without overwrite. False if the path already exists."""
+    result = upload_new_file(dbx, file_path, content.encode("utf-8"))
+    if result.status == "deferred":
+        logger.warning(
+            "Deferring create for %s; cloud file left unchanged "
+            "(no overwrite / no conflicted copy).",
+            file_path,
+        )
+        enqueue_after_defer(file_path, defer, kind="rev_safe_create")
+        return False
+    return True

@@ -129,3 +129,92 @@ def test_adjacent_days_cross_month_and_year_boundaries():
     assert tomorrow["Next Day"] == ["[[Jan 2, 2027]]"]
     assert today["Previous Day"] == ["[[Dec 30, 2026]]"]
     assert today["Next Day"] == ["[[Jan 1, 2027]]"]
+
+
+def test_update_daily_journal_properties_uses_update_mode_not_overwrite():
+    from datetime import datetime as dt
+
+    import dropbox
+    from unittest.mock import MagicMock
+
+    entry = dropbox.files.FileMetadata(
+        name="Sep 17, 2026.md",
+        id="id:journal",
+        client_modified=dt(2026, 9, 16, 18, 10),
+        server_modified=dt(2026, 9, 16, 18, 10),
+        rev="aaaaaaaaaaaaaaaa",
+        size=32,
+        path_lower="/test/vault/_daily/_journal/sep 17, 2026.md",
+        path_display="/test/vault/_Daily/_Journal/Sep 17, 2026.md",
+    )
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = entry.path_display
+    response = MagicMock()
+    response.content = (
+        "---\nDay of Week: null\nDate: null\nPrevious Day: null\nNext Day: null\n---\n\n# Journal\n"
+    ).encode("utf-8")
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = (metadata, response)
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._find_folder_in_path", side_effect=["/test/vault/_Daily", "/test/vault/_Daily/_Journal"]),
+        patch(f"{MODULE}._list_all_entries", return_value=[entry]),
+        patch(f"{MODULE}._get_dynamic_mappings", return_value={}),
+        patch(f"{MODULE}._get_target_day", side_effect=_fake_target_day),
+        patch(f"{MODULE}._get_target_filename", return_value="Sep 17, 2026.md"),
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    mock_dbx.files_upload.assert_called_once()
+    kwargs = mock_dbx.files_upload.call_args.kwargs
+    assert kwargs["mode"].is_update()
+    assert kwargs["mode"].get_update() == "aaaaaaaaaaaaaaaa"
+    assert not kwargs["mode"].is_overwrite()
+    assert kwargs["autorename"] is False
+
+
+def test_update_daily_journal_properties_rev_conflict_enqueues():
+    from datetime import datetime as dt
+
+    import dropbox
+    from unittest.mock import MagicMock
+
+    entry = dropbox.files.FileMetadata(
+        name="Sep 17, 2026.md",
+        id="id:journal",
+        client_modified=dt(2026, 9, 16, 18, 10),
+        server_modified=dt(2026, 9, 16, 18, 10),
+        rev="aaaaaaaaaaaaaaaa",
+        size=32,
+        path_lower="/test/vault/_daily/_journal/sep 17, 2026.md",
+        path_display="/test/vault/_Daily/_Journal/Sep 17, 2026.md",
+    )
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = entry.path_display
+    response = MagicMock()
+    response.content = "---\nDate: null\n---\n\n# Journal\n".encode("utf-8")
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = (metadata, response)
+    reason = dropbox.files.WriteError.conflict(dropbox.files.WriteConflictError.file)
+    failed = dropbox.files.UploadWriteFailed(reason=reason, upload_session_id="sess")
+    mock_dbx.files_upload.side_effect = dropbox.exceptions.ApiError(
+        "req", dropbox.files.UploadError.path(failed), "", ""
+    )
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._find_folder_in_path", side_effect=["/test/vault/_Daily", "/test/vault/_Daily/_Journal"]),
+        patch(f"{MODULE}._list_all_entries", return_value=[entry]),
+        patch(f"{MODULE}._get_dynamic_mappings", return_value={}),
+        patch(f"{MODULE}._get_target_day", side_effect=_fake_target_day),
+        patch(f"{MODULE}._get_target_filename", return_value="Sep 17, 2026.md"),
+        patch("services.obsidian.utils.dropbox_rev_safe.record_deferred_write") as mock_enqueue,
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    assert mock_dbx.files_upload.call_count == 2
+    mock_enqueue.assert_called()
+    assert mock_enqueue.call_args.kwargs["source"] == "journal_properties"

@@ -22,6 +22,7 @@ from main import app
 from scheduler import (
     DAILY_CREATION_JOB_IDS,
     OBSIDIAN_CRON_MIGRATION_JOB_IDS,
+    RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID,
     SCHEDULED_JOBS,
     SPOTIFY_SCHEDULED_JOB_IDS,
     run_job_now,
@@ -376,6 +377,20 @@ def test_spotify_music_of_the_day_runs_daily_at_3am_system_timezone(client):
     assert "*/15" not in str(job.trigger)
 
 
+def test_reconcile_missed_obsidian_writes_job_in_registry():
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID in job_ids
+    assert RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID == "reconcile_missed_obsidian_writes"
+
+
+def test_reconcile_missed_obsidian_writes_module_is_importable():
+    from scripts.obsidian.workflows.reconcile_missed_writes import reconcile_missed_writes
+    from services.obsidian.reconcile.runner import reconcile_missed_obsidian_writes
+
+    assert callable(reconcile_missed_writes)
+    assert callable(reconcile_missed_obsidian_writes)
+
+
 def test_update_modified_files_today_runs_every_15_minutes(client):
     """Folder-journal relations run */15, not the live-host */10."""
     job = scheduler.get_job("update_modified_files_today")
@@ -581,6 +596,55 @@ def test_trigger_other_job_does_not_forward_use_today(client):
         )
     assert response.status_code == 200
     mock_run.assert_called_once_with("send_arxiv_email")
+
+
+def test_reconcile_missed_obsidian_writes_runs_hourly_in_system_timezone(client):
+    """Top of every hour in SYSTEM_TZ (``0 * * * *``)."""
+    job = scheduler.get_job(RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID)
+    assert job is not None
+    trigger_str = str(job.trigger).lower()
+    assert "minute='0'" in trigger_str, trigger_str
+    # APScheduler omits wildcard fields, so every-hour is ``cron[minute='0']``.
+    assert "hour=" not in trigger_str, trigger_str
+    hour_field = next(
+        (field for field in job.trigger.fields if field.name == "hour"),
+        None,
+    )
+    assert hour_field is not None
+    assert str(hour_field) == "*"
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_list_jobs_contains_reconcile_missed_obsidian_writes(client):
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID in job_ids
+
+
+def test_trigger_reconcile_job_defaults_since_none(client):
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            f"/scheduler/jobs/{RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID}/run"
+        )
+    assert response.status_code == 200
+    assert response.json()["job_id"] == RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID
+    assert response.json()["since"] is None
+    mock_run.assert_called_once_with(RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID, since=None)
+
+
+def test_trigger_reconcile_job_passes_since_override(client):
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            f"/scheduler/jobs/{RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID}/run",
+            params={"since": "2026-09-19T12:00:00Z"},
+        )
+    assert response.status_code == 200
+    assert response.json()["since"] == "2026-09-19T12:00:00Z"
+    mock_run.assert_called_once_with(
+        RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID,
+        since="2026-09-19T12:00:00Z",
+    )
 
 
 def test_trigger_migrated_obsidian_job(client):

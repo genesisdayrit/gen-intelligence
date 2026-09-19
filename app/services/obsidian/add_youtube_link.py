@@ -6,7 +6,6 @@ import os
 import re
 from datetime import datetime, timezone
 
-import dropbox
 import httpx
 import pytz
 from openai import OpenAI
@@ -23,7 +22,6 @@ from .add_shared_link import (
     _find_knowledge_hub_path,
     _sanitize_filename,
     _file_exists,
-    _get_file_content,
     _extract_frontmatter,
     _update_journal_date,
     _rebuild_markdown,
@@ -31,6 +29,7 @@ from .add_shared_link import (
     _extra_frontmatter_yaml,
 )
 from .utils.date_helpers import get_effective_date
+from .utils.dropbox_rev_safe import create_or_defer, update_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -622,7 +621,7 @@ def add_youtube_link(
     Returns:
         dict with keys:
             - success: bool
-            - action: str | None ("created", "updated", or "skipped")
+            - action: str | None ("created", "updated", "skipped", or "deferred")
             - error: str | None
             - title: str | None
             - stem: str | None (Obsidian filename / wikilink stem)
@@ -728,95 +727,94 @@ def add_youtube_link(
         result["stem"] = note_stem
         result["file_path"] = file_path
 
+        defer_payload = {
+            "url": url,
+            "journal_date": formatted_local_date,
+            "extra_frontmatter": extra_frontmatter,
+            "note_title": note_title,
+            "note_author": note_author,
+        }
+
         # Check if file already exists
         if existing_content is not None or _file_exists(dbx, file_path):
             logger.info("File already exists, checking journal date: %s", file_path)
 
-            # Download existing file when identity lookup did not already have it
-            if existing_content is None:
-                existing_content = _get_file_content(dbx, file_path)
-            if existing_content is None:
+            def apply_existing(content: str):
+                frontmatter, body = _extract_frontmatter(content)
+                today_link = f"[[{formatted_local_date}]]"
+                existing_journals = frontmatter.get("Journal", [])
+                if not isinstance(existing_journals, list):
+                    existing_journals = [existing_journals] if existing_journals else []
+
+                if today_link in existing_journals:
+                    extras_changed = _merge_extra_frontmatter(frontmatter, extra_frontmatter)
+                    if extras_changed:
+                        frontmatter["modified time"] = now_utc.isoformat()
+                        logger.info(
+                            "Filled extra frontmatter on existing YouTube file: %s",
+                            file_path,
+                        )
+                        return _rebuild_markdown(frontmatter, body), "skipped"
+                    logger.info("Today's date already linked, skipping: %s", file_path)
+                    return None, "skipped"
+
+                frontmatter = _update_journal_date(frontmatter, formatted_local_date)
+
+                existing_people = frontmatter.get("People", [])
+                if not isinstance(existing_people, list):
+                    existing_people = [existing_people] if existing_people else []
+
+                if not existing_people and people:
+                    frontmatter["People"] = [
+                        f"[[{_sanitize_obsidian_link(name)}]]" for name in people
+                    ]
+                    logger.info("Backfilled People field for existing file: %s", file_path)
+
+                existing_channel = frontmatter.get("Channel", "")
+                channel_name = metadata.get("author_name")
+                if not existing_channel and channel_name and not _is_channel_url(url):
+                    safe_channel = _sanitize_obsidian_link(channel_name)
+                    frontmatter["Channel"] = f"[[{safe_channel}]]"
+                    logger.info("Backfilled Channel field for existing file: %s", file_path)
+
+                if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+                    logger.info(
+                        "Backfilled extra frontmatter for existing YouTube file: %s",
+                        file_path,
+                    )
+
+                frontmatter["modified time"] = now_utc.isoformat()
+                return _rebuild_markdown(frontmatter, body), "updated"
+
+            status, action, _updated = update_with_retry(
+                dbx,
+                file_path,
+                apply_existing,
+                defer={
+                    "source": "youtube",
+                    "kind": "kh_update",
+                    "payload_ref": url,
+                    "target": file_path,
+                    "payload": defer_payload,
+                },
+            )
+            if status == "missing":
                 logger.warning("Could not download existing file, skipping: %s", file_path)
                 result["success"] = True
                 result["action"] = "skipped"
                 return result
-
-            # Parse frontmatter and body
-            frontmatter, body = _extract_frontmatter(existing_content)
-
-            # Check if today's date is already linked
-            today_link = f"[[{formatted_local_date}]]"
-            existing_journals = frontmatter.get("Journal", [])
-            if not isinstance(existing_journals, list):
-                existing_journals = [existing_journals] if existing_journals else []
-
-            if today_link in existing_journals:
-                # Same-day skip still fill-if-empty extras (Reader webhook
-                # after iOS share). Do not append buffet again and do not
-                # create a second file when the stem string drifted.
-                extras_changed = _merge_extra_frontmatter(frontmatter, extra_frontmatter)
-                if extras_changed:
-                    frontmatter["modified time"] = now_utc.isoformat()
-                    updated_content = _rebuild_markdown(frontmatter, body)
-                    dbx.files_upload(
-                        updated_content.encode('utf-8'),
-                        file_path,
-                        mode=dropbox.files.WriteMode.overwrite
-                    )
-                    logger.info(
-                        "Filled extra frontmatter on existing YouTube file: %s",
-                        file_path,
-                    )
-                else:
-                    logger.info("Today's date already linked, skipping: %s", file_path)
-                result["success"] = True
-                result["action"] = "skipped"
+            if status == "error":
+                result["error"] = f"No Dropbox rev on download for {file_path}"
                 return result
-
-            # Add today's date to journal
-            frontmatter = _update_journal_date(frontmatter, formatted_local_date)
-
-            # NEW: Backfill missing fields (People, Channel) if empty
-            backfill_performed = False
-
-            # Check if People is missing or empty
-            existing_people = frontmatter.get("People", [])
-            if not isinstance(existing_people, list):
-                existing_people = [existing_people] if existing_people else []
-
-            if not existing_people and people:
-                frontmatter["People"] = [f"[[{_sanitize_obsidian_link(name)}]]" for name in people]
-                backfill_performed = True
-                logger.info("Backfilled People field for existing file: %s", file_path)
-
-            # Check if Channel is missing or empty (only for videos/playlists, not channels)
-            existing_channel = frontmatter.get("Channel", "")
-            channel_name = metadata.get("author_name")
-            if not existing_channel and channel_name and not _is_channel_url(url):
-                safe_channel = _sanitize_obsidian_link(channel_name)
-                frontmatter["Channel"] = f"[[{safe_channel}]]"
-                backfill_performed = True
-                logger.info("Backfilled Channel field for existing file: %s", file_path)
-
-            if _merge_extra_frontmatter(frontmatter, extra_frontmatter):
-                backfill_performed = True
-                logger.info("Backfilled extra frontmatter for existing YouTube file: %s", file_path)
-
-            # Also update modified_time
-            frontmatter["modified time"] = now_utc.isoformat()
-
-            # Rebuild and upload
-            updated_content = _rebuild_markdown(frontmatter, body)
-            dbx.files_upload(
-                updated_content.encode('utf-8'),
-                file_path,
-                mode=dropbox.files.WriteMode.overwrite
-            )
-
-            logger.info("Updated existing file with new journal date: %s", file_path)
-            append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+            if status == "deferred":
+                result["success"] = True
+                result["action"] = "deferred"
+                return result
+            if status == "updated" and action == "updated":
+                logger.info("Updated existing file with new journal date: %s", file_path)
+                append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
             result["success"] = True
-            result["action"] = "updated"
+            result["action"] = action or "skipped"
             return result
 
         # Build description section
@@ -862,12 +860,22 @@ Tags:
 {description_section}
 {summary_section}"""
 
-        # Upload to Dropbox
-        dbx.files_upload(
-            markdown_content.encode('utf-8'),
+        created = create_or_defer(
+            dbx,
             file_path,
-            mode=dropbox.files.WriteMode.overwrite
+            markdown_content,
+            defer={
+                "source": "youtube",
+                "kind": "kh_create",
+                "payload_ref": url,
+                "target": file_path,
+                "payload": defer_payload,
+            },
         )
+        if not created:
+            result["success"] = True
+            result["action"] = "deferred"
+            return result
 
         logger.info("Created YouTube link file: %s", file_path)
         append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
@@ -901,28 +909,41 @@ def apply_youtube_extra_frontmatter(file_path: str, extra_frontmatter: dict | No
 
     try:
         dbx = _get_dropbox_client()
-        existing_content = _get_file_content(dbx, file_path)
-        if existing_content is None:
+
+        def apply_extras(content: str):
+            frontmatter, body = _extract_frontmatter(content)
+            if not _merge_extra_frontmatter(frontmatter, extra_frontmatter):
+                return None, "skipped"
+            frontmatter["modified time"] = datetime.now(timezone.utc).isoformat()
+            return _rebuild_markdown(frontmatter, body), "updated"
+
+        status, action, _updated = update_with_retry(
+            dbx,
+            file_path,
+            apply_extras,
+            defer={
+                "source": "youtube",
+                "kind": "kh_extra",
+                "payload_ref": file_path,
+                "target": file_path,
+                "payload": {"file_path": file_path, "extra_frontmatter": extra_frontmatter},
+            },
+        )
+        if status == "missing":
             result["error"] = f"Could not download existing file: {file_path}"
             logger.error(result["error"])
             return result
-
-        frontmatter, body = _extract_frontmatter(existing_content)
-        if not _merge_extra_frontmatter(frontmatter, extra_frontmatter):
-            result["success"] = True
-            result["action"] = "skipped"
+        if status == "error":
+            result["error"] = f"No Dropbox rev on download for {file_path}"
             return result
-
-        frontmatter["modified time"] = datetime.now(timezone.utc).isoformat()
-        updated_content = _rebuild_markdown(frontmatter, body)
-        dbx.files_upload(
-            updated_content.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
-        logger.info("Filled extra frontmatter on YouTube KH note: %s", file_path)
+        if status == "deferred":
+            result["success"] = True
+            result["action"] = "deferred"
+            return result
+        if status == "updated":
+            logger.info("Filled extra frontmatter on YouTube KH note: %s", file_path)
         result["success"] = True
-        result["action"] = "updated"
+        result["action"] = action or "skipped"
         return result
     except Exception as exc:
         result["error"] = str(exc)

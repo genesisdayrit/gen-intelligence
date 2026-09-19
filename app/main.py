@@ -1247,7 +1247,10 @@ async def trigger_job(
     cadence; true = today's files for morning recovery).
     ``spotify_music_of_the_day`` accepts optional ``date`` (``YYYY-MM-DD``
     journal day; omit to write the previous calendar day in
-    ``SYSTEM_TZ``). Other jobs ignore these query params.
+    ``SYSTEM_TZ``). ``reconcile_missed_obsidian_writes`` accepts optional
+    ``since`` (UTC ISO watermark override; omit to use Redis
+    ``obsidian_reconcile:last_reconcile_check_at``, or now−1h on first
+    run only). Other jobs ignore these query params.
     """
     from scheduler import DAILY_CREATION_JOB_IDS, run_job_now
 
@@ -1273,6 +1276,8 @@ async def trigger_job(
         kwargs = {"use_today": use_today}
     elif job_id == "spotify_music_of_the_day":
         kwargs = {"date": date}
+    elif job_id == "reconcile_missed_obsidian_writes":
+        kwargs = {"since": since}
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:

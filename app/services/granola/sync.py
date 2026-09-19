@@ -12,7 +12,6 @@ import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 
-import dropbox
 from dotenv import load_dotenv
 
 from config import SYSTEM_TZ, redis_client
@@ -25,13 +24,13 @@ from services.granola.client import (
 from services.obsidian.add_readwise_buffet import (
     _buffet_bullet_lines,
     _get_dropbox_client,
-    _get_file_content,
     _nonempty,
     _resolve_journal_folder,
     journal_filename,
     parse_highlight_datetime,
 )
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 
 load_dotenv()
 
@@ -535,6 +534,7 @@ def _empty_write_summary(selected: int = 0) -> dict:
         "skipped": 0,
         "skipped_missing_journal": 0,
         "files_written": 0,
+        "deferred": 0,
         "errors": [],
         "paths": [],
     }
@@ -568,41 +568,61 @@ def write_notes_by_journal(
     for file_path, group in by_path.items():
         summary["paths"].append(file_path)
         try:
-            try:
-                content = _get_file_content(dbx, file_path)
-            except FileNotFoundError:
+            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
+
+            def apply(content: str) -> tuple[str | None, dict]:
+                original = content
+                local_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
+                for note in group:
+                    block = format_granola_block(note)
+                    if not block:
+                        continue
+                    content, action = insert_transcript_notes_bullet(
+                        content,
+                        block,
+                        granola_dedup_keys(note),
+                        replace_existing=replace_existing,
+                    )
+                    if action == "replaced" and not replace_existing:
+                        action = "inserted"
+                    if action in local_counts:
+                        local_counts[action] += 1
+                file_counts.update(local_counts)
+                if content == original:
+                    return None, local_counts
+                return content, local_counts
+
+            defer = [
+                {
+                    "source": "granola",
+                    "kind": "journal_note",
+                    "payload_ref": str(note_id(note) or file_path),
+                    "target": file_path,
+                    "payload": note,
+                }
+                for note in group
+            ]
+            status, _counts, _updated = update_with_retry(
+                dbx, file_path, apply, defer=defer
+            )
+            if status == "missing":
                 logger.warning(
                     "Granola sync skipped; journal not found (will not create or write today): %s",
                     file_path,
                 )
                 summary["skipped_missing_journal"] += len(group)
                 continue
-
-            original = content
-            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
-            for note in group:
-                block = format_granola_block(note)
-                if not block:
-                    continue
-                content, action = insert_transcript_notes_bullet(
-                    content,
-                    block,
-                    granola_dedup_keys(note),
-                    replace_existing=replace_existing,
-                )
-                if action == "replaced" and not replace_existing:
-                    # Title-only upgrade on the incremental/backfill path.
-                    action = "inserted"
-                if action in file_counts:
-                    file_counts[action] += 1
-                    summary[action] += 1
-
-            if content != original:
-                dbx.files_upload(
-                    content.encode("utf-8"),
+            if status == "error":
+                raise ValueError(f"No Dropbox rev on download for {file_path}")
+            if status == "deferred":
+                summary["deferred"] += 1
+                logger.warning(
+                    "Granola journal deferred path=%s (rev conflict; no overwrite)",
                     file_path,
-                    mode=dropbox.files.WriteMode.overwrite,
                 )
+            elif status == "updated":
+                for key in ("inserted", "replaced", "skipped"):
+                    summary[key] += file_counts[key]
                 summary["files_written"] += 1
                 logger.info(
                     "Granola sync wrote path=%s inserted=%s replaced=%s skipped=%s",
@@ -611,8 +631,11 @@ def write_notes_by_journal(
                     file_counts["replaced"],
                     file_counts["skipped"],
                 )
-            elif file_counts["skipped"]:
-                logger.info("Granola sync skipped (duplicate) path=%s", file_path)
+            else:
+                for key in ("inserted", "replaced", "skipped"):
+                    summary[key] += file_counts[key]
+                if file_counts["skipped"]:
+                    logger.info("Granola sync skipped (duplicate) path=%s", file_path)
         except Exception as exc:
             logger.exception("Granola sync failed for %s", file_path)
             if raise_errors:
@@ -634,6 +657,7 @@ def _empty_sync_summary(
         "skipped": 0,
         "skipped_missing_journal": 0,
         "files_written": 0,
+        "deferred": 0,
         "errors": [],
         "cursor": cursor,
         "updated_after": updated_after,
@@ -719,6 +743,7 @@ def run_granola_notes_sync(
             "skipped": result["skipped"],
             "skipped_missing_journal": result["skipped_missing_journal"],
             "files_written": result["files_written"],
+            "deferred": result.get("deferred", 0),
             "errors": result["errors"],
         }
     )

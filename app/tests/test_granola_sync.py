@@ -155,14 +155,17 @@ def _mock_dropbox(contents_by_path=None, missing_paths=None):
     def download(path):
         if path in missing_paths or path not in contents_by_path:
             raise FileNotFoundError(f"Journal not found: {path}")
+        metadata = MagicMock()
+        metadata.rev = "aaaaaaaaaaaaaaaa"
+        metadata.path_display = path
         response = MagicMock()
         response.content = contents_by_path[path].encode("utf-8")
-        return None, response
+        return metadata, response
 
-    def upload(data, path, mode=None):
+    def upload(data, path, mode=None, autorename=None):
         text = data.decode("utf-8")
         contents_by_path[path] = text
-        uploaded.append({"path": path, "content": text})
+        uploaded.append({"path": path, "content": text, "mode": mode, "autorename": autorename})
         return None
 
     mock_dbx.files_download.side_effect = download
@@ -1080,3 +1083,52 @@ def test_trigger_other_job_does_not_forward_granola_params():
         )
     assert response.status_code == 200
     mock_run.assert_called_once_with("send_arxiv_email")
+
+
+def _rev_conflict_api_error():
+    import dropbox
+
+    reason = dropbox.files.WriteError.conflict(dropbox.files.WriteConflictError.file)
+    failed = dropbox.files.UploadWriteFailed(reason=reason, upload_session_id="sess")
+    error = dropbox.files.UploadError.path(failed)
+    return dropbox.exceptions.ApiError("req", error, "", "")
+
+
+def test_granola_journal_write_uses_update_mode_not_overwrite():
+    sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
+    result, uploaded, _, _, _ = _run_sync(
+        [_list_page([_note()])],
+        contents_by_path={sep_path: SAMPLE_JOURNAL},
+        now=datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc),
+    )
+    assert result["files_written"] == 1
+    assert result["deferred"] == 0
+    mode = uploaded[0]["mode"]
+    assert mode.is_update()
+    assert mode.get_update() == "aaaaaaaaaaaaaaaa"
+    assert not mode.is_overwrite()
+    assert uploaded[0]["autorename"] is False
+
+
+def test_granola_rev_conflict_retries_once_then_enqueues():
+    sep_path = f"{JOURNAL_FOLDER}/Sep 5, 2026.md"
+    mock_dbx, _uploaded, _store = _mock_dropbox({sep_path: SAMPLE_JOURNAL})
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    note = _note(summary_markdown=DEFAULT_SUMMARY_MARKDOWN)
+
+    with (
+        patch("services.granola.sync._get_dropbox_client", return_value=mock_dbx),
+        patch("services.granola.sync._resolve_journal_folder", return_value=JOURNAL_FOLDER),
+        patch("services.obsidian.utils.dropbox_rev_safe.record_deferred_write") as mock_enqueue,
+    ):
+        result = write_notes_by_journal([note], now=datetime(2026, 9, 6, 18, 0, tzinfo=timezone.utc))
+
+    assert result["deferred"] == 1
+    assert result["files_written"] == 0
+    assert mock_dbx.files_upload.call_count == 2
+    for call in mock_dbx.files_upload.call_args_list:
+        assert call.kwargs["mode"].is_update()
+        assert not call.kwargs["mode"].is_overwrite()
+    mock_enqueue.assert_called()
+    assert mock_enqueue.call_args.kwargs["source"] == "granola"
+    assert mock_enqueue.call_args.kwargs["kind"] == "journal_note"

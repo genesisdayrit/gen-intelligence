@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.dropbox_rev_safe import (
     is_conflicted_copy_path,
+    record_deferred_write,
     upload_if_rev_matches,
 )
 
@@ -320,6 +321,12 @@ def _update_journal_property(
                     "Deferring Journal YAML for %s until a later sync; "
                     "cloud file left unchanged (no overwrite / no conflicted copy).",
                     file_path,
+                )
+                record_deferred_write(
+                    source="folder_journal",
+                    kind="journal_yaml",
+                    payload_ref=file_path,
+                    target=file_path,
                 )
             return status
         logger.info(

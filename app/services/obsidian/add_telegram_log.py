@@ -11,6 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 
 load_dotenv()
 
@@ -118,50 +119,59 @@ def append_telegram_log(message_text: str, message_id: int | None = None) -> Non
     daily_folder = _find_daily_folder(dbx, vault_path)
     journal_folder = f"{daily_folder}/_Journal"
     file_path = _get_today_journal_path(journal_folder)
-    content = _get_journal_content(dbx, file_path)
 
-    # Find section and insert bullet
-    lines = content.split('\n')
-    new_lines = []
-    section_found = False
-    insert_index = None
+    def apply_telegram(content: str):
+        if message_text in content.split('\n'):
+            return None, "skipped"
 
-    for i, line in enumerate(lines):
-        new_lines.append(line)
+        lines = content.split('\n')
+        new_lines = []
+        section_found = False
+        insert_index = None
 
-        if line.strip() == TELEGRAM_LOGS_HEADER:
-            section_found = True
-            insert_index = i + 1
-            continue
+        for i, line in enumerate(lines):
+            new_lines.append(line)
 
-        if section_found:
-            # Log entry starts with [HH:MM pattern
-            if LOG_ENTRY_PATTERN.match(line):
+            if line.strip() == TELEGRAM_LOGS_HEADER:
+                section_found = True
                 insert_index = i + 1
-            # Next heading or markdown separator = end of section
-            elif line.startswith('#') or line.strip() == '---':
-                break
-            # Non-empty content = update insert position
-            elif line.strip():
-                insert_index = i + 1
-            # Empty lines = don't advance (insert after last content, not before next section)
+                continue
 
-    if not section_found:
-        updated_content = content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"{message_text}\n"
-    else:
-        # Insert new entry directly after last content (no blank lines between entries)
-        new_lines.insert(insert_index, message_text)
-        updated_content = '\n'.join(new_lines)
+            if section_found:
+                if LOG_ENTRY_PATTERN.match(line):
+                    insert_index = i + 1
+                elif line.startswith('#') or line.strip() == '---':
+                    break
+                elif line.strip():
+                    insert_index = i + 1
 
-    dbx.files_upload(
-        updated_content.encode('utf-8'),
+        if not section_found:
+            updated_content = (
+                content.rstrip() + "\n\n\n" + TELEGRAM_LOGS_HEADER + "\n" + f"{message_text}\n"
+            )
+        else:
+            new_lines.insert(insert_index, message_text)
+            updated_content = '\n'.join(new_lines)
+        return updated_content, "inserted"
+
+    status, _action, _updated = update_with_retry(
+        dbx,
         file_path,
-        mode=dropbox.files.WriteMode.overwrite
+        apply_telegram,
+        defer={
+            "source": "telegram",
+            "kind": "log",
+            "payload_ref": str(message_id or message_text),
+            "target": file_path,
+            "payload": {"message_text": message_text, "message_id": message_id},
+        },
     )
+    if status == "missing":
+        raise FileNotFoundError(f"Journal not found: {file_path}")
+    if status == "error":
+        raise ValueError(f"No Dropbox rev on download for {file_path}")
 
-    # Store message_id -> timestamp mapping in Redis for edit tracking (24h TTL)
-    if message_id is not None:
-        # Extract timestamp from message_text (format: "[HH:MM AM/PM] content")
+    if status in {"updated", "skipped", "deferred"} and message_id is not None:
         timestamp_match = re.match(r'^\[(\d{2}:\d{2} [AP]M)\]', message_text)
         if timestamp_match:
             timestamp = timestamp_match.group(1)
