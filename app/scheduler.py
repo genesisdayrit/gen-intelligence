@@ -222,6 +222,12 @@ def _spotify_create_half_year_playlist():
     return create_half_year_playlist()
 
 
+def _spotify_music_of_the_day(date=None):
+    from services.spotify.music_of_the_day import write_music_of_the_day
+
+    return write_music_of_the_day(date=date)
+
+
 # Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
 # Default False creates tomorrow's files (evening-before cadence).
 DAILY_CREATION_JOB_IDS = frozenset({
@@ -251,6 +257,7 @@ SPOTIFY_SCHEDULED_JOB_IDS = frozenset({
     "spotify_sync_shazam_to_library",
     "spotify_sync_saved_today_to_half_year",
     "spotify_create_half_year_playlist",
+    "spotify_music_of_the_day",
 })
 
 
@@ -590,6 +597,18 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": "spotify_music_of_the_day",
+        "name": "Spotify: Music of the Day → daily journal",
+        "func": _spotify_music_of_the_day,
+        # Previous-calendar-day Liked Songs → yesterday's journal.
+        # Not the 15-minute Shazam/drain pair.
+        "trigger": CronTrigger(
+            hour=3,
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -665,8 +684,8 @@ def run_job_now(job_id, **kwargs):
     Optional kwargs are stored on the job (used by parameterized one-shots
     such as ``backfill_readwise_highlights``,
     ``backfill_knowledge_hub_buffet``, ``sync_granola_notes``,
-    ``backfill_granola_notes``, and the daily creation jobs'
-    ``use_today`` recovery flag).
+    ``backfill_granola_notes``, ``spotify_music_of_the_day`` (``date``),
+    and the daily creation jobs' ``use_today`` recovery flag).
     """
     job = scheduler.get_job(job_id)
     if job is None:

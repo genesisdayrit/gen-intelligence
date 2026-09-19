@@ -11,6 +11,7 @@ Sunday wrap-up email already used this pattern (`SPOTIFY_*` env → `refresh_spo
 | `spotify_sync_shazam_to_library` | Every 15 minutes | `*/15 * * * * add_shazam_songs_to_libary_today.py` | Poll `SHAZAM_PLAYLIST_ID`, save new tracks to Liked Songs (~1.2s spacing so `added_at` is second-unique), advance hub Redis watermark only over tracks that were processed. |
 | `spotify_sync_saved_today_to_half_year` | Every 15 minutes at :05/:20/:35/:50 | `5-59/15 * * * * add_songs_saved_today.py` | Find `{year} - 1/2` or `{year} - 2/2`, add Liked Songs saved today that are not already in it (same spacing). Offset is intentional: Shazam fills Liked Songs first. |
 | `spotify_create_half_year_playlist` | Jan 1 and Jul 1 at 00:05 | `0 0 1 1,7 * create_this_half_year_playlist.py` | Create the playlist for the new half if it is missing. |
+| `spotify_music_of_the_day` | Daily 03:00 | (new) | Liked Songs whose `added_at` fell on the **previous calendar day** in `SYSTEM_TZ` → `### Music of the Day` on that day's journal. Not the 15-minute drain. |
 
 Not ported: `*/55 * * * * refresh_redis_token.py`. Durable secret is `SPOTIFY_REFRESH_TOKEN` in env. Hub Redis may cache `spotify_access_token` with a short TTL.
 
@@ -79,6 +80,12 @@ curl http://localhost:8000/scheduler/jobs
 curl -X POST http://localhost:8000/scheduler/jobs/spotify_sync_shazam_to_library/run
 curl -X POST http://localhost:8000/scheduler/jobs/spotify_sync_saved_today_to_half_year/run
 curl -X POST http://localhost:8000/scheduler/jobs/spotify_create_half_year_playlist/run
+
+# Yesterday's likes → yesterday's journal (same as the 03:00 run)
+curl -X POST http://localhost:8000/scheduler/jobs/spotify_music_of_the_day/run
+
+# Explicit journal day (YYYY-MM-DD in SYSTEM_TZ)
+curl -X POST 'http://localhost:8000/scheduler/jobs/spotify_music_of_the_day/run?date=2026-09-19'
 ```
 
 ## Behavior notes
@@ -88,6 +95,7 @@ curl -X POST http://localhost:8000/scheduler/jobs/spotify_create_half_year_playl
 - **Failed save:** the watermark does not move past the failed track; the job raises and retries that track next run.
 - **Half-year names:** January–June → `{year} - 1/2`; July–December → `{year} - 2/2`.
 - **Logging:** never print tokens, refresh tokens, or `Authorization` headers. Historical `cron.log` on the host may contain tokens — do not copy those lines into hub logs.
+- **Music of the Day:** at 03:00 local, write Liked Songs saved on the previous calendar day into `01_Daily/_Journal/{Mon D, YYYY}.md` under a stable `### Music of the Day` header. Lines are `- [Title](https://open.spotify.com/track/…) — Artist`. Re-runs only append missing track ids/URLs. No likes that day → no Dropbox write. Missing journal → skip (do not create). Uploads are rev-safe (`WriteMode.update`); one immediate retry after re-download, then defer. The next scheduled run is a different day, so recover a deferred date with `?date=YYYY-MM-DD`.
 
 ## Cutover checklist
 
@@ -113,7 +121,7 @@ Do this after merge + deploy, **before** leaving both schedulers running.
    curl http://localhost:8000/scheduler/jobs
    ```
 
-   Expect the three `spotify_*` ids. There must be **no** token-refresh job.
+   Expect the four `spotify_*` ids (including `spotify_music_of_the_day`). There must be **no** token-refresh job.
 
 5. Optional smoke: `POST /scheduler/jobs/spotify_create_half_year_playlist/run` (no-op if the current half already exists), then the two sync jobs.
 

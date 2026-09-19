@@ -1226,6 +1226,7 @@ async def trigger_job(
     updated_after: str | None = None,
     lookback_days: int | None = None,
     use_today: bool = False,
+    date: str | None = None,
 ):
     """Trigger a scheduled job to run immediately.
 
@@ -1243,8 +1244,10 @@ async def trigger_job(
     earlier). Daily creation jobs (``create_daily_journal``,
     ``create_daily_action``, ``update_daily_journal_properties``) accept
     ``use_today`` (default false = tomorrow, matching the evening-before
-    cadence; true = today's files for morning recovery). Other jobs
-    ignore these query params.
+    cadence; true = today's files for morning recovery).
+    ``spotify_music_of_the_day`` accepts optional ``date`` (``YYYY-MM-DD``
+    journal day; omit to write the previous calendar day in
+    ``SYSTEM_TZ``). Other jobs ignore these query params.
     """
     from scheduler import DAILY_CREATION_JOB_IDS, run_job_now
 
@@ -1268,6 +1271,8 @@ async def trigger_job(
         }
     elif job_id in DAILY_CREATION_JOB_IDS:
         kwargs = {"use_today": use_today}
+    elif job_id == "spotify_music_of_the_day":
+        kwargs = {"date": date}
     if run_job_now(job_id, **kwargs):
         payload = {"status": "triggered", "job_id": job_id}
         if kwargs:
@@ -1279,6 +1284,8 @@ async def trigger_job(
                 payload["lookback_days"] = lookback_days
             if "use_today" in kwargs:
                 payload["use_today"] = use_today
+            if "date" in kwargs:
+                payload["date"] = date
         return payload
     raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 

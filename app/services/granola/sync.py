@@ -52,6 +52,7 @@ _JOURNAL_SIBLING_HEADERS = frozenset(
         "### Content Buffet:",
         "### Content Buffet",
         "### Content Planning",
+        "### Music of the Day",
         TRANSCRIPT_NOTES_HEADER,
     }
 )
@@ -466,7 +467,8 @@ def insert_transcript_notes_bullet(
     created at EOF. ``####`` note headings and ATX headings that belong
     to a note's ``summary_markdown`` stay inside the section. The section
     extends to EOF unless a later daily-journal sibling ``###`` header
-    is present (Morning Pages, Content Buffet, Content Planning).
+    is present (Morning Pages, Content Buffet, Content Planning,
+    Music of the Day).
     """
     keys = [key for key in (keys or []) if key]
     lines = content.split("\n")
