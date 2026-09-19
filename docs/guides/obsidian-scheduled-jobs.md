@@ -48,6 +48,8 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 - **`update_modified_files_today` every 15 minutes** instead of the live-host `*/10`. `paths_to_check.txt` lists 13 Dropbox folders (non-recursive `list_folder`). Redis `last_run_folder_journal_relations_at` keeps each pass incremental. 15 minutes is less chatty than every 10 minutes and still near-real-time for `Journal:` links. Generation used a once-daily `5 0 * * *` UTC that did not match its "12:05am Eastern" comment.
 - **Rev-safe uploads on folder-journal relations.** That job captures each file's Dropbox `rev` on download and writes with `WriteMode.update(rev)` (`autorename=False`) via `services.obsidian.utils.dropbox_rev_safe`. If Obsidian or Dropbox desktop changed the file after download, the hub does **not** `WriteMode.overwrite` and does **not** create `Name (conflicted copy).md`. It retries once immediately after a re-download; if that still mismatches, it enqueues Redis `obsidian_reconcile:deferred` for the hourly reconcile. Latest cloud content wins. Paths whose name already contains `conflicted copy` are skipped so the job never writes Journal YAML onto a fork. Readwise journal buffet / Knowledge Hub page writes use the same helper. Other Obsidian writers (share-link, Granola, daily properties, DA/Todoist/Manus/Telegram) still use overwrite and can adopt it later.
 - **Hourly reconcile (`reconcile_missed_obsidian_writes`).** Top of every hour. Shared watermark `obsidian_reconcile:last_check_at`. Drains a batch of deferred Dropbox writes, then since-checks Readwise (export + Reader list → the same idempotent journal/KH writers as the webhook) and Granola (`sync_granola_notes`). Stubs sit in the registry for share-link, daily action, Todoist, Manus, and Telegram. Manual: `POST /scheduler/jobs/reconcile_missed_obsidian_writes/run` with optional `?since=`.
+- **Weekly page jobs** use the PR #198 suggested local times (Sun 23:00, Thu 23:30, Tue 01:30, Tue 02:00, Wed 23:00).
+- **`create_cycle_and_cooling_period_pages` Sat 04:00** is the PDT equivalent of the live-host `0 11 * * 6` UTC (Sat 11:00 UTC = Sat 04:00 PDT / Sat 03:00 PST, described as Friday-evening-ish). Included because the live host still runs it, even though generation never emitted that line.
 
 ## Adding a reconcile provider
 
@@ -55,8 +57,6 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 2. Implement `reconcile(ctx)` using `ctx.since` and `ctx.batch_size`.
 3. Append the instance to `default_providers()`.
 4. If a live write can defer after the immediate rev-safe retry, call `record_deferred_write(...)` so the hourly drain can replay it.
-- **Weekly page jobs** use the PR #198 suggested local times (Sun 23:00, Thu 23:30, Tue 01:30, Tue 02:00, Wed 23:00).
-- **`create_cycle_and_cooling_period_pages` Sat 04:00** is the PDT equivalent of the live-host `0 11 * * 6` UTC (Sat 11:00 UTC = Sat 04:00 PDT / Sat 03:00 PST, described as Friday-evening-ish). Included because the live host still runs it, even though generation never emitted that line.
 
 ## Still crontab-only (do not migrate)
 
