@@ -2,7 +2,7 @@
 
 import os
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import dropbox
 import pytest
@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from services.obsidian.utils.dropbox_rev_safe import (  # noqa: E402
     is_conflicted_copy_path,
     is_dropbox_write_conflict,
+    record_deferred_write,
     upload_if_rev_matches,
     upload_new_file,
     write_mode_update,
@@ -157,3 +158,37 @@ def test_upload_new_file_conflict_does_not_overwrite():
     mode = mock_dbx.files_upload.call_args.kwargs["mode"]
     assert mode.is_add()
     assert not mode.is_overwrite()
+
+
+def test_record_deferred_write_enqueues_on_queue():
+    with patch(
+        "services.obsidian.reconcile.queue.enqueue_deferred",
+        return_value={"source": "readwise"},
+    ) as mock_enqueue:
+        record_deferred_write(
+            source="readwise",
+            kind="journal_highlight",
+            payload_ref="111",
+            target="/vault/note.md",
+            payload={"id": 111},
+        )
+    mock_enqueue.assert_called_once_with(
+        source="readwise",
+        kind="journal_highlight",
+        payload_ref="111",
+        target="/vault/note.md",
+        payload={"id": 111},
+    )
+
+
+def test_record_deferred_write_swallows_redis_errors():
+    with patch(
+        "services.obsidian.reconcile.queue.enqueue_deferred",
+        side_effect=RuntimeError("redis down"),
+    ):
+        record_deferred_write(
+            source="readwise",
+            kind="journal_highlight",
+            payload_ref="111",
+            target="/vault/note.md",
+        )

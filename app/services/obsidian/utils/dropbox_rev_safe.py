@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import dropbox
 
@@ -144,3 +144,36 @@ def upload_new_file(
         rev=getattr(metadata, "rev", "") or "",
         metadata=metadata,
     )
+
+
+def record_deferred_write(
+    *,
+    source: str,
+    kind: str,
+    payload_ref: str,
+    target: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    """Enqueue a hub write after the immediate rev-safe retry still deferred.
+
+    Never raises — a Redis outage must not fail the live webhook / job.
+    Dedup key is ``source:kind:payload_ref:target``.
+    """
+    try:
+        from services.obsidian.reconcile.queue import enqueue_deferred
+
+        enqueue_deferred(
+            source=source,
+            kind=kind,
+            payload_ref=payload_ref,
+            target=target,
+            payload=payload,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to enqueue deferred Obsidian write source=%s kind=%s ref=%s target=%s",
+            source,
+            kind,
+            payload_ref,
+            target,
+        )

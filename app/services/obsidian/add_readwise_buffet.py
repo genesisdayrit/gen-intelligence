@@ -23,6 +23,7 @@ from services.obsidian.utils.author_yaml import (
 )
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import (
+    record_deferred_write,
     upload_if_rev_matches,
     upload_new_file,
 )
@@ -249,6 +250,55 @@ def _download_text_with_rev(dbx: dropbox.Dropbox, file_path: str) -> _Downloaded
     return _DownloadedNote(path=path_display or file_path, content=content, rev=rev)
 
 
+def _payload_ref(payload: dict, fallback: str) -> str:
+    for key in ("id", "highlight_id", "note_title", "url"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return fallback
+
+
+def _readwise_defer_spec(payload: dict, target: str, kind: str) -> dict:
+    return {
+        "source": "readwise",
+        "kind": kind,
+        "payload_ref": _payload_ref(payload, target),
+        "target": target,
+        "payload": payload,
+    }
+
+
+def _as_defer_specs(file_path: str, defer: object | None, *, kind: str) -> list[dict]:
+    if defer is None:
+        return [
+            {
+                "source": "dropbox",
+                "kind": kind,
+                "payload_ref": file_path,
+                "target": file_path,
+            }
+        ]
+    if isinstance(defer, list):
+        return [spec for spec in defer if isinstance(spec, dict)]
+    if isinstance(defer, dict):
+        return [defer]
+    return []
+
+
+def _enqueue_after_defer(file_path: str, defer: object | None, *, kind: str) -> None:
+    for spec in _as_defer_specs(file_path, defer, kind=kind):
+        record_deferred_write(
+            source=str(spec.get("source") or "dropbox"),
+            kind=str(spec.get("kind") or kind),
+            payload_ref=str(spec.get("payload_ref") or file_path),
+            target=str(spec.get("target") or file_path),
+            payload=spec.get("payload") if isinstance(spec.get("payload"), dict) else None,
+        )
+
+
 def _rev_safe_update_with_retry(
     dbx: dropbox.Dropbox,
     file_path: str,
@@ -256,12 +306,14 @@ def _rev_safe_update_with_retry(
     *,
     downloaded: _DownloadedNote | None = None,
     max_attempts: int = 2,
+    defer: object | None = None,
 ) -> tuple[str, object, str | None]:
     """Download, merge, and upload only when the downloaded rev still matches.
 
     ``apply_fn(content)`` returns ``(updated_or_none, meta)``. ``None`` means
     nothing to write. On rev mismatch, re-downloads and re-applies the merge
     (append semantics) instead of overwriting. Never uses WriteMode.overwrite.
+    After the immediate retry still defers, enqueues for the hourly reconcile.
 
     Returns:
         ``(status, meta, content)`` where status is ``updated``, ``skipped``,
@@ -306,11 +358,19 @@ def _rev_safe_update_with_retry(
             "(no overwrite / no conflicted copy).",
             file_path,
         )
+        _enqueue_after_defer(file_path, defer, kind="rev_safe_update")
         return "deferred", last_meta, note.content
+    _enqueue_after_defer(file_path, defer, kind="rev_safe_update")
     return "deferred", last_meta, None
 
 
-def _rev_safe_create(dbx: dropbox.Dropbox, file_path: str, content: str) -> bool:
+def _rev_safe_create(
+    dbx: dropbox.Dropbox,
+    file_path: str,
+    content: str,
+    *,
+    defer: object | None = None,
+) -> bool:
     """Create a new note without overwrite. False if the path already exists."""
     result = upload_new_file(dbx, file_path, content.encode("utf-8"))
     if result.status == "deferred":
@@ -319,6 +379,7 @@ def _rev_safe_create(dbx: dropbox.Dropbox, file_path: str, content: str) -> bool
             "(no overwrite / no conflicted copy).",
             file_path,
         )
+        _enqueue_after_defer(file_path, defer, kind="rev_safe_create")
         return False
     return True
 
@@ -1328,7 +1389,18 @@ def append_wikilink_to_journal_buffet(
                 return None, action
             return updated, action
 
-        status, action, _updated = _rev_safe_update_with_retry(dbx, file_path, apply)
+        status, action, _updated = _rev_safe_update_with_retry(
+            dbx,
+            file_path,
+            apply,
+            defer={
+                "source": "readwise",
+                "kind": "journal_wikilink",
+                "payload_ref": target,
+                "target": file_path,
+                "payload": {"note_title": note_title, "journal_date": journal_date},
+            },
+        )
         if status == "missing":
             logger.warning(
                 "KH journal buffet skipped; journal not found (will not create): %s",
@@ -1879,7 +1951,12 @@ def _append_tweet_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_tweet_page_markdown(target, bullet, handle)
-        if not _rev_safe_create(dbx, file_path, markdown):
+        if not _rev_safe_create(
+            dbx,
+            file_path,
+            markdown,
+            defer=_readwise_defer_spec(payload, file_path, "kh_tweet"),
+        ):
             return "deferred"
         logger.info("Tweet page created path=%s", file_path)
         return "created"
@@ -1892,7 +1969,11 @@ def _append_tweet_page(
         return updated, action
 
     status, action, _updated = _rev_safe_update_with_retry(
-        dbx, existing.path, apply, downloaded=existing
+        dbx,
+        existing.path,
+        apply,
+        downloaded=existing,
+        defer=_readwise_defer_spec(payload, existing.path, "kh_tweet"),
     )
     if status == "deferred":
         return "deferred"
@@ -2167,7 +2248,12 @@ def _append_book_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
-        if not _rev_safe_create(dbx, file_path, markdown):
+        if not _rev_safe_create(
+            dbx,
+            file_path,
+            markdown,
+            defer=_readwise_defer_spec(payload, file_path, "kh_book"),
+        ):
             return "deferred"
         logger.info("Book page created path=%s", file_path)
         return "created"
@@ -2180,7 +2266,11 @@ def _append_book_page(
         return updated, action
 
     status, action, _updated = _rev_safe_update_with_retry(
-        dbx, existing.path, apply, downloaded=existing
+        dbx,
+        existing.path,
+        apply,
+        downloaded=existing,
+        defer=_readwise_defer_spec(payload, existing.path, "kh_book"),
     )
     if status == "deferred":
         return "deferred"
@@ -2362,7 +2452,12 @@ def _append_article_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
-        if not _rev_safe_create(dbx, file_path, markdown):
+        if not _rev_safe_create(
+            dbx,
+            file_path,
+            markdown,
+            defer=_readwise_defer_spec(payload, file_path, "kh_article"),
+        ):
             return "deferred"
         logger.info("Article page created path=%s", file_path)
         return "created"
@@ -2379,7 +2474,11 @@ def _append_article_page(
         return updated, action
 
     status, action, _updated = _rev_safe_update_with_retry(
-        dbx, existing.path, apply, downloaded=existing
+        dbx,
+        existing.path,
+        apply,
+        downloaded=existing,
+        defer=_readwise_defer_spec(payload, existing.path, "kh_article"),
     )
     if status == "deferred":
         return "deferred"
@@ -2534,7 +2633,12 @@ def _append_youtube_page(
             return None
         file_path = f"{hub_path}/{_hub_note_filename(stem)}"
         markdown = _new_youtube_highlight_page_markdown(stem, bullet, extras)
-        if not _rev_safe_create(dbx, file_path, markdown):
+        if not _rev_safe_create(
+            dbx,
+            file_path,
+            markdown,
+            defer=_readwise_defer_spec(payload, file_path, "kh_youtube"),
+        ):
             return "deferred"
         logger.info("YouTube transcript page created path=%s", file_path)
         return "created"
@@ -2557,7 +2661,12 @@ def _append_youtube_page(
             return None, action
         return updated, action
 
-    status, action, _updated = _rev_safe_update_with_retry(dbx, file_path, apply)
+    status, action, _updated = _rev_safe_update_with_retry(
+        dbx,
+        file_path,
+        apply,
+        defer=_readwise_defer_spec(payload, file_path, "kh_youtube"),
+    )
     if status == "deferred":
         return "deferred"
     if status == "updated":
@@ -2671,8 +2780,16 @@ def write_highlights_by_journal(
                     return None, local_counts
                 return content, local_counts
 
+            kind = (
+                "journal_document"
+                if format_fn is format_document_bullet
+                else "journal_highlight"
+            )
             status, _counts, _updated = _rev_safe_update_with_retry(
-                dbx, file_path, apply
+                dbx,
+                file_path,
+                apply,
+                defer=[_readwise_defer_spec(payload, file_path, kind) for payload in group],
             )
             if status == "missing":
                 logger.warning(

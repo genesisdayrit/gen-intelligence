@@ -53,13 +53,13 @@ Setup and usage guides live in [`docs/guides/`](docs/guides/):
 - [Linear Webhook Setup](docs/guides/linear-webhook-setup.md)
 - [Readwise Webhook Setup](docs/guides/readwise-webhook-setup.md) — point Readwise at `POST {WEBHOOK_BASE_URL}/readwise/webhook` with `READWISE_WEBHOOK_SECRET`
 - [Granola Webhook Setup](docs/guides/granola-webhook-setup.md) — point Granola at `POST {WEBHOOK_BASE_URL}/granola/webhook` with `GRANOLA_WEBHOOK_SECRET`
-- [Granola Journal Sync](docs/guides/granola-journal-sync.md) — webhook-driven `### Transcript Notes` writes; manual `sync_granola_notes` / `backfill_granola_notes` safety nets
+- [Granola Journal Sync](docs/guides/granola-journal-sync.md) — webhook-driven `### Transcript Notes` writes; hourly reconcile plus manual `sync_granola_notes` / `backfill_granola_notes` safety nets
 - [GitHub Webhook Setup](docs/guides/github-webhook-setup.md)
 - [Linear-Obsidian Sync](docs/guides/linear-obsidian-sync.md)
 - [Manus Daily Task Fetch](docs/guides/manus-daily-task-fetch.md)
 - [Weekly Cycle Sync](docs/guides/weekly-cycle-sync.md)
 - [Daily Journal Creation](docs/guides/daily-journal-creation.md) — evening-before journal, daily action, and journal properties jobs
-- [Obsidian Scheduled Jobs](docs/guides/obsidian-scheduled-jobs.md) — remaining `gd-second-brain-os` crontab jobs on APScheduler, plus what stays crontab-only
+- [Obsidian Scheduled Jobs](docs/guides/obsidian-scheduled-jobs.md) — remaining `gd-second-brain-os` crontab jobs on APScheduler, hourly missed-write reconcile, plus what stays crontab-only
 - [Spotify Scheduled Jobs](docs/guides/spotify-scheduled-jobs.md) — Shazam → Liked Songs → half-year playlist plus 03:00 Music of the Day journal; refresh-on-demand, no token-refresh cron
 - [Ngrok Setup](docs/guides/ngrok-setup.md)
 - [Server Restart](docs/guides/server-restart.md)

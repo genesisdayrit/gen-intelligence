@@ -228,6 +228,12 @@ def _spotify_music_of_the_day(date=None):
     return write_music_of_the_day(date=date)
 
 
+def _reconcile_missed_obsidian_writes(since=None):
+    from services.obsidian.reconcile.runner import reconcile_missed_obsidian_writes
+
+    return reconcile_missed_obsidian_writes(since=since)
+
+
 # Job ids that accept ``use_today`` on POST /scheduler/jobs/{id}/run.
 # Default False creates tomorrow's files (evening-before cadence).
 DAILY_CREATION_JOB_IDS = frozenset({
@@ -259,6 +265,9 @@ SPOTIFY_SCHEDULED_JOB_IDS = frozenset({
     "spotify_create_half_year_playlist",
     "spotify_music_of_the_day",
 })
+
+# Hourly batched reconcile of deferred / missed Obsidian hub writes.
+RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID = "reconcile_missed_obsidian_writes"
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +618,17 @@ SCHEDULED_JOBS = [
             timezone=SYSTEM_TZ,
         ),
     },
+    {
+        "id": RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID,
+        "name": "Reconcile Missed Obsidian Hub Writes",
+        "func": _reconcile_missed_obsidian_writes,
+        # Top of every hour in SYSTEM_TZ. Drains the deferred Dropbox
+        # queue and since-checks Readwise / Granola (stubs for later sources).
+        "trigger": CronTrigger(
+            minute=0,
+            timezone=SYSTEM_TZ,
+        ),
+    },
 ]
 
 
@@ -685,6 +705,7 @@ def run_job_now(job_id, **kwargs):
     such as ``backfill_readwise_highlights``,
     ``backfill_knowledge_hub_buffet``, ``sync_granola_notes``,
     ``backfill_granola_notes``, ``spotify_music_of_the_day`` (``date``),
+    ``reconcile_missed_obsidian_writes`` (``since`` watermark override),
     and the daily creation jobs' ``use_today`` recovery flag).
     """
     job = scheduler.get_job(job_id)
