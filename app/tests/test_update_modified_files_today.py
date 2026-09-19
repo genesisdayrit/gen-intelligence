@@ -26,6 +26,13 @@ SEP_19_UTC = datetime(2026, 9, 19, 20, 0, tzinfo=pytz.utc)
 NOTE_PATH = "/vault/Note.md"
 NOTE_WITHOUT_JOURNAL = "---\ntitle: Note\n---\n\nbody\n"
 NOTE_WITH_JOURNAL = '---\nJournal:\n  - "[[Sep 19, 2026]]"\n---\n\nbody\n'
+# Dropbox FileMetadata.rev is 9+ hex chars (stone validator: [0-9a-f]+).
+REV_AAA = "aaaaaaaaaaaaaaaa"
+REV_STALE = "bbbbbbbbbbbbbbbb"
+REV_DONE = "cccccccccccccccc"
+REV_NOOP = "dddddddddddddddd"
+REV_OLD = "1111111111111111"
+REV_NEW = "2222222222222222"
 
 
 def _rev_conflict_api_error() -> dropbox.exceptions.ApiError:
@@ -72,7 +79,7 @@ def test_apply_journal_date_adds_missing_journal():
 def test_matching_rev_uploads_with_update_mode():
     mock_dbx = MagicMock()
     mock_dbx.files_download.return_value = _download(
-        NOTE_WITHOUT_JOURNAL, rev="rev-aaa"
+        NOTE_WITHOUT_JOURNAL, rev=REV_AAA
     )
     mock_dbx.files_upload.return_value = MagicMock()
 
@@ -80,7 +87,7 @@ def test_matching_rev_uploads_with_update_mode():
 
     assert status == mod.STATUS_UPDATED
     mock_dbx.files_upload.assert_called_once()
-    _assert_update_mode(mock_dbx.files_upload.call_args, "rev-aaa")
+    _assert_update_mode(mock_dbx.files_upload.call_args, REV_AAA)
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
     assert "[[Sep 19, 2026]]" in uploaded
 
@@ -88,7 +95,7 @@ def test_matching_rev_uploads_with_update_mode():
 def test_rev_conflict_does_not_overwrite_and_returns_deferred():
     mock_dbx = MagicMock()
     mock_dbx.files_download.return_value = _download(
-        NOTE_WITHOUT_JOURNAL, rev="rev-stale"
+        NOTE_WITHOUT_JOURNAL, rev=REV_STALE
     )
     mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
 
@@ -96,7 +103,7 @@ def test_rev_conflict_does_not_overwrite_and_returns_deferred():
 
     assert status == mod.STATUS_DEFERRED
     mock_dbx.files_upload.assert_called_once()
-    _assert_update_mode(mock_dbx.files_upload.call_args, "rev-stale")
+    _assert_update_mode(mock_dbx.files_upload.call_args, REV_STALE)
     for call in mock_dbx.files_upload.call_args_list:
         assert not call.kwargs["mode"].is_overwrite()
 
@@ -104,7 +111,7 @@ def test_rev_conflict_does_not_overwrite_and_returns_deferred():
 def test_noop_when_journal_already_correct_skips_upload():
     mock_dbx = MagicMock()
     mock_dbx.files_download.return_value = _download(
-        NOTE_WITH_JOURNAL, rev="rev-noop"
+        NOTE_WITH_JOURNAL, rev=REV_NOOP
     )
 
     status = mod._update_journal_property(mock_dbx, NOTE_PATH, max_attempts=1)
@@ -119,8 +126,8 @@ def test_job_survives_rev_conflict_and_never_overwrites():
 
     def download(path):
         if path.endswith("done.md"):
-            return _download(NOTE_WITH_JOURNAL, rev="rev-done")
-        return _download(NOTE_WITHOUT_JOURNAL, rev="rev-stale")
+            return _download(NOTE_WITH_JOURNAL, rev=REV_DONE)
+        return _download(NOTE_WITHOUT_JOURNAL, rev=REV_STALE)
 
     mock_dbx.files_download.side_effect = download
     mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
@@ -140,15 +147,15 @@ def test_job_survives_rev_conflict_and_never_overwrites():
     # No-op file never uploaded; conflicted file retries once, always update mode.
     assert mock_dbx.files_upload.call_count == 2
     for call in mock_dbx.files_upload.call_args_list:
-        _assert_update_mode(call, "rev-stale")
+        _assert_update_mode(call, REV_STALE)
         assert not call.kwargs["mode"].is_overwrite()
 
 
 def test_rev_conflict_retry_applies_yaml_to_latest_rev():
     mock_dbx = MagicMock()
     mock_dbx.files_download.side_effect = [
-        _download(NOTE_WITHOUT_JOURNAL, rev="rev-old"),
-        _download(NOTE_WITHOUT_JOURNAL, rev="rev-new"),
+        _download(NOTE_WITHOUT_JOURNAL, rev=REV_OLD),
+        _download(NOTE_WITHOUT_JOURNAL, rev=REV_NEW),
     ]
     mock_dbx.files_upload.side_effect = [
         _rev_conflict_api_error(),
@@ -160,7 +167,7 @@ def test_rev_conflict_retry_applies_yaml_to_latest_rev():
     assert status == mod.STATUS_UPDATED
     assert mock_dbx.files_download.call_count == 2
     assert mock_dbx.files_upload.call_count == 2
-    _assert_update_mode(mock_dbx.files_upload.call_args_list[0], "rev-old")
-    _assert_update_mode(mock_dbx.files_upload.call_args_list[1], "rev-new")
+    _assert_update_mode(mock_dbx.files_upload.call_args_list[0], REV_OLD)
+    _assert_update_mode(mock_dbx.files_upload.call_args_list[1], REV_NEW)
     for call in mock_dbx.files_upload.call_args_list:
         assert not call.kwargs["mode"].is_overwrite()
