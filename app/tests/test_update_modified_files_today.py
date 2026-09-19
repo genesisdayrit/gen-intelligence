@@ -171,3 +171,81 @@ def test_rev_conflict_retry_applies_yaml_to_latest_rev():
     _assert_update_mode(mock_dbx.files_upload.call_args_list[1], REV_NEW)
     for call in mock_dbx.files_upload.call_args_list:
         assert not call.kwargs["mode"].is_overwrite()
+
+
+def test_conflicted_copy_path_is_ignored_without_download_or_upload():
+    """Already-forked Dropbox copies are never mutated by the 15m job."""
+    conflicted = (
+        "/vault/good enough job vs mission driven "
+        "(macbook pro's conflicted copy 2026-09-19).md"
+    )
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download(
+        NOTE_WITHOUT_JOURNAL, rev=REV_AAA
+    )
+    mock_dbx.files_upload.return_value = MagicMock()
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._load_paths", return_value=["/vault"]),
+        patch(f"{MODULE}._get_last_run_time", return_value=SEP_19_UTC),
+        patch(f"{MODULE}._set_last_run_time"),
+        patch(
+            f"{MODULE}._get_modified_files_since_cutoff",
+            return_value=[conflicted, NOTE_PATH],
+        ),
+    ):
+        assert mod.update_modified_files_today() is True
+
+    downloaded_paths = [call.args[0] for call in mock_dbx.files_download.call_args_list]
+    assert conflicted not in downloaded_paths
+    assert NOTE_PATH in downloaded_paths
+    mock_dbx.files_upload.assert_called_once()
+    _assert_update_mode(mock_dbx.files_upload.call_args, REV_AAA)
+
+
+def test_update_journal_property_skips_conflicted_copy_filename():
+    mock_dbx = MagicMock()
+    status = mod._update_journal_property(
+        mock_dbx,
+        "Sep 19, 2026 (MacBook Pro's conflicted copy 2026-09-19).md",
+        max_attempts=1,
+    )
+    assert status == mod.STATUS_IGNORED
+    mock_dbx.files_download.assert_not_called()
+    mock_dbx.files_upload.assert_not_called()
+
+
+def _file_metadata(name: str, path_lower: str, path_display: str):
+    naive = SEP_19_UTC.replace(tzinfo=None)
+    return dropbox.files.FileMetadata(
+        name=name,
+        id="id:test",
+        client_modified=naive,
+        server_modified=naive,
+        rev=REV_AAA,
+        size=1,
+        path_lower=path_lower,
+        path_display=path_display,
+    )
+
+
+def test_list_folder_skips_conflicted_copy_entries():
+    conflicted = _file_metadata(
+        "Note (MacBook Pro's conflicted copy 2026-09-19).md",
+        "/vault/note (macbook pro's conflicted copy 2026-09-19).md",
+        "/vault/Note (MacBook Pro's conflicted copy 2026-09-19).md",
+    )
+    normal = _file_metadata("Note.md", "/vault/note.md", "/vault/Note.md")
+
+    result = MagicMock()
+    result.entries = [conflicted, normal]
+    result.has_more = False
+    mock_dbx = MagicMock()
+    mock_dbx.files_list_folder.return_value = result
+
+    paths = mod._get_modified_files_since_cutoff(
+        mock_dbx, ["/vault"], SEP_19_UTC.replace(hour=0)
+    )
+
+    assert paths == ["/vault/note.md"]

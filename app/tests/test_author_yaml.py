@@ -116,16 +116,24 @@ def _mock_dbx(*, kh_exists=False, kh_content=None, journal_content=SAMPLE_JOURNA
 
     def download(path):
         response = MagicMock()
+        metadata = MagicMock()
+        metadata.rev = "aaaaaaaaaaaaaaaa"
+        metadata.path_display = path
         if JOURNAL_FOLDER in path:
             response.content = journal_content.encode("utf-8")
-            return None, response
+            return metadata, response
         if KH_PATH in path and not kh_exists:
             raise FileNotFoundError(f"not found: {path}")
         response.content = (kh_content or "").encode("utf-8")
-        return None, response
+        return metadata, response
 
-    def capture_upload(data, path, mode=None):
-        uploads.append({"content": data.decode("utf-8"), "path": path, "mode": mode})
+    def capture_upload(data, path, mode=None, autorename=None):
+        uploads.append({
+            "content": data.decode("utf-8"),
+            "path": path,
+            "mode": mode,
+            "autorename": autorename,
+        })
 
     mock_dbx.files_get_metadata.side_effect = get_metadata
     mock_dbx.files_download.side_effect = download

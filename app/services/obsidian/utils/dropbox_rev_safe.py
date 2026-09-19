@@ -19,6 +19,8 @@ import dropbox
 
 logger = logging.getLogger(__name__)
 
+CONFLICTED_COPY_TOKEN = "conflicted copy"
+
 RevSafeStatus = Literal["updated", "deferred"]
 
 
@@ -30,6 +32,13 @@ class RevSafeUploadResult:
     path: str
     rev: str
     metadata: object | None = None
+
+
+def is_conflicted_copy_path(path: str | None) -> bool:
+    """True when Dropbox already forked this path as a conflicted copy."""
+    if not path:
+        return False
+    return CONFLICTED_COPY_TOKEN in path.casefold()
 
 
 def is_dropbox_write_conflict(exc: BaseException) -> bool:
@@ -95,5 +104,43 @@ def upload_if_rev_matches(
         status="updated",
         path=path,
         rev=rev,
+        metadata=metadata,
+    )
+
+
+def upload_new_file(
+    dbx: dropbox.Dropbox,
+    path: str,
+    content: bytes,
+) -> RevSafeUploadResult:
+    """Create ``path`` only if it does not already exist.
+
+    Uses ``WriteMode.add`` with ``autorename=False`` so a race that creates
+    the file first is an error instead of an overwrite or a conflicted-copy
+    filename. On conflict, leaves the cloud file as Dropbox has it and
+    returns ``deferred``. Other API errors are re-raised.
+    """
+    try:
+        metadata = dbx.files_upload(
+            content,
+            path,
+            mode=dropbox.files.WriteMode.add,
+            autorename=False,
+        )
+    except dropbox.exceptions.ApiError as exc:
+        if is_dropbox_write_conflict(exc):
+            logger.warning(
+                "Dropbox create conflict for %s; skipping upload so the hub "
+                "does not overwrite or create a conflicted copy. Latest "
+                "cloud content wins; retry when the path is free.",
+                path,
+            )
+            return RevSafeUploadResult(status="deferred", path=path, rev="")
+        raise
+
+    return RevSafeUploadResult(
+        status="updated",
+        path=path,
+        rev=getattr(metadata, "rev", "") or "",
         metadata=metadata,
     )

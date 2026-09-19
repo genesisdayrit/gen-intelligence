@@ -120,14 +120,17 @@ def _mock_dropbox(contents_by_path=None, missing_paths=None):
     def download(path):
         if path in missing_paths or path not in contents_by_path:
             raise FileNotFoundError(f"Journal not found: {path}")
+        metadata = MagicMock()
+        metadata.rev = "aaaaaaaaaaaaaaaa"
+        metadata.path_display = path
         response = MagicMock()
         response.content = contents_by_path[path].encode("utf-8")
-        return None, response
+        return metadata, response
 
-    def upload(data, path, mode=None):
+    def upload(data, path, mode=None, autorename=None):
         text = data.decode("utf-8")
         contents_by_path[path] = text
-        uploaded.append({"path": path, "content": text})
+        uploaded.append({"path": path, "content": text, "mode": mode})
         return None
 
     mock_dbx.files_download.side_effect = download

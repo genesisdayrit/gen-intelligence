@@ -3,7 +3,9 @@
 import logging
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Callable
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import dropbox
@@ -20,6 +22,10 @@ from services.obsidian.utils.author_yaml import (
     split_author_names,
 )
 from services.obsidian.utils.date_helpers import get_effective_date
+from services.obsidian.utils.dropbox_rev_safe import (
+    upload_if_rev_matches,
+    upload_new_file,
+)
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
 
@@ -216,6 +222,105 @@ def _get_file_content(dbx: dropbox.Dropbox, file_path: str) -> str:
         if isinstance(e.error, dropbox.files.DownloadError):
             raise FileNotFoundError(f"Journal not found: {file_path}") from e
         raise
+
+
+@dataclass(frozen=True)
+class _DownloadedNote:
+    path: str
+    content: str
+    rev: str
+
+
+def _download_text_with_rev(dbx: dropbox.Dropbox, file_path: str) -> _DownloadedNote:
+    """Download a note and capture the Dropbox rev for a later update() write."""
+    try:
+        metadata, response = dbx.files_download(file_path)
+    except dropbox.exceptions.ApiError as e:
+        if isinstance(e.error, dropbox.files.DownloadError):
+            raise FileNotFoundError(f"Journal not found: {file_path}") from e
+        raise
+    content = response.content.decode("utf-8")
+    rev = getattr(metadata, "rev", None) if metadata is not None else None
+    if not isinstance(rev, str) or not rev:
+        raise ValueError(f"No Dropbox rev on download for {file_path}")
+    path_display = (
+        getattr(metadata, "path_display", None) if metadata is not None else None
+    )
+    return _DownloadedNote(path=path_display or file_path, content=content, rev=rev)
+
+
+def _rev_safe_update_with_retry(
+    dbx: dropbox.Dropbox,
+    file_path: str,
+    apply_fn: Callable[[str], tuple[str | None, object]],
+    *,
+    downloaded: _DownloadedNote | None = None,
+    max_attempts: int = 2,
+) -> tuple[str, object, str | None]:
+    """Download, merge, and upload only when the downloaded rev still matches.
+
+    ``apply_fn(content)`` returns ``(updated_or_none, meta)``. ``None`` means
+    nothing to write. On rev mismatch, re-downloads and re-applies the merge
+    (append semantics) instead of overwriting. Never uses WriteMode.overwrite.
+
+    Returns:
+        ``(status, meta, content)`` where status is ``updated``, ``skipped``,
+        ``deferred``, ``missing``, or ``error``.
+    """
+    last_meta: object = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if downloaded is not None and attempt == 1:
+                note = downloaded
+            else:
+                note = _download_text_with_rev(dbx, file_path)
+        except FileNotFoundError:
+            return "missing", last_meta, None
+        except ValueError:
+            logger.error(
+                "No Dropbox rev on download for %s; skipping upload to avoid overwrite.",
+                file_path,
+            )
+            return "error", last_meta, None
+
+        updated, last_meta = apply_fn(note.content)
+        if updated is None or updated == note.content:
+            return "skipped", last_meta, note.content
+
+        result = upload_if_rev_matches(
+            dbx,
+            note.path,
+            updated.encode("utf-8"),
+            note.rev,
+        )
+        if result.status == "updated":
+            return "updated", last_meta, updated
+        if attempt < max_attempts:
+            logger.info(
+                "Rev conflict on %s; re-downloading to merge into latest content.",
+                file_path,
+            )
+            continue
+        logger.warning(
+            "Deferring write for %s; cloud file left unchanged "
+            "(no overwrite / no conflicted copy).",
+            file_path,
+        )
+        return "deferred", last_meta, note.content
+    return "deferred", last_meta, None
+
+
+def _rev_safe_create(dbx: dropbox.Dropbox, file_path: str, content: str) -> bool:
+    """Create a new note without overwrite. False if the path already exists."""
+    result = upload_new_file(dbx, file_path, content.encode("utf-8"))
+    if result.status == "deferred":
+        logger.warning(
+            "Deferring create for %s; cloud file left unchanged "
+            "(no overwrite / no conflicted copy).",
+            file_path,
+        )
+        return False
+    return True
 
 
 def _nonempty(value: object) -> str | None:
@@ -1215,26 +1320,31 @@ def append_wikilink_to_journal_buffet(
         journal_folder = _resolve_journal_folder(dbx)
         file_path = f"{journal_folder}/{journal_date}.md"
         result["file_path"] = file_path
-        try:
-            content = _get_file_content(dbx, file_path)
-        except FileNotFoundError:
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_content_buffet_bullet(
+                content, bullet, keys, exact_line=True
+            )
+            if action == "skipped" or updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(dbx, file_path, apply)
+        if status == "missing":
             logger.warning(
                 "KH journal buffet skipped; journal not found (will not create): %s",
                 file_path,
             )
             result["action"] = "skipped_missing_journal"
             return result
-
-        updated, action = insert_content_buffet_bullet(
-            content, bullet, keys, exact_line=True
-        )
+        if status == "deferred":
+            result["action"] = "deferred"
+            return result
+        if status == "error":
+            result["action"] = "error"
+            result["error"] = f"No Dropbox rev on download for {file_path}"
+            return result
         result["action"] = action
-        if action != "skipped" and updated != content:
-            dbx.files_upload(
-                updated.encode("utf-8"),
-                file_path,
-                mode=dropbox.files.WriteMode.overwrite,
-            )
+        if status == "updated":
             logger.info("KH journal buffet %s path=%s title=%s", action, file_path, target)
         elif action == "skipped":
             logger.info("KH journal buffet skipped (duplicate) path=%s title=%s", file_path, target)
@@ -1262,6 +1372,7 @@ def _empty_write_summary(selected: int = 0) -> dict:
         "skipped": 0,
         "skipped_missing_journal": 0,
         "files_written": 0,
+        "deferred": 0,
         "errors": [],
         "paths": [],
     }
@@ -1393,19 +1504,31 @@ def _download_hub_note(
     dbx: dropbox.Dropbox,
     hub_path: str,
     filename: str,
-) -> tuple[str, str] | None:
-    """Return ``(path, content)`` for an existing Knowledge Hub note, or None."""
+) -> _DownloadedNote | None:
+    """Return an existing Knowledge Hub note (path, content, rev), or None."""
     constructed = f"{hub_path}/{filename}"
     try:
-        return constructed, _get_file_content(dbx, constructed)
+        return _download_text_with_rev(dbx, constructed)
     except FileNotFoundError:
         pass
+    except ValueError:
+        logger.error(
+            "No Dropbox rev on download for %s; skipping KH note write.",
+            constructed,
+        )
+        return None
     alt = _find_hub_note_by_filename(dbx, hub_path, filename)
     if not alt:
         return None
     try:
-        return alt, _get_file_content(dbx, alt)
+        return _download_text_with_rev(dbx, alt)
     except FileNotFoundError:
+        return None
+    except ValueError:
+        logger.error(
+            "No Dropbox rev on download for %s; skipping KH note write.",
+            alt,
+        )
         return None
 
 
@@ -1413,8 +1536,8 @@ def _download_tweet_page(
     dbx: dropbox.Dropbox,
     hub_path: str,
     filename: str,
-) -> tuple[str, str] | None:
-    """Return ``(path, content)`` for an existing handle page, or None."""
+) -> _DownloadedNote | None:
+    """Return an existing handle page (path, content, rev), or None."""
     return _download_hub_note(dbx, hub_path, filename)
 
 
@@ -1756,29 +1879,30 @@ def _append_tweet_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_tweet_page_markdown(target, bullet, handle)
-        dbx.files_upload(
-            markdown.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+        if not _rev_safe_create(dbx, file_path, markdown):
+            return "deferred"
         logger.info("Tweet page created path=%s", file_path)
         return "created"
 
-    file_path, content = existing
-    updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
-    updated = _ensure_tweet_page_people(updated, handle)
-    if updated != content:
-        dbx.files_upload(
-            updated.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+    def apply(content: str) -> tuple[str | None, str]:
+        updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
+        updated = _ensure_tweet_page_people(updated, handle)
+        if updated == content:
+            return None, action
+        return updated, action
+
+    status, action, _updated = _rev_safe_update_with_retry(
+        dbx, existing.path, apply, downloaded=existing
+    )
+    if status == "deferred":
+        return "deferred"
+    if status == "updated":
         if action == "skipped":
-            logger.info("Tweet page people backfill path=%s", file_path)
+            logger.info("Tweet page people backfill path=%s", existing.path)
         else:
-            logger.info("Tweet page %s path=%s", action, file_path)
+            logger.info("Tweet page %s path=%s", action, existing.path)
     elif action == "skipped":
-        logger.info("Tweet page skipped (duplicate) path=%s", file_path)
+        logger.info("Tweet page skipped (duplicate) path=%s", existing.path)
     return action
 
 
@@ -2043,29 +2167,30 @@ def _append_book_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
-        dbx.files_upload(
-            markdown.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+        if not _rev_safe_create(dbx, file_path, markdown):
+            return "deferred"
         logger.info("Book page created path=%s", file_path)
         return "created"
 
-    file_path, content = existing
-    updated, action = insert_book_highlights_bullet(content, bullet, keys)
-    updated = _ensure_book_page_frontmatter(updated, extras, people_links)
-    if updated != content:
-        dbx.files_upload(
-            updated.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+    def apply(content: str) -> tuple[str | None, str]:
+        updated, action = insert_book_highlights_bullet(content, bullet, keys)
+        updated = _ensure_book_page_frontmatter(updated, extras, people_links)
+        if updated == content:
+            return None, action
+        return updated, action
+
+    status, action, _updated = _rev_safe_update_with_retry(
+        dbx, existing.path, apply, downloaded=existing
+    )
+    if status == "deferred":
+        return "deferred"
+    if status == "updated":
         if action == "skipped":
-            logger.info("Book page metadata backfill path=%s", file_path)
+            logger.info("Book page metadata backfill path=%s", existing.path)
         else:
-            logger.info("Book page %s path=%s", action, file_path)
+            logger.info("Book page %s path=%s", action, existing.path)
     elif action == "skipped":
-        logger.info("Book page skipped (duplicate) path=%s", file_path)
+        logger.info("Book page skipped (duplicate) path=%s", existing.path)
     return action
 
 
@@ -2237,33 +2362,34 @@ def _append_article_page(
     if existing is None:
         file_path = f"{hub_path}/{filename}"
         markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
-        dbx.files_upload(
-            markdown.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+        if not _rev_safe_create(dbx, file_path, markdown):
+            return "deferred"
         logger.info("Article page created path=%s", file_path)
         return "created"
 
-    file_path, content = existing
-    updated, action = insert_article_highlights_bullet(content, bullet, keys)
-    url_only = {}
-    if extras.get("URL"):
-        url_only["URL"] = extras["URL"]
-    if url_only:
-        updated = _ensure_book_page_frontmatter(updated, url_only, [])
-    if updated != content:
-        dbx.files_upload(
-            updated.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+    def apply(content: str) -> tuple[str | None, str]:
+        updated, action = insert_article_highlights_bullet(content, bullet, keys)
+        url_only = {}
+        if extras.get("URL"):
+            url_only["URL"] = extras["URL"]
+        if url_only:
+            updated = _ensure_book_page_frontmatter(updated, url_only, [])
+        if updated == content:
+            return None, action
+        return updated, action
+
+    status, action, _updated = _rev_safe_update_with_retry(
+        dbx, existing.path, apply, downloaded=existing
+    )
+    if status == "deferred":
+        return "deferred"
+    if status == "updated":
         if action == "skipped":
-            logger.info("Article page URL backfill path=%s", file_path)
+            logger.info("Article page URL backfill path=%s", existing.path)
         else:
-            logger.info("Article page %s path=%s", action, file_path)
+            logger.info("Article page %s path=%s", action, existing.path)
     elif action == "skipped":
-        logger.info("Article page skipped (duplicate) path=%s", file_path)
+        logger.info("Article page skipped (duplicate) path=%s", existing.path)
     return action
 
 
@@ -2408,32 +2534,33 @@ def _append_youtube_page(
             return None
         file_path = f"{hub_path}/{_hub_note_filename(stem)}"
         markdown = _new_youtube_highlight_page_markdown(stem, bullet, extras)
-        dbx.files_upload(
-            markdown.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+        if not _rev_safe_create(dbx, file_path, markdown):
+            return "deferred"
         logger.info("YouTube transcript page created path=%s", file_path)
         return "created"
 
-    file_path, content = existing
-    updated, action = insert_transcript_highlights_bullet(content, bullet, keys)
-    if extras:
-        from services.obsidian.add_shared_link import (
-            _extract_frontmatter,
-            _merge_extra_frontmatter,
-            _rebuild_markdown,
-        )
+    file_path, _existing_content = existing
 
-        frontmatter, body = _extract_frontmatter(updated)
-        if _merge_extra_frontmatter(frontmatter, extras):
-            updated = _rebuild_markdown(frontmatter, body)
-    if updated != content:
-        dbx.files_upload(
-            updated.encode("utf-8"),
-            file_path,
-            mode=dropbox.files.WriteMode.overwrite,
-        )
+    def apply(content: str) -> tuple[str | None, str]:
+        updated, action = insert_transcript_highlights_bullet(content, bullet, keys)
+        if extras:
+            from services.obsidian.add_shared_link import (
+                _extract_frontmatter,
+                _merge_extra_frontmatter,
+                _rebuild_markdown,
+            )
+
+            frontmatter, body = _extract_frontmatter(updated)
+            if _merge_extra_frontmatter(frontmatter, extras):
+                updated = _rebuild_markdown(frontmatter, body)
+        if updated == content:
+            return None, action
+        return updated, action
+
+    status, action, _updated = _rev_safe_update_with_retry(dbx, file_path, apply)
+    if status == "deferred":
+        return "deferred"
+    if status == "updated":
         logger.info("YouTube transcript page %s path=%s", action, file_path)
     elif action == "skipped":
         logger.info("YouTube transcript page skipped (duplicate) path=%s", file_path)
@@ -2515,39 +2642,56 @@ def write_highlights_by_journal(
     for file_path, group in by_path.items():
         summary["paths"].append(file_path)
         try:
-            try:
-                content = _get_file_content(dbx, file_path)
-            except FileNotFoundError:
+            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
+            last_action = None
+            buffet_payloads: list[dict] = []
+
+            def apply(content: str) -> tuple[str | None, dict]:
+                nonlocal last_action
+                original = content
+                local_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
+                local_payloads: list[dict] = []
+                local_last = None
+                for payload in group:
+                    bullet = format_fn(payload)
+                    if not bullet:
+                        continue
+                    content, action = insert_content_buffet_bullet(
+                        content, bullet, keys_fn(payload)
+                    )
+                    local_last = action
+                    local_payloads.append(payload)
+                    if action in local_counts:
+                        local_counts[action] += 1
+                last_action = local_last
+                buffet_payloads.clear()
+                buffet_payloads.extend(local_payloads)
+                file_counts.update(local_counts)
+                if content == original:
+                    return None, local_counts
+                return content, local_counts
+
+            status, _counts, _updated = _rev_safe_update_with_retry(
+                dbx, file_path, apply
+            )
+            if status == "missing":
                 logger.warning(
                     "Readwise buffet skipped; journal not found (will not write today): %s",
                     file_path,
                 )
                 summary["skipped_missing_journal"] += len(group)
                 continue
-
-            original = content
-            file_counts = {"inserted": 0, "replaced": 0, "skipped": 0}
-            last_action = None
-            buffet_payloads: list[dict] = []
-            for payload in group:
-                bullet = format_fn(payload)
-                if not bullet:
-                    continue
-                content, action = insert_content_buffet_bullet(
-                    content, bullet, keys_fn(payload)
-                )
-                last_action = action
-                buffet_payloads.append(payload)
-                if action in file_counts:
-                    file_counts[action] += 1
-                    summary[action] += 1
-
-            if content != original:
-                dbx.files_upload(
-                    content.encode("utf-8"),
+            if status == "error":
+                raise ValueError(f"No Dropbox rev on download for {file_path}")
+            if status == "deferred":
+                summary["deferred"] += 1
+                logger.warning(
+                    "Readwise buffet deferred path=%s (rev conflict; no overwrite)",
                     file_path,
-                    mode=dropbox.files.WriteMode.overwrite,
                 )
+            elif status == "updated":
+                for key in ("inserted", "replaced", "skipped"):
+                    summary[key] += file_counts[key]
                 summary["files_written"] += 1
                 if len(group) == 1 and last_action:
                     logger.info("Readwise buffet %s path=%s", last_action, file_path)
@@ -2559,8 +2703,11 @@ def write_highlights_by_journal(
                         file_counts["replaced"],
                         file_counts["skipped"],
                     )
-            elif last_action == "skipped":
-                logger.info("Readwise buffet skipped (duplicate) path=%s", file_path)
+            else:
+                for key in ("inserted", "replaced", "skipped"):
+                    summary[key] += file_counts[key]
+                if last_action == "skipped":
+                    logger.info("Readwise buffet skipped (duplicate) path=%s", file_path)
 
             if format_fn is format_readwise_bullet:
                 _append_tweet_pages_after_journal(dbx, buffet_payloads)
@@ -2588,6 +2735,8 @@ def _write_buffet_bullet(
     file_path = result["paths"][0] if result["paths"] else None
     if result["skipped_missing_journal"]:
         action = "skipped_missing_journal"
+    elif result.get("deferred"):
+        action = "deferred"
     elif result["skipped"]:
         action = "skipped"
     elif result["replaced"]:

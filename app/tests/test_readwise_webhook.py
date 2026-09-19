@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import dropbox
 import pytest
 import pytz
 
@@ -1106,17 +1107,43 @@ def test_append_ignores_non_created_reader_payload_without_dropbox():
     mock_client.assert_not_called()
 
 
+DEFAULT_DROPBOX_REV = "aaaaaaaaaaaaaaaa"
+
+
+def _download_with_rev(content: str, *, rev: str = DEFAULT_DROPBOX_REV, path: str | None = None):
+    metadata = MagicMock()
+    metadata.rev = rev
+    metadata.path_display = path
+    response = MagicMock()
+    response.content = content.encode("utf-8")
+    return metadata, response
+
+
+def _rev_conflict_api_error() -> dropbox.exceptions.ApiError:
+    reason = dropbox.files.WriteError.conflict(dropbox.files.WriteConflictError.file)
+    failed = dropbox.files.UploadWriteFailed(reason=reason, upload_session_id="sess")
+    error = dropbox.files.UploadError.path(failed)
+    return dropbox.exceptions.ApiError("req", error, "", "")
+
+
+def _assert_update_mode(call, expected_rev: str) -> None:
+    mode = call.kwargs["mode"]
+    assert mode.is_update(), mode
+    assert mode.get_update() == expected_rev
+    assert not mode.is_overwrite()
+    assert call.kwargs.get("autorename") is False
+
+
 def test_append_replaces_placeholder_on_effective_journal_path():
     clear_book_cache()
     uploaded = {}
     mock_dbx = MagicMock()
-    response = MagicMock()
-    response.content = SAMPLE_JOURNAL.encode("utf-8")
-    mock_dbx.files_download.return_value = (None, response)
+    mock_dbx.files_download.return_value = _download_with_rev(SAMPLE_JOURNAL)
 
-    def capture_upload(data, path, mode=None):
+    def capture_upload(data, path, mode=None, autorename=None):
         uploaded["content"] = data.decode("utf-8")
         uploaded["path"] = path
+        uploaded["mode"] = mode
 
     mock_dbx.files_upload.side_effect = capture_upload
     now = LA.localize(datetime(2026, 8, 22, 2, 30))
@@ -1133,6 +1160,7 @@ def test_append_replaces_placeholder_on_effective_journal_path():
     assert uploaded["path"] == "/obsidian/personal/01_daily/_journal/Nov 27, 2025.md"
     assert '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in uploaded["content"]
     assert uploaded["content"].index("### Content Buffet:") < uploaded["content"].index("### Content Planning")
+    _assert_update_mode(mock_dbx.files_upload.call_args, DEFAULT_DROPBOX_REV)
 
 
 def test_missing_journal_file_does_not_write_today():
@@ -1157,19 +1185,104 @@ def test_missing_journal_file_does_not_write_today():
     assert "Aug 22, 2026" not in (result["file_path"] or "")
 
 
-def _mock_journal_dbx(journal_content: str = SAMPLE_JOURNAL):
+def _mock_journal_dbx(journal_content: str = SAMPLE_JOURNAL, *, rev: str = DEFAULT_DROPBOX_REV):
     uploaded = {}
     mock_dbx = MagicMock()
-    response = MagicMock()
-    response.content = journal_content.encode("utf-8")
-    mock_dbx.files_download.return_value = (None, response)
+    mock_dbx.files_download.return_value = _download_with_rev(journal_content, rev=rev)
 
-    def capture_upload(data, path, mode=None):
+    def capture_upload(data, path, mode=None, autorename=None):
         uploaded["content"] = data.decode("utf-8")
         uploaded["path"] = path
+        uploaded["mode"] = mode
+        uploaded["autorename"] = autorename
 
     mock_dbx.files_upload.side_effect = capture_upload
     return mock_dbx, uploaded
+
+
+@contextmanager
+def _journal_folder_patches(mock_dbx):
+    with patch(
+        "services.obsidian.add_readwise_buffet._get_dropbox_client",
+        return_value=mock_dbx,
+    ), patch(
+        "services.obsidian.add_readwise_buffet._find_folder_by_suffix",
+        side_effect=[
+            "/obsidian/personal/01_daily",
+            "/obsidian/personal/01_daily/_journal",
+        ],
+    ):
+        yield
+
+
+def test_readwise_journal_append_uses_update_rev():
+    """Journal buffet writes capture the download rev and use WriteMode.update."""
+    clear_book_cache()
+    rev = "0123456789abcdef"
+    mock_dbx, uploaded = _mock_journal_dbx(rev=rev)
+    now = LA.localize(datetime(2026, 8, 22, 2, 30))
+
+    with _journal_folder_patches(mock_dbx):
+        result = append_readwise_buffet(_highlight_payload(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "replaced"
+    mock_dbx.files_upload.assert_called_once()
+    _assert_update_mode(mock_dbx.files_upload.call_args, rev)
+    assert '"Most Amazing Highlight Ever"' in uploaded["content"]
+
+
+def test_readwise_journal_rev_mismatch_defers_without_overwrite():
+    """A stale journal rev skips the upload instead of creating a conflicted copy."""
+    clear_book_cache()
+    stale_rev = "fedcba9876543210"
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.return_value = _download_with_rev(
+        SAMPLE_JOURNAL, rev=stale_rev
+    )
+    mock_dbx.files_upload.side_effect = _rev_conflict_api_error()
+    now = LA.localize(datetime(2026, 8, 22, 2, 30))
+
+    with _journal_folder_patches(mock_dbx):
+        result = append_readwise_buffet(_highlight_payload(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "deferred"
+    assert mock_dbx.files_upload.call_count == 2
+    for call in mock_dbx.files_upload.call_args_list:
+        _assert_update_mode(call, stale_rev)
+        assert not call.kwargs["mode"].is_overwrite()
+
+
+def test_readwise_journal_rev_conflict_redownloads_and_merges():
+    """On mismatch, re-download the latest journal and append into that content."""
+    clear_book_cache()
+    old_rev = "1111111111111111"
+    new_rev = "2222222222222222"
+    edited = SAMPLE_JOURNAL.replace(
+        "### Content Buffet:\n- \n",
+        "### Content Buffet:\n- [[User edit while syncing]]\n",
+    )
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = [
+        _download_with_rev(SAMPLE_JOURNAL, rev=old_rev),
+        _download_with_rev(edited, rev=new_rev),
+    ]
+    mock_dbx.files_upload.side_effect = [_rev_conflict_api_error(), MagicMock()]
+    now = LA.localize(datetime(2026, 8, 22, 2, 30))
+
+    with _journal_folder_patches(mock_dbx):
+        result = append_readwise_buffet(_highlight_payload(), now=now)
+
+    assert result["success"] is True
+    assert result["action"] == "inserted"
+    assert mock_dbx.files_download.call_count == 2
+    assert mock_dbx.files_upload.call_count == 2
+    _assert_update_mode(mock_dbx.files_upload.call_args_list[0], old_rev)
+    _assert_update_mode(mock_dbx.files_upload.call_args_list[1], new_rev)
+    merged = mock_dbx.files_upload.call_args_list[1].args[0].decode("utf-8")
+    assert "[[User edit while syncing]]" in merged
+    assert '"Most Amazing Highlight Ever"' in merged
 
 
 def test_append_creates_kh_note_and_buffet_wikilink_not_reader_markdown():
@@ -1957,14 +2070,12 @@ def _mock_vault_dbx(files_by_path=None):
     def download(path):
         if path not in store:
             raise FileNotFoundError(f"not found: {path}")
-        response = MagicMock()
-        response.content = store[path].encode("utf-8")
-        return None, response
+        return _download_with_rev(store[path], path=path)
 
-    def upload(data, path, mode=None):
+    def upload(data, path, mode=None, autorename=None):
         text = data.decode("utf-8")
         store[path] = text
-        uploaded.append({"path": path, "content": text})
+        uploaded.append({"path": path, "content": text, "mode": mode, "autorename": autorename})
 
     def list_folder(path, recursive=False):
         result = MagicMock()
