@@ -10,8 +10,10 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.obsidian.utils.dropbox_rev_safe import (  # noqa: E402
+    is_conflicted_copy_path,
     is_dropbox_write_conflict,
     upload_if_rev_matches,
+    upload_new_file,
     write_mode_update,
 )
 
@@ -116,3 +118,42 @@ def test_non_conflict_api_error_is_reraised():
 
     with pytest.raises(dropbox.exceptions.ApiError):
         upload_if_rev_matches(mock_dbx, "/vault/note.md", b"x", REV_OTHER)
+
+
+def test_is_conflicted_copy_path_is_case_insensitive():
+    assert is_conflicted_copy_path(
+        "Sep 19, 2026 (MacBook Pro's conflicted copy 2026-09-19).md"
+    )
+    assert is_conflicted_copy_path(
+        "/vault/good enough job vs mission driven "
+        "(macbook pro's conflicted copy 2026-09-19).md"
+    )
+    assert is_conflicted_copy_path("Note (CONFLICTED COPY).md")
+    assert not is_conflicted_copy_path("Sep 19, 2026.md")
+    assert not is_conflicted_copy_path("")
+    assert not is_conflicted_copy_path(None)
+
+
+def test_upload_new_file_uses_add_mode():
+    mock_dbx = MagicMock()
+    mock_dbx.files_upload.return_value = MagicMock(rev=REV_MATCH)
+
+    result = upload_new_file(mock_dbx, "/vault/new.md", b"created")
+
+    assert result.status == "updated"
+    kwargs = mock_dbx.files_upload.call_args.kwargs
+    assert kwargs["autorename"] is False
+    assert kwargs["mode"].is_add()
+    assert not kwargs["mode"].is_overwrite()
+
+
+def test_upload_new_file_conflict_does_not_overwrite():
+    mock_dbx = MagicMock()
+    mock_dbx.files_upload.side_effect = _real_rev_conflict_api_error()
+
+    result = upload_new_file(mock_dbx, "/vault/new.md", b"created")
+
+    assert result.status == "deferred"
+    mode = mock_dbx.files_upload.call_args.kwargs["mode"]
+    assert mode.is_add()
+    assert not mode.is_overwrite()

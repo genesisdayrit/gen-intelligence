@@ -134,25 +134,33 @@ def _mock_dbx(
 
     def download(path):
         response = MagicMock()
+        metadata = MagicMock()
+        metadata.rev = "aaaaaaaaaaaaaaaa"
+        metadata.path_display = path
         if JOURNAL_FOLDER in path:
             if journal_missing:
                 raise FileNotFoundError(f"Journal not found: {path}")
             response.content = journal_content.encode("utf-8")
-            return None, response
+            return metadata, response
         for upload in reversed(uploads):
             if upload["path"] == path:
                 response.content = upload["content"].encode("utf-8")
-                return None, response
+                return metadata, response
         if existing_paths is not None:
             if path not in existing_paths:
                 raise FileNotFoundError(f"not found: {path}")
         elif KH_PATH in path and not kh_exists:
             raise FileNotFoundError(f"not found: {path}")
         response.content = (kh_content or "").encode("utf-8")
-        return None, response
+        return metadata, response
 
-    def capture_upload(data, path, mode=None):
-        uploads.append({"content": data.decode("utf-8"), "path": path, "mode": mode})
+    def capture_upload(data, path, mode=None, autorename=None):
+        uploads.append({
+            "content": data.decode("utf-8"),
+            "path": path,
+            "mode": mode,
+            "autorename": autorename,
+        })
 
     def list_folder(path, **_kwargs):
         result = MagicMock()
@@ -313,6 +321,11 @@ def test_append_wikilink_replaces_placeholder():
     assert result["file_path"] == JOURNAL_PATH
     assert uploads[0]["path"] == JOURNAL_PATH
     assert "- [[My Article]]" in uploads[0]["content"]
+    mode = uploads[0]["mode"]
+    assert mode.is_update()
+    assert mode.get_update() == "aaaaaaaaaaaaaaaa"
+    assert not mode.is_overwrite()
+    assert uploads[0]["autorename"] is False
     section = uploads[0]["content"].split("### Content Buffet:")[1].split("### Content Planning")[0]
     assert section.count("- [[") == 1
 

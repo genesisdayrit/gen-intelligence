@@ -25,7 +25,10 @@ import redis
 import requests
 from dotenv import load_dotenv
 
-from services.obsidian.utils.dropbox_rev_safe import upload_if_rev_matches
+from services.obsidian.utils.dropbox_rev_safe import (
+    is_conflicted_copy_path,
+    upload_if_rev_matches,
+)
 
 load_dotenv()
 
@@ -35,6 +38,7 @@ STATUS_UPDATED = "updated"
 STATUS_SKIPPED = "skipped"
 STATUS_DEFERRED = "deferred"
 STATUS_ERROR = "error"
+STATUS_IGNORED = "ignored"
 
 # Redis configuration
 redis_host = os.getenv('REDIS_HOST', 'localhost')
@@ -153,6 +157,18 @@ def _get_modified_files_since_cutoff(dbx: dropbox.Dropbox, paths: list[str], cut
                         if client_modified_utc.tzinfo is None:
                             client_modified_utc = client_modified_utc.replace(tzinfo=pytz.utc)
                         if client_modified_utc > cutoff_dt:
+                            entry_path = (
+                                getattr(entry, "path_display", None)
+                                or entry.path_lower
+                            )
+                            if is_conflicted_copy_path(entry_path) or is_conflicted_copy_path(
+                                getattr(entry, "name", None)
+                            ):
+                                logger.info(
+                                    "Skipping conflicted-copy file: %s",
+                                    entry_path,
+                                )
+                                continue
                             modified_files.append(entry.path_lower)
 
                 if not response.has_more:
@@ -281,8 +297,16 @@ def _update_journal_property(
     can apply YAML when the rev matches again.
 
     Returns:
-        One of STATUS_UPDATED, STATUS_SKIPPED, STATUS_DEFERRED, STATUS_ERROR.
+        One of STATUS_UPDATED, STATUS_SKIPPED, STATUS_DEFERRED, STATUS_ERROR,
+        STATUS_IGNORED.
     """
+    if is_conflicted_copy_path(file_path):
+        logger.info(
+            "Skipping conflicted-copy path (will not mutate forks): %s",
+            file_path,
+        )
+        return STATUS_IGNORED
+
     status = STATUS_ERROR
     for attempt in range(1, max_attempts + 1):
         try:
@@ -343,17 +367,27 @@ def update_modified_files_today() -> bool:
                 STATUS_SKIPPED: 0,
                 STATUS_DEFERRED: 0,
                 STATUS_ERROR: 0,
+                STATUS_IGNORED: 0,
             }
             for file_path in modified_files:
+                if is_conflicted_copy_path(file_path):
+                    logger.info(
+                        "Skipping conflicted-copy path (will not mutate forks): %s",
+                        file_path,
+                    )
+                    counts[STATUS_IGNORED] += 1
+                    continue
                 logger.info(f"Processing file: {file_path}")
                 status = _update_journal_property(dbx, file_path)
                 counts[status] = counts.get(status, 0) + 1
             logger.info(
                 "Folder-journal relations finished: %s updated, %s skipped "
-                "(already correct), %s deferred (rev conflict), %s errors.",
+                "(already correct), %s deferred (rev conflict), %s ignored "
+                "(conflicted copy), %s errors.",
                 counts[STATUS_UPDATED],
                 counts[STATUS_SKIPPED],
                 counts[STATUS_DEFERRED],
+                counts[STATUS_IGNORED],
                 counts[STATUS_ERROR],
             )
         else:
