@@ -7,6 +7,7 @@ Spotify drain.
 Reuses Saved Tracks helpers (``iter_saved_track_items``,
 ``track_id_from_item``, refresh-on-demand tokens). Dropbox writes are
 rev-safe via ``upload_if_rev_matches``. Empty days skip the write entirely.
+A second rev mismatch enqueues the same journal day for hourly reconcile.
 """
 
 from __future__ import annotations
@@ -24,7 +25,10 @@ from services.obsidian.add_readwise_buffet import (
     _resolve_journal_folder,
     journal_filename,
 )
-from services.obsidian.utils.dropbox_rev_safe import upload_if_rev_matches
+from services.obsidian.utils.dropbox_rev_safe import (
+    record_deferred_write,
+    upload_if_rev_matches,
+)
 from services.spotify.saved_tracks import (
     get_spotify_access_token,
     iter_saved_track_items,
@@ -335,7 +339,8 @@ def write_music_of_the_day(
     """Write previous-day (or ``date``) Liked Songs into that day's journal.
 
     Empty likes skip Dropbox entirely. On rev mismatch, re-download once and
-    retry; a second mismatch defers (next scheduled run is a different day).
+    retry; a second mismatch enqueues the same journal day for hourly
+    reconcile (merge stays idempotent — already-present track URLs skip).
     """
     day = resolve_journal_day(date_value=date, now=now)
     summary: dict[str, Any] = {
@@ -388,12 +393,21 @@ def write_music_of_the_day(
             summary["status"] = "skipped_missing_journal"
             return summary
         if result["status"] == "deferred":
+            journal_path = str(result.get("path") or file_path)
             logger.warning(
                 "Deferring Music of the Day for %s; cloud file left unchanged "
-                "(no overwrite / no conflicted copy). Next scheduled run is a "
-                "different day — re-trigger with ?date=%s if needed.",
-                file_path,
+                "(no overwrite / no conflicted copy). Enqueued for hourly "
+                "reconcile to retry the same journal day. Manual fallback: "
+                "?date=%s.",
+                journal_path,
                 day.isoformat(),
+            )
+            record_deferred_write(
+                source="spotify",
+                kind="music_of_the_day",
+                payload_ref=day.isoformat(),
+                target=journal_path,
+                payload={"date": day.isoformat()},
             )
 
     summary["status"] = result["status"]
