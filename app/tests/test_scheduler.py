@@ -604,7 +604,14 @@ def test_reconcile_missed_obsidian_writes_runs_hourly_in_system_timezone(client)
     assert job is not None
     trigger_str = str(job.trigger).lower()
     assert "minute='0'" in trigger_str, trigger_str
-    assert "hour='*'" in trigger_str, trigger_str
+    # APScheduler omits wildcard fields, so every-hour is ``cron[minute='0']``.
+    assert "hour=" not in trigger_str, trigger_str
+    hour_field = next(
+        (field for field in job.trigger.fields if field.name == "hour"),
+        None,
+    )
+    assert hour_field is not None
+    assert str(hour_field) == "*"
     timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
