@@ -142,6 +142,21 @@ def _update_daily_journal_properties(use_today=False):
     return update_daily_journal_properties(use_today=use_today)
 
 
+def _ensure_todays_daily_files():
+    """Morning catch-up if last night's 18:00 tomorrow-creates were skipped.
+
+    Evening jobs create *tomorrow*. After a hub deploy/restart past
+    ``misfire_grace_time`` (1h), those jobs do not backfill — their next_run
+    jumps to the following evening. This job creates *today's* journal,
+    daily action, and journal properties via the existing ``use_today=True``
+    path (idempotent: already-exists is success).
+    """
+    journal_ok = _create_daily_journal(use_today=True)
+    action_ok = _create_daily_action(use_today=True)
+    properties_ok = _update_daily_journal_properties(use_today=True)
+    return journal_ok and action_ok and properties_ok
+
+
 def _add_daily_review_section():
     from scripts.obsidian.workflows.file_updates.add_daily_review_section import (
         add_daily_review_section,
@@ -241,6 +256,10 @@ DAILY_CREATION_JOB_IDS = frozenset({
     "create_daily_action",
     "update_daily_journal_properties",
 })
+
+# Morning ensure: always calls the daily-creation helpers with use_today=True.
+# Not in DAILY_CREATION_JOB_IDS — POST /run does not take a use_today flag.
+ENSURE_TODAYS_DAILY_FILES_JOB_ID = "ensure_todays_daily_files"
 
 # Remaining gd-second-brain-os crontab jobs migrated onto APScheduler
 # after the evening-before daily-creation cluster (PR 198).
@@ -471,6 +490,19 @@ SCHEDULED_JOBS = [
         "trigger": CronTrigger(
             hour=18,
             minute=10,
+            timezone=SYSTEM_TZ,
+        ),
+    },
+    {
+        "id": ENSURE_TODAYS_DAILY_FILES_JOB_ID,
+        "name": "Ensure Today's Daily Files (morning catch-up)",
+        "func": _ensure_todays_daily_files,
+        # 05:00 Pacific: after overnight deploys, before typical morning use.
+        # Calls journal → action → properties with use_today=True.
+        # Evening 18:00/18:05/18:10 tomorrow-creates stay registered.
+        "trigger": CronTrigger(
+            hour=5,
+            minute=0,
             timezone=SYSTEM_TZ,
         ),
     },
@@ -707,6 +739,8 @@ def run_job_now(job_id, **kwargs):
     ``backfill_granola_notes``, ``spotify_music_of_the_day`` (``date``),
     ``reconcile_missed_obsidian_writes`` (``since`` watermark override),
     and the daily creation jobs' ``use_today`` recovery flag).
+    ``ensure_todays_daily_files`` has no extra kwargs; it always ensures
+    today's files.
     """
     job = scheduler.get_job(job_id)
     if job is None:
