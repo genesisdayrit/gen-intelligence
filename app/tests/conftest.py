@@ -12,6 +12,13 @@ from contextlib import contextmanager
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "readwise_concurrency: exercise real Redis lock/debounce helpers",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _noop_readwise_concurrency(request, monkeypatch):
     if request.node.get_closest_marker("readwise_concurrency"):

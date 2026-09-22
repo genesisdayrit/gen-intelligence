@@ -56,9 +56,9 @@ def redis_lock(
     """Acquire ``key`` (SET NX + TTL). Always release in ``finally`` if held.
 
     Yields True when this caller owns the lock. Yields False when Redis
-    failed or the wait expired — the body still runs (fail-open) so a
-    write is not dropped. ``fail_open=False`` re-raises Redis errors and
-    still skips the body if the wait expires without an acquire.
+    failed or the wait expired — the body still runs so a write is not
+    dropped. ``fail_open=False`` re-raises Redis errors; a wait timeout
+    still runs the body and yields False.
 
     Release compares the owner token so an expired lock that another
     caller now holds is not deleted.
