@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime
 from typing import Callable
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import urlparse
 
 import dropbox
 import pytz
@@ -26,6 +26,14 @@ from services.obsidian.utils.dropbox_rev_safe import (
     create_or_defer,
     download_text_with_rev,
     update_with_retry,
+)
+from services.obsidian.utils.readwise_concurrency import (
+    READER_SINGLEFLIGHT_TTL_SECONDS,
+    claim_reader_document_singleflight,
+    lock_readwise_target,
+    normalize_knowledge_hub_url,
+    release_reader_document_singleflight,
+    strip_tracking_query,
 )
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
@@ -1290,18 +1298,19 @@ def append_wikilink_to_journal_buffet(
                 return None, action
             return updated, action
 
-        status, action, _updated = _rev_safe_update_with_retry(
-            dbx,
-            file_path,
-            apply,
-            defer={
-                "source": "readwise",
-                "kind": "journal_wikilink",
-                "payload_ref": target,
-                "target": file_path,
-                "payload": {"note_title": note_title, "journal_date": journal_date},
-            },
-        )
+        with lock_readwise_target(file_path):
+            status, action, _updated = _rev_safe_update_with_retry(
+                dbx,
+                file_path,
+                apply,
+                defer={
+                    "source": "readwise",
+                    "kind": "journal_wikilink",
+                    "payload_ref": target,
+                    "target": file_path,
+                    "payload": {"note_title": note_title, "journal_date": journal_date},
+                },
+            )
         if status == "missing":
             logger.warning(
                 "KH journal buffet skipped; journal not found (will not create): %s",
@@ -1514,23 +1523,60 @@ def _download_tweet_page(
     return _download_hub_note(dbx, hub_path, filename)
 
 
-_TRACKING_QUERY_KEYS = frozenset({"si", "is"})
-
-
 def _strip_tracking_query(url: str) -> str:
     """Drop share/tracking query keys such as ``si=`` / ``is=``. Keep the rest."""
-    text = _nonempty(url)
-    if not text:
-        return ""
-    parsed = urlparse(text)
-    if not parsed.query:
-        return text
-    kept = [
-        (key, value)
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-        if key.casefold() not in _TRACKING_QUERY_KEYS
+    return strip_tracking_query(url) if _nonempty(url) else ""
+
+
+def readwise_target_identity(
+    payload: dict,
+    *,
+    book: dict | None = None,
+    dropbox_target: str | None = None,
+) -> str:
+    """Stable lock identity: normalized page URL, else Dropbox target path.
+
+    Highlight webhooks often omit ``source_url`` until the book lookup;
+    documents prefer ``source_url`` / YouTube / Reader permalink. Tracking
+    query keys are stripped so share links and Reader saves collide.
+    """
+    url = _identity_url(payload, book=book)
+    if url:
+        normalized = normalize_knowledge_hub_url(url)
+        if normalized:
+            return normalized
+    target = _nonempty(dropbox_target)
+    if target:
+        return target
+    event = _nonempty(payload.get("event_type")) or "readwise"
+    event_id = payload.get("id")
+    if event_id is not None and event_id != "":
+        return f"event:{event}:{event_id}"
+    return f"event:{event}"
+
+
+def _identity_url(payload: dict, *, book: dict | None = None) -> str | None:
+    """Page URL used as the KH lock / debounce identity. Never a highlight open URL."""
+    if is_document_event(payload):
+        page = document_page_url(payload)
+        return _youtube_url_for_document(payload, page) or page
+
+    candidates = [
+        _http_url(payload.get("source_url")),
+        _http_url((book or {}).get("source_url")) if book else None,
+        _youtube_url_for_document(book or {}, _http_url((book or {}).get("source_url")))
+        if book
+        else None,
+        _youtube_url_for_document(payload, _http_url(payload.get("source_url"))),
     ]
-    return urlunparse(parsed._replace(query=urlencode(kept, doseq=True)))
+    for href in candidates:
+        if href and "readwise.io/open/" not in href:
+            return href
+    if book is None and is_highlight_event(payload):
+        resolved = _resolve_highlight_book(payload)
+        if resolved:
+            return _identity_url(payload, book=resolved)
+    return None
 
 
 def _hub_filename_stem(path: str) -> str:
@@ -1848,44 +1894,47 @@ def _append_tweet_page(
         return None
     keys = dedup_keys(payload)
     filename = _tweet_page_filename(target)
-    existing = _download_tweet_page(dbx, hub_path, filename)
-    if existing is None:
-        file_path = f"{hub_path}/{filename}"
-        markdown = _new_tweet_page_markdown(target, bullet, handle)
-        if not _rev_safe_create(
+    file_path = f"{hub_path}/{filename}"
+    with lock_readwise_target(
+        readwise_target_identity(payload, book=book, dropbox_target=file_path)
+    ):
+        existing = _download_tweet_page(dbx, hub_path, filename)
+        if existing is None:
+            markdown = _new_tweet_page_markdown(target, bullet, handle)
+            if not _rev_safe_create(
+                dbx,
+                file_path,
+                markdown,
+                defer=_readwise_defer_spec(payload, file_path, "kh_tweet"),
+            ):
+                return "deferred"
+            logger.info("Tweet page created path=%s", file_path)
+            return "created"
+
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
+            updated = _ensure_tweet_page_people(updated, handle)
+            if updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(
             dbx,
-            file_path,
-            markdown,
-            defer=_readwise_defer_spec(payload, file_path, "kh_tweet"),
-        ):
+            existing.path,
+            apply,
+            downloaded=existing,
+            defer=_readwise_defer_spec(payload, existing.path, "kh_tweet"),
+        )
+        if status == "deferred":
             return "deferred"
-        logger.info("Tweet page created path=%s", file_path)
-        return "created"
-
-    def apply(content: str) -> tuple[str | None, str]:
-        updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
-        updated = _ensure_tweet_page_people(updated, handle)
-        if updated == content:
-            return None, action
-        return updated, action
-
-    status, action, _updated = _rev_safe_update_with_retry(
-        dbx,
-        existing.path,
-        apply,
-        downloaded=existing,
-        defer=_readwise_defer_spec(payload, existing.path, "kh_tweet"),
-    )
-    if status == "deferred":
-        return "deferred"
-    if status == "updated":
-        if action == "skipped":
-            logger.info("Tweet page people backfill path=%s", existing.path)
-        else:
-            logger.info("Tweet page %s path=%s", action, existing.path)
-    elif action == "skipped":
-        logger.info("Tweet page skipped (duplicate) path=%s", existing.path)
-    return action
+        if status == "updated":
+            if action == "skipped":
+                logger.info("Tweet page people backfill path=%s", existing.path)
+            else:
+                logger.info("Tweet page %s path=%s", action, existing.path)
+        elif action == "skipped":
+            logger.info("Tweet page skipped (duplicate) path=%s", existing.path)
+        return action
 
 
 def _append_tweet_pages_after_journal(
@@ -2145,44 +2194,47 @@ def _append_book_page(
     extras["title"] = stem
     _author, people_links = _book_author_people(book, payload)
     filename = _hub_note_filename(stem)
-    existing = _download_hub_note(dbx, hub_path, filename)
-    if existing is None:
-        file_path = f"{hub_path}/{filename}"
-        markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
-        if not _rev_safe_create(
+    file_path = f"{hub_path}/{filename}"
+    with lock_readwise_target(
+        readwise_target_identity(payload, book=book, dropbox_target=file_path)
+    ):
+        existing = _download_hub_note(dbx, hub_path, filename)
+        if existing is None:
+            markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
+            if not _rev_safe_create(
+                dbx,
+                file_path,
+                markdown,
+                defer=_readwise_defer_spec(payload, file_path, "kh_book"),
+            ):
+                return "deferred"
+            logger.info("Book page created path=%s", file_path)
+            return "created"
+
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_book_highlights_bullet(content, bullet, keys)
+            updated = _ensure_book_page_frontmatter(updated, extras, people_links)
+            if updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(
             dbx,
-            file_path,
-            markdown,
-            defer=_readwise_defer_spec(payload, file_path, "kh_book"),
-        ):
+            existing.path,
+            apply,
+            downloaded=existing,
+            defer=_readwise_defer_spec(payload, existing.path, "kh_book"),
+        )
+        if status == "deferred":
             return "deferred"
-        logger.info("Book page created path=%s", file_path)
-        return "created"
-
-    def apply(content: str) -> tuple[str | None, str]:
-        updated, action = insert_book_highlights_bullet(content, bullet, keys)
-        updated = _ensure_book_page_frontmatter(updated, extras, people_links)
-        if updated == content:
-            return None, action
-        return updated, action
-
-    status, action, _updated = _rev_safe_update_with_retry(
-        dbx,
-        existing.path,
-        apply,
-        downloaded=existing,
-        defer=_readwise_defer_spec(payload, existing.path, "kh_book"),
-    )
-    if status == "deferred":
-        return "deferred"
-    if status == "updated":
-        if action == "skipped":
-            logger.info("Book page metadata backfill path=%s", existing.path)
-        else:
-            logger.info("Book page %s path=%s", action, existing.path)
-    elif action == "skipped":
-        logger.info("Book page skipped (duplicate) path=%s", existing.path)
-    return action
+        if status == "updated":
+            if action == "skipped":
+                logger.info("Book page metadata backfill path=%s", existing.path)
+            else:
+                logger.info("Book page %s path=%s", action, existing.path)
+        elif action == "skipped":
+            logger.info("Book page skipped (duplicate) path=%s", existing.path)
+        return action
 
 
 def _append_book_pages_after_journal(
@@ -2349,48 +2401,51 @@ def _append_article_page(
     extras["title"] = stem
     _author, people_links = _book_author_people(book, payload)
     filename = _hub_note_filename(stem)
-    existing = _download_hub_note(dbx, hub_path, filename)
-    if existing is None:
-        file_path = f"{hub_path}/{filename}"
-        markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
-        if not _rev_safe_create(
+    file_path = f"{hub_path}/{filename}"
+    with lock_readwise_target(
+        readwise_target_identity(payload, book=book, dropbox_target=file_path)
+    ):
+        existing = _download_hub_note(dbx, hub_path, filename)
+        if existing is None:
+            markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
+            if not _rev_safe_create(
+                dbx,
+                file_path,
+                markdown,
+                defer=_readwise_defer_spec(payload, file_path, "kh_article"),
+            ):
+                return "deferred"
+            logger.info("Article page created path=%s", file_path)
+            return "created"
+
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_article_highlights_bullet(content, bullet, keys)
+            url_only = {}
+            if extras.get("URL"):
+                url_only["URL"] = extras["URL"]
+            if url_only:
+                updated = _ensure_book_page_frontmatter(updated, url_only, [])
+            if updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(
             dbx,
-            file_path,
-            markdown,
-            defer=_readwise_defer_spec(payload, file_path, "kh_article"),
-        ):
+            existing.path,
+            apply,
+            downloaded=existing,
+            defer=_readwise_defer_spec(payload, existing.path, "kh_article"),
+        )
+        if status == "deferred":
             return "deferred"
-        logger.info("Article page created path=%s", file_path)
-        return "created"
-
-    def apply(content: str) -> tuple[str | None, str]:
-        updated, action = insert_article_highlights_bullet(content, bullet, keys)
-        url_only = {}
-        if extras.get("URL"):
-            url_only["URL"] = extras["URL"]
-        if url_only:
-            updated = _ensure_book_page_frontmatter(updated, url_only, [])
-        if updated == content:
-            return None, action
-        return updated, action
-
-    status, action, _updated = _rev_safe_update_with_retry(
-        dbx,
-        existing.path,
-        apply,
-        downloaded=existing,
-        defer=_readwise_defer_spec(payload, existing.path, "kh_article"),
-    )
-    if status == "deferred":
-        return "deferred"
-    if status == "updated":
-        if action == "skipped":
-            logger.info("Article page URL backfill path=%s", existing.path)
-        else:
-            logger.info("Article page %s path=%s", action, existing.path)
-    elif action == "skipped":
-        logger.info("Article page skipped (duplicate) path=%s", existing.path)
-    return action
+        if status == "updated":
+            if action == "skipped":
+                logger.info("Article page URL backfill path=%s", existing.path)
+            else:
+                logger.info("Article page %s path=%s", action, existing.path)
+        elif action == "skipped":
+            logger.info("Article page skipped (duplicate) path=%s", existing.path)
+        return action
 
 
 def _append_article_pages_after_journal(
@@ -2512,14 +2567,7 @@ def _append_youtube_page(
     youtube_url = _youtube_highlight_url(book, payload)
     readwise_id = _nonempty(payload.get("book_id")) or _reader_document_id(payload)
     page_title = _nonempty((book or {}).get("title")) or _nonempty(payload.get("title"))
-    existing = find_hub_note_by_identity(
-        dbx,
-        hub_path,
-        stem=stem,
-        title=page_title,
-        url=youtube_url,
-        readwise_id=readwise_id,
-    )
+    fallback_path = f"{hub_path}/{_hub_note_filename(stem)}" if stem else None
     extras = {}
     if youtube_url:
         extras["URL"] = youtube_url
@@ -2529,52 +2577,63 @@ def _append_youtube_page(
     if category:
         extras["category"] = category
 
-    if existing is None:
-        if not stem:
-            return None
-        file_path = f"{hub_path}/{_hub_note_filename(stem)}"
-        markdown = _new_youtube_highlight_page_markdown(stem, bullet, extras)
-        if not _rev_safe_create(
+    with lock_readwise_target(
+        readwise_target_identity(payload, book=book, dropbox_target=fallback_path)
+    ):
+        existing = find_hub_note_by_identity(
+            dbx,
+            hub_path,
+            stem=stem,
+            title=page_title,
+            url=youtube_url,
+            readwise_id=readwise_id,
+        )
+        if existing is None:
+            if not stem:
+                return None
+            file_path = fallback_path or f"{hub_path}/{_hub_note_filename(stem)}"
+            markdown = _new_youtube_highlight_page_markdown(stem, bullet, extras)
+            if not _rev_safe_create(
+                dbx,
+                file_path,
+                markdown,
+                defer=_readwise_defer_spec(payload, file_path, "kh_youtube"),
+            ):
+                return "deferred"
+            logger.info("YouTube transcript page created path=%s", file_path)
+            return "created"
+
+        file_path, _existing_content = existing
+
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_transcript_highlights_bullet(content, bullet, keys)
+            if extras:
+                from services.obsidian.add_shared_link import (
+                    _extract_frontmatter,
+                    _merge_extra_frontmatter,
+                    _rebuild_markdown,
+                )
+
+                frontmatter, body = _extract_frontmatter(updated)
+                if _merge_extra_frontmatter(frontmatter, extras):
+                    updated = _rebuild_markdown(frontmatter, body)
+            if updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(
             dbx,
             file_path,
-            markdown,
+            apply,
             defer=_readwise_defer_spec(payload, file_path, "kh_youtube"),
-        ):
+        )
+        if status == "deferred":
             return "deferred"
-        logger.info("YouTube transcript page created path=%s", file_path)
-        return "created"
-
-    file_path, _existing_content = existing
-
-    def apply(content: str) -> tuple[str | None, str]:
-        updated, action = insert_transcript_highlights_bullet(content, bullet, keys)
-        if extras:
-            from services.obsidian.add_shared_link import (
-                _extract_frontmatter,
-                _merge_extra_frontmatter,
-                _rebuild_markdown,
-            )
-
-            frontmatter, body = _extract_frontmatter(updated)
-            if _merge_extra_frontmatter(frontmatter, extras):
-                updated = _rebuild_markdown(frontmatter, body)
-        if updated == content:
-            return None, action
-        return updated, action
-
-    status, action, _updated = _rev_safe_update_with_retry(
-        dbx,
-        file_path,
-        apply,
-        defer=_readwise_defer_spec(payload, file_path, "kh_youtube"),
-    )
-    if status == "deferred":
-        return "deferred"
-    if status == "updated":
-        logger.info("YouTube transcript page %s path=%s", action, file_path)
-    elif action == "skipped":
-        logger.info("YouTube transcript page skipped (duplicate) path=%s", file_path)
-    return action
+        if status == "updated":
+            logger.info("YouTube transcript page %s path=%s", action, file_path)
+        elif action == "skipped":
+            logger.info("YouTube transcript page skipped (duplicate) path=%s", file_path)
+        return action
 
 
 def _append_youtube_pages_after_journal(
@@ -2686,12 +2745,13 @@ def write_highlights_by_journal(
                 if format_fn is format_document_bullet
                 else "journal_highlight"
             )
-            status, _counts, _updated = _rev_safe_update_with_retry(
-                dbx,
-                file_path,
-                apply,
-                defer=[_readwise_defer_spec(payload, file_path, kind) for payload in group],
-            )
+            with lock_readwise_target(file_path):
+                status, _counts, _updated = _rev_safe_update_with_retry(
+                    dbx,
+                    file_path,
+                    apply,
+                    defer=[_readwise_defer_spec(payload, file_path, kind) for payload in group],
+                )
             if status == "missing":
                 logger.warning(
                     "Readwise buffet skipped; journal not found (will not write today): %s",
@@ -2823,6 +2883,12 @@ def _append_document_markdown_fallback(payload: dict, now: datetime | None = Non
     )
 
 
+# Keep the Reader debounce claim after a successful KH write (including
+# same-day skip, which still attempted Raindrop). Release on failure /
+# defer so a retry or hourly reconcile can run before the 45s TTL.
+_READER_SINGLEFLIGHT_KEEP_ACTIONS = frozenset({"created", "updated", "skipped"})
+
+
 def _append_reader_document_knowledge_hub(
     payload: dict,
     now: datetime | None = None,
@@ -2832,6 +2898,11 @@ def _append_reader_document_knowledge_hub(
     After a successful KH create or update (including same-day skip), also
     bookmark the document page URL in Raindrop Unsorted. Raindrop errors
     never fail the webhook or undo the KH write.
+
+    Same normalized URL within 45s is single-flighted: the first event
+    writes + Raindrops; later arrivals no-op immediately (they do not
+    wait). A Redis lock keyed by that URL (else the KH stem) serializes
+    the Dropbox mutate with highlight-page writers for the same note.
     """
     url = document_page_url(payload)
     title = _nonempty(payload.get("title"))
@@ -2839,7 +2910,58 @@ def _append_reader_document_knowledge_hub(
     journal_date = document_journal_date(payload, now=now)
     youtube_url = _youtube_url_for_document(payload, url)
     extras = reader_document_extra_frontmatter(payload) or None
+    identity = readwise_target_identity(payload)
+    normalized = normalize_knowledge_hub_url(youtube_url or url or "") or None
+    claimed = False
+    if normalized:
+        if not claim_reader_document_singleflight(normalized):
+            logger.info(
+                "Readwise document single-flight skip (same URL within %ss): %s",
+                READER_SINGLEFLIGHT_TTL_SECONDS,
+                normalized[:120],
+            )
+            return {
+                "success": True,
+                "action": "skipped_singleflight",
+                "error": None,
+                "file_path": None,
+            }
+        claimed = True
 
+    try:
+        with lock_readwise_target(identity):
+            result = _write_reader_document_knowledge_hub(
+                payload,
+                now=now,
+                url=url,
+                title=title,
+                stem=stem,
+                journal_date=journal_date,
+                youtube_url=youtube_url,
+                extras=extras,
+            )
+    except Exception:
+        if claimed and normalized:
+            release_reader_document_singleflight(normalized)
+        raise
+
+    if claimed and normalized and result.get("action") not in _READER_SINGLEFLIGHT_KEEP_ACTIONS:
+        release_reader_document_singleflight(normalized)
+    return result
+
+
+def _write_reader_document_knowledge_hub(
+    payload: dict,
+    *,
+    now: datetime | None,
+    url: str | None,
+    title: str | None,
+    stem: str | None,
+    journal_date: str,
+    youtube_url: str | None,
+    extras: dict | None,
+) -> dict:
+    """KH + journal + Raindrop for one parent Reader document. Caller holds the lock."""
     if not youtube_url and not stem:
         logger.info(
             "Readwise document KH skipped (empty/junk title); writing markdown fallback"
@@ -2910,7 +3032,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     Parent Reader documents create/update a Knowledge Hub note (with Reader
     YAML extras when present) and write a standalone ``- [[Title by Author]]``
     (or ``- [[Title]]`` if no author) to that day's Content Buffet, then
-    bookmark the document page URL in Raindrop Unsorted. Highlights wikilink
+    bookmark the document page URL in Raindrop Unsorted. Concurrent Reader
+    ``*_document.created`` events for the same normalized URL within 45s
+    single-flight: later arrivals no-op (no second write or Raindrop).
+    Dropbox mutates take a Redis lock keyed by that URL (else the target
+    path) so the same KH note cannot race itself. Highlights wikilink
     that same KH stem and are not bookmarked. ``readwise.highlight.created``
     tweet highlights also create or append ``Tweets from @handle`` under
     ``### Bookmarked Tweets`` after the journal write. Book highlights
