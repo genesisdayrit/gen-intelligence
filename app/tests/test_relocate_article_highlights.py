@@ -29,6 +29,7 @@ from services.obsidian.relocate_article_highlights import (  # noqa: E402
     analyze_article_highlights_relocation,
     classify_article_highlights_placement,
     format_candidate_report,
+    heading_matches_expected_title,
     process_note,
     relocate_article_highlights_above_title,
     run_relocate_article_highlights,
@@ -352,6 +353,155 @@ def test_verified_title_ignores_h3_and_requires_text_match():
         == 6
     )
     assert verified_title_heading_index(lines, 3, ["Missing"]) is None
+    assert heading_matches_expected_title(
+        "A long essay by The Verge", ["A long essay by The Verge"]
+    )
+    assert heading_matches_expected_title(
+        "How To Read A Paper by S. Keshav",
+        ["How to Read a Paper by S. Keshav"],
+    )
+    assert not heading_matches_expected_title(
+        "Bowling Alley at Midnight",
+        ["The Dark Forest by Liu Cixin"],
+        allow_prefix=True,
+    )
+
+
+def test_relocate_casefold_title_heading_moves_section():
+    content = """---
+title: "How to Read a Paper by S. Keshav"
+author: "[[S. Keshav]]"
+---
+
+## How To Read A Paper by S. Keshav
+
+Scraped body stays after the title.
+
+### Article highlights
+- "quote"
+"""
+    updated, changed = relocate_article_highlights_above_title(content)
+    assert changed is True
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "## How To Read A Paper by S. Keshav"
+    )
+    assert updated.index("## How To Read A Paper by S. Keshav") < updated.index(
+        "Scraped body stays after the title."
+    )
+    assert classify_article_highlights_placement(content) == "needs_move"
+
+
+def test_relocate_exact_title_heading_still_moves_section():
+    content = """---
+title: "How to Read a Paper by S. Keshav"
+---
+
+# How to Read a Paper by S. Keshav
+
+### Article highlights
+- "quote"
+"""
+    updated, changed = relocate_article_highlights_above_title(content)
+    assert changed is True
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "# How to Read a Paper by S. Keshav"
+    )
+    assert classify_article_highlights_placement(content) == "needs_move"
+
+
+def test_relocate_unrelated_heading_with_readwise_yaml_is_not_verified():
+    content = """---
+title: "The Dark Forest by Liu Cixin"
+author: "[[Liu Cixin]]"
+readwise_id: 01darkforest
+readwise_url: https://read.readwise.io/read/01darkforest
+---
+
+## Bowling Alley at Midnight
+
+Scraped body under a different phrase than the filename.
+
+### Article highlights
+- "quote"
+"""
+    path = f"{KH}/The Dark Forest by Liu Cixin.md"
+    updated, changed = relocate_article_highlights_above_title(content, path=path)
+    assert changed is False
+    assert updated == content
+    assert (
+        classify_article_highlights_placement(content, path=path)
+        == "no_verified_title"
+    )
+
+
+def test_relocate_readwise_prefix_heading_moves_section():
+    content = """---
+title: "Nobel Lecture by Muhammad Yunus"
+author: "[[Muhammad Yunus]]"
+readwise_id: 01nobellecture
+readwise_url: https://read.readwise.io/read/01nobellecture
+---
+
+## Nobel Lecture
+
+Prize lecture body.
+
+### Article highlights
+- "quote"
+"""
+    path = f"{KH}/Nobel Lecture by Muhammad Yunus.md"
+    updated, changed = relocate_article_highlights_above_title(content, path=path)
+    assert changed is True
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "## Nobel Lecture"
+    )
+    assert classify_article_highlights_placement(content, path=path) == "needs_move"
+
+
+def test_relocate_prefix_heading_without_readwise_yaml_is_not_verified():
+    content = """---
+title: "Nobel Lecture by Muhammad Yunus"
+author: "[[Muhammad Yunus]]"
+---
+
+## Nobel Lecture
+
+Prize lecture body.
+
+### Article highlights
+- "quote"
+"""
+    path = f"{KH}/Nobel Lecture by Muhammad Yunus.md"
+    updated, changed = relocate_article_highlights_above_title(content, path=path)
+    assert changed is False
+    assert updated == content
+    assert (
+        classify_article_highlights_placement(content, path=path)
+        == "no_verified_title"
+    )
+
+
+def test_relocate_short_prefix_heading_with_readwise_yaml_is_not_verified():
+    content = """---
+title: "Nobel Lecture by Muhammad Yunus"
+readwise_id: 01nobellecture
+---
+
+## Nobel
+
+Too short to be a safe prefix of the expected stem.
+
+### Article highlights
+- "quote"
+"""
+    path = f"{KH}/Nobel Lecture by Muhammad Yunus.md"
+    updated, changed = relocate_article_highlights_above_title(content, path=path)
+    assert changed is False
+    assert updated == content
+    assert (
+        classify_article_highlights_placement(content, path=path)
+        == "no_verified_title"
+    )
 
 
 def test_dry_run_report_includes_titles_and_before_after_sketch():
