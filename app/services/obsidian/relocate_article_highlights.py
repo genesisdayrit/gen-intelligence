@@ -7,9 +7,14 @@ without touching book / tweet / transcript headings.
 
 The page title is **not** “the first ATX heading.” Scraped article bodies
 often contain their own ``#`` / ``##``. A heading is the title only when
-it is H1/H2 **and** its text matches the YAML ``title``, the filename
-stem, or the hub ``Title by Author`` stem for that note. No match → skip
-(``skipped_no_verified_title``); never guess.
+it is H1/H2 **and** its trimmed text exact- or casefold-matches the YAML
+``title``, the filename stem, or the hub ``Title by Author`` stem for
+that note. When the note has ``readwise_id`` or ``readwise_url`` in YAML,
+a heading that casefold-equals a word-boundary prefix of an expected
+stem (or whose stem is a word-boundary prefix of the heading) also
+counts, if the shorter side is at least 12 characters. No match → skip
+(``skipped_no_verified_title``); never guess “any heading above
+Article highlights.”
 
 Dry-run is the default. Pass ``--apply`` to upload. Writes use the shared
 rev-safe Dropbox path (``WriteMode.update(rev)``, never overwrite).
@@ -57,6 +62,11 @@ _SEARCH_MAX_RESULTS = 200
 _TITLE_ATX = re.compile(r"^#{1,2}(?:\s|$)")
 _HEADING_TEXT = re.compile(r"^#{1,2}\s*(.*)$")
 _RAW_YAML_TITLE = re.compile(r"^title:\s*(.*)$")
+
+# Prefix gate for short Genesis title-case / truncated headings such as
+# ``## Nobel Lecture`` vs expected ``Nobel Lecture by Muhammad Yunus``.
+# Only used when YAML already identifies the note as Readwise-backed.
+_MIN_TITLE_PREFIX_LEN = 12
 
 Action = Literal[
     "would_move",
@@ -187,18 +197,86 @@ def _heading_text(line: str) -> str | None:
     return match.group(1).strip()
 
 
+def yaml_has_readwise_identity(content: str) -> bool:
+    """True when YAML has a non-empty ``readwise_id`` or ``readwise_url``."""
+    frontmatter, _body = _extract_frontmatter(content)
+    for key in ("readwise_id", "readwise_url"):
+        value = frontmatter.get(key)
+        if value is None or isinstance(value, (list, dict, bool)):
+            continue
+        if str(value).strip():
+            return True
+    return False
+
+
+def _is_word_boundary_prefix(shorter: str, longer: str) -> bool:
+    """True when *shorter* is a prefix of *longer* and does not split a word."""
+    if not shorter or not longer.startswith(shorter):
+        return False
+    if len(shorter) == len(longer):
+        return True
+    return not longer[len(shorter)].isalnum()
+
+
+def heading_matches_expected_title(
+    heading: str,
+    expected: Iterable[str],
+    *,
+    allow_prefix: bool = False,
+    min_prefix_len: int = _MIN_TITLE_PREFIX_LEN,
+) -> bool:
+    """Exact, casefold, or (optionally) long word-boundary prefix match."""
+    text = heading.strip()
+    if not text:
+        return False
+    folded = text.casefold()
+    for raw in expected:
+        candidate = (raw or "").strip()
+        if not candidate:
+            continue
+        if text == candidate or folded == candidate.casefold():
+            return True
+        if not allow_prefix:
+            continue
+        other = candidate.casefold()
+        if len(folded) <= len(other):
+            shorter, longer = folded, other
+        else:
+            shorter, longer = other, folded
+        if len(shorter) >= min_prefix_len and _is_word_boundary_prefix(
+            shorter, longer
+        ):
+            return True
+    return False
+
+
 def verified_title_heading_index(
     lines: list[str],
     body_start: int,
     expected: Iterable[str],
+    *,
+    allow_prefix: bool = False,
+    min_prefix_len: int = _MIN_TITLE_PREFIX_LEN,
 ) -> int | None:
-    """First H1/H2 whose trimmed text matches an expected title. No guess."""
-    wanted = {text.strip() for text in expected if text and text.strip()}
+    """First H1/H2 whose text exact- or casefold-matches an expected title.
+
+    When ``allow_prefix`` is true (Readwise YAML present), also accept a
+    heading that casefold-equals a word-boundary prefix of an expected
+    stem, or whose stem is a word-boundary prefix of the heading, if the
+    shorter side is at least ``min_prefix_len`` characters. Never treats
+    “the last ``#`` / ``##`` above Article highlights” as a title.
+    """
+    wanted = [text.strip() for text in expected if text and text.strip()]
     if not wanted:
         return None
     for index in range(body_start, len(lines)):
         text = _heading_text(lines[index])
-        if text is not None and text in wanted:
+        if text is not None and heading_matches_expected_title(
+            text,
+            wanted,
+            allow_prefix=allow_prefix,
+            min_prefix_len=min_prefix_len,
+        ):
             return index
     return None
 
@@ -229,6 +307,8 @@ def _move_section_above_title(
     header_idx: int,
     expected: Iterable[str],
     body_start: int,
+    *,
+    allow_prefix: bool = False,
 ) -> list[str] | None:
     section_end = _highlight_section_end(lines, header_idx)
     section = list(lines[header_idx:section_end])
@@ -239,7 +319,9 @@ def _move_section_above_title(
     section.append("")
 
     remaining = lines[:header_idx] + lines[section_end:]
-    new_title_idx = verified_title_heading_index(remaining, body_start, expected)
+    new_title_idx = verified_title_heading_index(
+        remaining, body_start, expected, allow_prefix=allow_prefix
+    )
     if new_title_idx is None:
         return None
 
@@ -262,7 +344,10 @@ def analyze_article_highlights_relocation(
     body_start = _frontmatter_body_start(lines)
     header_idx = _body_header_index(lines, body_start)
     expected = expected_title_texts(content, path, filename_stem=filename_stem)
-    title_idx = verified_title_heading_index(lines, body_start, expected)
+    allow_prefix = yaml_has_readwise_identity(content)
+    title_idx = verified_title_heading_index(
+        lines, body_start, expected, allow_prefix=allow_prefix
+    )
     matched = lines[title_idx] if title_idx is not None else None
 
     empty = RelocationAnalysis(
@@ -308,7 +393,7 @@ def analyze_article_highlights_relocation(
         )
 
     updated_lines = _move_section_above_title(
-        lines, header_idx, expected, body_start
+        lines, header_idx, expected, body_start, allow_prefix=allow_prefix
     )
     if updated_lines is None:
         return RelocationAnalysis(
@@ -339,7 +424,7 @@ def analyze_article_highlights_relocation(
             after_sketch=window,
         )
     new_title_idx = verified_title_heading_index(
-        updated_lines, body_start, expected
+        updated_lines, body_start, expected, allow_prefix=allow_prefix
     )
     new_header_idx = _body_header_index(updated_lines, body_start)
     return RelocationAnalysis(
@@ -365,9 +450,11 @@ def relocate_article_highlights_above_title(
     """Move ``### Article highlights`` from under the verified title to above it.
 
     Only mutates notes where the section currently appears after a verified
-    H1/H2 title in the body (post-YAML). A heading is verified only when
-    its text matches YAML ``title``, the filename stem, or the hub
-    ``Title by Author`` stem. Already-correct notes, notes without the
+    H1/H2 title in the body (post-YAML). A heading is verified when its
+    text exact- or casefold-matches YAML ``title``, the filename stem, or
+    the hub ``Title by Author`` stem. Notes with ``readwise_id`` /
+    ``readwise_url`` also accept a long (≥12 char) word-boundary prefix
+    of those expected texts. Already-correct notes, notes without the
     section, and notes with no verified title are unchanged. Book / tweet
     / transcript sections stay where they are.
 
@@ -611,7 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "One-off: move ### Article highlights above the verified Knowledge "
-            "Hub title (YAML title / filename stem / Title by Author). "
+            "Hub title (YAML title / filename stem / Title by Author; exact or "
+            "casefold, plus a long prefix when Readwise YAML is present). "
             "Dry-run by default; pass --apply to write."
         )
     )

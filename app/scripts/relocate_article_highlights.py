@@ -3,10 +3,11 @@
 
 Moves an existing ``### Article highlights`` section from under a
 *verified* H1 / H2 title (YAML ``title``, filename stem, or hub
-``Title by Author`` stem) to above that title. Scraped in-body headings
-that do not match are not treated as the title. Book / tweet / transcript
-sections are not changed. Writes are rev-safe Dropbox updates; ``--apply``
-is required to upload.
+``Title by Author`` stem; exact or casefold, plus a ≥12-character
+word-boundary prefix when ``readwise_id`` / ``readwise_url`` is present)
+to above that title. Scraped in-body headings that do not match are not
+treated as the title. Book / tweet / transcript sections are not changed.
+Writes are rev-safe Dropbox updates; ``--apply`` is required to upload.
 
 Usage (from ``app/``, or via docker exec into the app container):
 
