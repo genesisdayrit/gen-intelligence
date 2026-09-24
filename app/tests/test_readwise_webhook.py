@@ -98,6 +98,20 @@ def _assert_yaml_title_then_highlights(markdown: str, title_line: str, header: s
     assert body[title_at + len(title_line) : header_at].strip() == ""
 
 
+def _assert_yaml_highlights_then_title(markdown: str, title_line: str, header: str) -> None:
+    """New article-page order is YAML, highlights section, then the title heading."""
+    assert markdown.lstrip().startswith("---")
+    _frontmatter, body = _extract_frontmatter(markdown)
+    title_at = body.find(title_line)
+    header_at = body.find(header)
+    assert title_at != -1, markdown
+    assert header_at != -1, markdown
+    assert header_at < title_at
+    body_lines = [line for line in body.splitlines() if line.strip()]
+    assert body_lines[0] == header
+    assert body_lines.index(header) < body_lines.index(title_line)
+
+
 client = TestClient(app)
 LA = pytz.timezone("America/Los_Angeles")
 
@@ -3552,10 +3566,30 @@ Kept body text.
     assert "Kept body text." in updated
     assert ARTICLE_HIGHLIGHTS_HEADER in updated
     assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
-    assert updated.index("# A long essay by The Verge") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
-    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("Kept body text.")
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("# A long essay by The Verge")
+    assert updated.index("# A long essay by The Verge") < updated.index("Kept body text.")
     assert bullet in updated
     assert "[[A long essay by The Verge]]:" not in updated
+
+
+def test_missing_article_heading_without_title_goes_after_yaml():
+    content = """---
+title: "No heading note"
+---
+
+Just a paragraph at the top of the body.
+"""
+    bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    updated, action = insert_article_highlights_bullet(
+        content, bullet, keys=["https://readwise.io/open/954480"]
+    )
+    assert action == "inserted"
+    _frontmatter, body = _extract_frontmatter(updated)
+    assert body.lstrip().startswith(ARTICLE_HIGHLIGHTS_HEADER)
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "Just a paragraph at the top of the body."
+    )
+    assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
 
 
 def test_insert_article_highlights_dedups_open_url_only():
@@ -3604,7 +3638,7 @@ def test_new_article_page_markdown_has_author_people_and_url():
     assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     assert "[[A long essay by The Verge]]:" not in markdown
     assert "[[@" not in markdown
-    _assert_yaml_title_then_highlights(
+    _assert_yaml_highlights_then_title(
         markdown, "# A long essay by The Verge", ARTICLE_HIGHLIGHTS_HEADER
     )
 
@@ -3638,6 +3672,9 @@ def test_article_highlight_creates_title_by_author_page():
     assert "[[@The" not in page
     assert BOOKMARKED_TWEETS_HEADER not in page
     assert BOOK_HIGHLIGHTS_HEADER not in page
+    _assert_yaml_highlights_then_title(
+        page, "# A long essay by The Verge", ARTICLE_HIGHLIGHTS_HEADER
+    )
     assert any(item["path"] == ARTICLE_PAGE_PATH for item in uploaded)
 
 
@@ -3715,8 +3752,8 @@ A paragraph that must survive.
     assert "A paragraph that must survive." in body
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert page.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
-    assert page.index("# A long essay by The Verge") < page.index(ARTICLE_HIGHLIGHTS_HEADER)
-    assert page.index(ARTICLE_HIGHLIGHTS_HEADER) < page.index("A paragraph that must survive.")
+    assert page.index(ARTICLE_HIGHLIGHTS_HEADER) < page.index("# A long essay by The Verge")
+    assert page.index("# A long essay by The Verge") < page.index("A paragraph that must survive.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
 
 
@@ -3884,6 +3921,7 @@ def test_title_only_article_page_when_author_missing():
     assert not frontmatter.get("People")
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+    _assert_yaml_highlights_then_title(page, "# A long essay", ARTICLE_HIGHLIGHTS_HEADER)
     assert "[[A long essay]]:" in store[JOURNAL_NOV_PATH]
 
 # ---------------------------------------------------------------------------
@@ -3978,14 +4016,14 @@ def test_insert_transcript_highlights_dedups_open_url():
     assert updated == content
 
 
-def test_missing_heading_after_h2_title_lands_after_that_heading():
+def test_missing_heading_before_h2_title_lands_above_that_heading():
     content = """---
 URL: https://www.theverge.com/long-essay
 ---
 
 ## A long essay
 
-Scraped article body that must stay after highlights.
+Scraped article body that must stay after the title.
 """
     bullet = '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     updated, action = insert_article_highlights_bullet(
@@ -3993,9 +4031,9 @@ Scraped article body that must stay after highlights.
     )
     assert action == "inserted"
     assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
-    assert updated.index("## A long essay") < updated.index(ARTICLE_HIGHLIGHTS_HEADER)
-    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
-        "Scraped article body that must stay after highlights."
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("## A long essay")
+    assert updated.index("## A long essay") < updated.index(
+        "Scraped article body that must stay after the title."
     )
     assert bullet in updated
 
@@ -4006,8 +4044,9 @@ Scraped article body that must stay after highlights.
     assert action == "inserted"
     assert updated.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
     assert updated.index(bullet) < updated.index(second)
-    assert updated.index(second) < updated.index(
-        "Scraped article body that must stay after highlights."
+    assert updated.index(second) < updated.index("## A long essay")
+    assert updated.index("## A long essay") < updated.index(
+        "Scraped article body that must stay after the title."
     )
 
 
