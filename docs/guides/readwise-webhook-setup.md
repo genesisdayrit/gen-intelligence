@@ -53,6 +53,20 @@ On create, YAML is minimal: `title`, `author` as quoted wikilink(s) via `author_
 
 Then ensure `### Article highlights` (create above the title header if missing; reuse an existing heading in place). Each line is `- "quote" ([Link](https://readwise.io/open/{id}))` plus the journal note em dash when the journal formatter already has one. Do not repeat `- [[Title by Author]]:`. Dedup is the open URL only. Article-page failures are logged and never undo a successful journal write. The journal Content Buffet line stays `- [[Title by Author]]: "quote" ([Link](https://readwise.io/open/{id}))`. Tweet and book page writers are unchanged.
 
+Notes created before that above-title placement still have `### Article highlights` under the first `#` / `##` (or at the bottom after scraped body). A **one-off** migration relocates those existing sections. It is dry-run by default and only writes Knowledge Hub notes that still have the section after the title. Book / tweet / transcript headings are not moved. Uploads use the same rev-safe Dropbox path as other writers (`WriteMode.update(rev)`, never overwrite / never a conflicted copy). A rev mismatch skips that file and reports `skipped_rev`. Re-running `--apply` on already-migrated notes is a no-op (`skipped_already_correct`).
+
+```bash
+# From app/ on the host (venv / uv)
+uv run python -m services.obsidian.relocate_article_highlights
+uv run python -m services.obsidian.relocate_article_highlights --apply
+
+# Same commands inside the running app container
+docker compose exec app uv run python -m services.obsidian.relocate_article_highlights
+docker compose exec app uv run python -m services.obsidian.relocate_article_highlights --apply
+```
+
+Read the dry-run `would_move` / `skipped_*` counts before passing `--apply`. Each line is `path<TAB>action`.
+
 `reader.any_document.created` includes RSS and newsletter feed items as well as documents you save yourself. Those days will be logged too. If you only want manually saved documents, subscribe to `reader.non_feed_document.created` instead (this endpoint also accepts `reader.feed_document.created` and treats them the same). Reader also models highlights and notes as documents (`category=highlight|note`, or `parent_id` set); those are skipped so they do not duplicate `readwise.highlight.created` lines.
 
 Highlights are dated by `highlighted_at` (3am local rollover). Documents are dated by `created_at`, then `saved_at`, then `updated_at`. Missing journal files are skipped, not created.
