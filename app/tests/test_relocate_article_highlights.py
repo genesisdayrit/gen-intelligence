@@ -23,12 +23,16 @@ from services.obsidian.add_readwise_buffet import (  # noqa: E402
     BOOK_HIGHLIGHTS_HEADER,
     BOOKMARKED_TWEETS_HEADER,
     TRANSCRIPT_HIGHLIGHTS_HEADER,
+    reader_knowledge_hub_note_stem,
 )
 from services.obsidian.relocate_article_highlights import (  # noqa: E402
+    analyze_article_highlights_relocation,
     classify_article_highlights_placement,
+    format_candidate_report,
     process_note,
     relocate_article_highlights_above_title,
     run_relocate_article_highlights,
+    verified_title_heading_index,
 )
 
 REV = "aaaaaaaaaaaaaaaa"
@@ -210,8 +214,9 @@ title: "A long essay by The Verge"
     assert unchanged == book_only
 
 
-def test_relocate_h2_title_and_missing_title():
+def test_relocate_h2_matching_yaml_title():
     h2 = """---
+title: "A long essay"
 URL: https://www.theverge.com/long-essay
 ---
 
@@ -229,6 +234,92 @@ Scraped article body that must stay after the title.
         "Scraped article body that must stay after the title."
     )
 
+
+def test_relocate_h2_matching_filename_stem_without_yaml_title():
+    h2 = """---
+URL: https://www.theverge.com/long-essay
+---
+
+## A long essay
+
+Scraped article body that must stay after the title.
+
+### Article highlights
+- "quote"
+"""
+    updated, changed = relocate_article_highlights_above_title(
+        h2, path=f"{KH}/A long essay.md"
+    )
+    assert changed is True
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index("## A long essay")
+
+
+def test_relocate_matches_title_by_author_stem_not_bare_article_title():
+    content = """---
+title: "A long essay"
+author: "[[The Verge]]"
+---
+
+# Something else in the scrape
+
+# A long essay by The Verge
+
+### Article highlights
+- "quote"
+"""
+    stem = reader_knowledge_hub_note_stem("A long essay", "[[The Verge]]")
+    assert stem == "A long essay by The Verge"
+    updated, changed = relocate_article_highlights_above_title(content)
+    assert changed is True
+    assert updated.index("# Something else in the scrape") < updated.index(
+        ARTICLE_HIGHLIGHTS_HEADER
+    )
+    assert updated.index(ARTICLE_HIGHLIGHTS_HEADER) < updated.index(
+        "# A long essay by The Verge"
+    )
+
+
+def test_relocate_skips_when_first_heading_is_unverified_scrape():
+    content = """---
+title: "A long essay by The Verge"
+---
+
+# A completely different scraped headline
+
+Article body under a scrape H1.
+
+### Article highlights
+- "quote"
+"""
+    updated, changed = relocate_article_highlights_above_title(content)
+    assert changed is False
+    assert updated == content
+    assert classify_article_highlights_placement(content) == "no_verified_title"
+
+
+def test_relocate_uses_first_matching_heading_not_later_scrape_repeat():
+    content = """---
+title: "A long essay by The Verge"
+---
+
+# A long essay by The Verge
+
+Intro.
+
+# A long essay by The Verge
+
+### Article highlights
+- "quote"
+"""
+    updated, changed = relocate_article_highlights_above_title(content)
+    assert changed is True
+    first_title = updated.index("# A long essay by The Verge")
+    highlights = updated.index(ARTICLE_HIGHLIGHTS_HEADER)
+    second_title = updated.index("# A long essay by The Verge", first_title + 1)
+    assert highlights < first_title < second_title
+
+
+def test_relocate_no_heading_is_no_verified_title():
     no_title = """---
 title: "No heading note"
 ---
@@ -241,7 +332,44 @@ Just a paragraph at the top of the body.
     same, no_change = relocate_article_highlights_above_title(no_title)
     assert no_change is False
     assert same == no_title
-    assert classify_article_highlights_placement(no_title) == "no_title"
+    assert classify_article_highlights_placement(no_title) == "no_verified_title"
+
+
+def test_verified_title_ignores_h3_and_requires_text_match():
+    lines = [
+        "---",
+        'title: "A long essay by The Verge"',
+        "---",
+        "",
+        "### Article highlights",
+        "# Not the title",
+        "## A long essay by The Verge",
+    ]
+    assert (
+        verified_title_heading_index(
+            lines, 3, ["A long essay by The Verge"]
+        )
+        == 6
+    )
+    assert verified_title_heading_index(lines, 3, ["Missing"]) is None
+
+
+def test_dry_run_report_includes_titles_and_before_after_sketch():
+    analysis = analyze_article_highlights_relocation(_after_title())
+    assert analysis.placement == "needs_move"
+    report = format_candidate_report(
+        f"{KH}/A long essay by The Verge.md", "would_move", analysis
+    )
+    assert "A long essay by The Verge.md\twould_move" in report
+    assert "matched_title: # A long essay by The Verge" in report
+    assert "yaml_title: A long essay by The Verge" in report
+    assert "before:" in report
+    assert "after:" in report
+    assert "# A long essay by The Verge" in report
+    assert ARTICLE_HIGHLIGHTS_HEADER in report
+    before_at = report.index("before:")
+    after_at = report.index("after:")
+    assert before_at < after_at
 
 
 def _download(content: str, *, rev: str = REV, path: str | None = None):
@@ -262,21 +390,25 @@ def _rev_conflict() -> dropbox.exceptions.ApiError:
 
 def test_process_note_dry_run_does_not_upload():
     mock_dbx = MagicMock()
-    path = f"{KH}/Essay.md"
+    path = f"{KH}/A long essay by The Verge.md"
     mock_dbx.files_download.return_value = _download(_after_title(), path=path)
 
-    action = process_note(mock_dbx, path, apply=False)
+    action, analysis = process_note(mock_dbx, path, apply=False)
 
     assert action == "would_move"
+    assert analysis is not None
+    assert analysis.matched_title_line == "# A long essay by The Verge"
+    assert analysis.yaml_title == "A long essay by The Verge"
+    assert analysis.filename_stem == "A long essay by The Verge"
     mock_dbx.files_upload.assert_not_called()
 
 
 def test_process_note_apply_uploads_rev_safe():
     mock_dbx = MagicMock()
-    path = f"{KH}/Essay.md"
+    path = f"{KH}/A long essay by The Verge.md"
     mock_dbx.files_download.return_value = _download(_after_title(), path=path)
 
-    action = process_note(mock_dbx, path, apply=True)
+    action, _analysis = process_note(mock_dbx, path, apply=True)
 
     assert action == "moved"
     mock_dbx.files_upload.assert_called_once()
@@ -291,20 +423,39 @@ def test_process_note_apply_uploads_rev_safe():
     )
 
 
-def test_process_note_skips_already_correct_and_conflicted_and_rev():
+def test_process_note_skips_already_correct_conflicted_rev_and_unverified():
     mock_dbx = MagicMock()
-    good = f"{KH}/Essay.md"
+    good = f"{KH}/A long essay by The Verge.md"
     mock_dbx.files_download.return_value = _download(_already_correct(), path=good)
-    assert process_note(mock_dbx, good, apply=True) == "skipped_already_correct"
+    action, _analysis = process_note(mock_dbx, good, apply=True)
+    assert action == "skipped_already_correct"
     mock_dbx.files_upload.assert_not_called()
 
     conflicted = f"{KH}/Essay (MacBook Pro's conflicted copy 2026-09-19).md"
-    assert process_note(mock_dbx, conflicted, apply=True) == "skipped_conflicted"
+    action, _analysis = process_note(mock_dbx, conflicted, apply=True)
+    assert action == "skipped_conflicted"
+    mock_dbx.files_upload.assert_not_called()
+
+    scrape_only = """---
+title: "A long essay by The Verge"
+---
+
+# Scraped headline that is not the note title
+
+### Article highlights
+- "quote"
+"""
+    mock_dbx.files_download.return_value = _download(scrape_only, path=good)
+    action, analysis = process_note(mock_dbx, good, apply=True)
+    assert action == "skipped_no_verified_title"
+    assert analysis is not None
+    assert analysis.matched_title_line is None
     mock_dbx.files_upload.assert_not_called()
 
     mock_dbx.files_download.return_value = _download(_after_title(), path=good)
     mock_dbx.files_upload.side_effect = _rev_conflict()
-    assert process_note(mock_dbx, good, apply=True) == "skipped_rev"
+    action, _analysis = process_note(mock_dbx, good, apply=True)
+    assert action == "skipped_rev"
     mode = mock_dbx.files_upload.call_args.kwargs["mode"]
     assert mode.is_update()
     assert not mode.is_overwrite()
@@ -312,7 +463,7 @@ def test_process_note_skips_already_correct_and_conflicted_and_rev():
 
 def test_run_apply_is_idempotent_on_already_migrated_notes():
     mock_dbx = MagicMock()
-    path = f"{KH}/Essay.md"
+    path = f"{KH}/A long essay by The Verge.md"
     mock_dbx.files_download.return_value = _download(_already_correct(), path=path)
 
     counts = run_relocate_article_highlights(
