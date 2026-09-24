@@ -21,6 +21,7 @@ from config import SYSTEM_TIMEZONE_STR
 from main import app
 from scheduler import (
     DAILY_CREATION_JOB_IDS,
+    ENSURE_TODAYS_DAILY_FILES_JOB_ID,
     OBSIDIAN_CRON_MIGRATION_JOB_IDS,
     RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID,
     SCHEDULED_JOBS,
@@ -99,6 +100,15 @@ def test_daily_creation_jobs_in_registry():
     job_ids = [j["id"] for j in SCHEDULED_JOBS]
     for job_id in DAILY_CREATION_JOB_IDS:
         assert job_id in job_ids
+
+
+def test_ensure_todays_daily_files_job_in_registry():
+    """Morning catch-up is registered and is not an evening use_today job."""
+    job_ids = [j["id"] for j in SCHEDULED_JOBS]
+    assert ENSURE_TODAYS_DAILY_FILES_JOB_ID in job_ids
+    assert ENSURE_TODAYS_DAILY_FILES_JOB_ID == "ensure_todays_daily_files"
+    assert ENSURE_TODAYS_DAILY_FILES_JOB_ID not in DAILY_CREATION_JOB_IDS
+    assert "create_daily_journal" in DAILY_CREATION_JOB_IDS
 
 
 def test_daily_creation_modules_are_importable():
@@ -301,6 +311,14 @@ def test_daily_creation_jobs_run_evening_before_in_system_timezone(client):
         assert f"minute='{minute}'" in trigger_str, trigger_str
         timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
         assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_ensure_todays_daily_files_runs_at_5am_system_timezone(client):
+    """Morning catch-up is daily 05:00 Pacific; evening jobs stay at 18:xx."""
+    _assert_cron(ENSURE_TODAYS_DAILY_FILES_JOB_ID, hour="5", minute="0")
+    # Evening-before cluster is unchanged.
+    journal = scheduler.get_job("create_daily_journal")
+    assert "hour='18'" in str(journal.trigger).lower()
 
 
 def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
@@ -596,6 +614,85 @@ def test_trigger_other_job_does_not_forward_use_today(client):
         )
     assert response.status_code == 200
     mock_run.assert_called_once_with("send_arxiv_email")
+
+
+def test_trigger_ensure_todays_daily_files(client):
+    """POST /scheduler/jobs/ensure_todays_daily_files/run fires the catch-up."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            f"/scheduler/jobs/{ENSURE_TODAYS_DAILY_FILES_JOB_ID}/run"
+        )
+    assert response.status_code == 200
+    assert response.json()["job_id"] == ENSURE_TODAYS_DAILY_FILES_JOB_ID
+    assert "use_today" not in response.json()
+    mock_run.assert_called_once_with(ENSURE_TODAYS_DAILY_FILES_JOB_ID)
+
+
+def test_trigger_ensure_todays_daily_files_ignores_use_today(client):
+    """Morning ensure always targets today; the query flag is not forwarded."""
+    with patch("scheduler.run_job_now", return_value=True) as mock_run:
+        response = client.post(
+            f"/scheduler/jobs/{ENSURE_TODAYS_DAILY_FILES_JOB_ID}/run",
+            params={"use_today": False},
+        )
+    assert response.status_code == 200
+    mock_run.assert_called_once_with(ENSURE_TODAYS_DAILY_FILES_JOB_ID)
+
+
+def test_list_jobs_contains_ensure_todays_daily_files(client):
+    response = client.get("/scheduler/jobs")
+    job_ids = [j["id"] for j in response.json()["jobs"]]
+    assert ENSURE_TODAYS_DAILY_FILES_JOB_ID in job_ids
+
+
+def test_ensure_todays_daily_files_calls_helpers_in_order_with_use_today():
+    """Wrapper calls journal → action → properties with use_today=True.
+
+    Helpers return True when the file already exists; the wrapper treats
+    that as success (no Dropbox work is re-done).
+    """
+    from scheduler import _ensure_todays_daily_files
+
+    calls = []
+
+    def journal(*, use_today):
+        calls.append(("journal", use_today))
+        return True  # already exists
+
+    def action(*, use_today):
+        calls.append(("action", use_today))
+        return True  # already exists
+
+    def props(*, use_today):
+        calls.append(("properties", use_today))
+        return True
+
+    with (
+        patch("scheduler._create_daily_journal", side_effect=journal),
+        patch("scheduler._create_daily_action", side_effect=action),
+        patch("scheduler._update_daily_journal_properties", side_effect=props),
+    ):
+        assert _ensure_todays_daily_files() is True
+
+    assert calls == [
+        ("journal", True),
+        ("action", True),
+        ("properties", True),
+    ]
+
+
+def test_ensure_todays_daily_files_returns_false_if_any_helper_fails():
+    """A helper False (error, not already-exists) fails the catch-up overall."""
+    from scheduler import _ensure_todays_daily_files
+
+    with (
+        patch("scheduler._create_daily_journal", return_value=True),
+        patch("scheduler._create_daily_action", return_value=False),
+        patch("scheduler._update_daily_journal_properties", return_value=True) as props,
+    ):
+        assert _ensure_todays_daily_files() is False
+    # Still attempts properties so a missing DA does not skip YAML updates.
+    props.assert_called_once_with(use_today=True)
 
 
 def test_reconcile_missed_obsidian_writes_runs_hourly_in_system_timezone(client):
