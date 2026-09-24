@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Literal
 from urllib.parse import urlparse
 
 import dropbox
@@ -1097,8 +1097,16 @@ def _insert_missing_heading(
     lines: list[str],
     header: str,
     bullet_lines: list[str],
+    *,
+    placement: Literal["after_title", "above_title"] = "after_title",
 ) -> list[str]:
-    """Create ``header`` + first bullet after the title, else after YAML."""
+    """Create ``header`` + first bullet relative to the title, else after YAML.
+
+    ``after_title`` (default) inserts immediately after the first ATX title
+    heading. ``above_title`` inserts immediately before that title (after
+    YAML) so article highlights sit above the page heading. Notes that
+    already have ``header`` are not relocated here.
+    """
     body_start = _frontmatter_body_start(lines)
     title_idx = _title_heading_index(lines, body_start)
     block = [header, *bullet_lines, ""]
@@ -1107,6 +1115,12 @@ def _insert_missing_heading(
         while insert_at < len(lines) and not lines[insert_at].strip():
             insert_at += 1
         return lines[:body_start] + [""] + block + lines[insert_at:]
+
+    if placement == "above_title":
+        prefix = lines[:title_idx]
+        if prefix and prefix[-1].strip():
+            prefix = prefix + [""]
+        return prefix + block + lines[title_idx:]
 
     after_title = title_idx + 1
     if after_title < len(lines) and not lines[after_title].strip():
@@ -1119,21 +1133,26 @@ def _insert_heading_bullet(
     header: str,
     bullet: str,
     keys: list[str] | None = None,
+    *,
+    placement: Literal["after_title", "above_title"] = "after_title",
 ) -> tuple[str, str]:
     """Insert ``bullet`` under ``header``. Returns (content, action).
 
     If the heading already exists anywhere, insert into that section
-    without moving or duplicating it. If missing, create it immediately
-    after the first ATX title heading in the body (after YAML). No title
-    heading falls back to the top of the body after YAML. Dedup uses
-    ``_section_has_dedup_key`` on the open URL (not the title or stem).
+    without moving or duplicating it. If missing, create it relative to
+    the first ATX title heading in the body (after YAML): ``after_title``
+    (default) or ``above_title``. No title heading falls back to the top
+    of the body after YAML. Dedup uses ``_section_has_dedup_key`` on the
+    open URL (not the title or stem).
     """
     lines = content.split("\n")
     header_idx, _ignored_end = _section_bounds(lines, header)
     bullet_lines = _buffet_bullet_lines(bullet)
 
     if header_idx is None:
-        updated = _insert_missing_heading(lines, header, bullet_lines)
+        updated = _insert_missing_heading(
+            lines, header, bullet_lines, placement=placement
+        )
         return "\n".join(updated), "inserted"
 
     section_end = _highlight_section_end(lines, header_idx)
@@ -1198,10 +1217,17 @@ def insert_article_highlights_bullet(
     """Insert ``bullet`` under ``### Article highlights``. Returns (content, action).
 
     Sibling of ``insert_book_highlights_bullet``. Missing heading is
-    created after the title header; an existing heading is reused.
-    Dedup is the open URL only.
+    created above the first title heading (after YAML); an existing
+    heading is reused in place and is not relocated. Dedup is the open
+    URL only. Books, tweets, and transcript highlights stay after-title.
     """
-    return _insert_heading_bullet(content, ARTICLE_HIGHLIGHTS_HEADER, bullet, keys)
+    return _insert_heading_bullet(
+        content,
+        ARTICLE_HIGHLIGHTS_HEADER,
+        bullet,
+        keys,
+        placement="above_title",
+    )
 
 
 def insert_transcript_highlights_bullet(
@@ -1211,10 +1237,10 @@ def insert_transcript_highlights_bullet(
 ) -> tuple[str, str]:
     """Insert ``bullet`` under ``### Transcript Highlights``.
 
-    Same placement as article/book/tweet highlights: after the title
-    header when the heading is missing, or into the existing section
-    without moving it. No title heading falls back to after YAML.
-    Dedup is the open URL only.
+    Same missing-heading placement as book/tweet highlights: after the
+    title header. Article highlights use above-title instead. An existing
+    heading is reused without moving it. No title heading falls back to
+    after YAML. Dedup is the open URL only.
     """
     return _insert_heading_bullet(content, TRANSCRIPT_HIGHLIGHTS_HEADER, bullet, keys)
 
@@ -2359,7 +2385,7 @@ def _new_article_page_markdown(
     extras: dict,
     people_links: list[str],
 ) -> str:
-    """Minimal article page: YAML title/author/People/URL, H1, Article highlights."""
+    """Minimal article page: YAML, Article highlights, then H1."""
     lines = ["---", f'title: "{stem}"']
     author = extras.get("author")
     if author:
@@ -2371,7 +2397,7 @@ def _new_article_page_markdown(
     url = extras.get("URL")
     if url and str(url).strip():
         lines.append(f"URL: {url}")
-    lines.extend(["---", "", f"# {stem}", "", ARTICLE_HIGHLIGHTS_HEADER, bullet, ""])
+    lines.extend(["---", "", ARTICLE_HIGHLIGHTS_HEADER, bullet, "", f"# {stem}", ""])
     return "\n".join(lines)
 
 

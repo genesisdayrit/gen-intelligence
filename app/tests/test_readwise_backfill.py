@@ -583,6 +583,7 @@ def test_export_article_highlight_creates_title_by_author_page():
     page = store[article_page]
     assert "### Article highlights" in page
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+    assert page.index("### Article highlights") < page.index("# A long essay by The Verge")
     assert "- [[A long essay by The Verge]]:" not in page
     assert "### Book highlights" not in page
     assert 'author: "[[The Verge]]"' in page
