@@ -34,6 +34,7 @@ from services.obsidian.add_todoist_completed import (
 )
 from services.obsidian.utils.template_boundary import (
     fallback_webhook_insert_index,
+    is_initiative_work_header,
     template_end_insert_index,
 )
 
@@ -56,6 +57,15 @@ _Journal: '[[Sep 17, 2026]]'
 ---
 """
 
+INITIATIVE_HEADERS = """##### Alpha OS
+- 
+
+##### zeta
+- 
+"""
+
+NOTE_WITH_INITIATIVE_HEADERS = BODY_ONLY_NOTE + "\n" + INITIATIVE_HEADERS
+
 DA_PATH = "/test/vault/_Daily/_Daily-Action/DA 2026-05-24.md"
 
 
@@ -74,6 +84,37 @@ def test_template_end_insert_index_after_trailing_divider():
 
 def test_template_end_insert_index_eof_when_no_divider():
     assert template_end_insert_index(["just a prompt"]) == 1
+
+
+def test_is_initiative_work_header_matches_h5_only():
+    assert is_initiative_work_header("##### Alpha OS")
+    assert is_initiative_work_header("  ##### zeta  ")
+    assert not is_initiative_work_header("### Initiative Updates:")
+    assert not is_initiative_work_header("###### deeper")
+    assert not is_initiative_work_header("- ")
+
+
+def test_template_end_insert_index_skips_initiative_headers():
+    lines = _lines_of_body(NOTE_WITH_INITIATIVE_HEADERS)
+    idx = template_end_insert_index(lines)
+    divider = next(i for i, line in enumerate(lines) if line.strip() == "---")
+    alpha = next(i for i, line in enumerate(lines) if line.strip() == "##### Alpha OS")
+    zeta = next(i for i, line in enumerate(lines) if line.strip() == "##### zeta")
+    assert idx > divider
+    assert idx > alpha
+    assert idx > zeta
+    assert idx == len(lines) or not is_initiative_work_header(lines[idx])
+
+
+def test_issues_touched_and_todoist_positions_after_initiative_headers():
+    lines = _lines_of_body(NOTE_WITH_INITIATIVE_HEADERS)
+    pos_issues = _find_issues_touched_insert_position(lines, 0)
+    pos_todoist = _find_todoist_insert_position(lines, 0)
+    zeta = next(i for i, line in enumerate(lines) if line.strip() == "##### zeta")
+    assert pos_issues > zeta
+    assert pos_todoist > zeta
+    assert pos_issues == template_end_insert_index(lines)
+    assert pos_todoist == template_end_insert_index(lines)
 
 
 def test_fallback_prefers_vision_objective_then_daily_review_then_divider():
@@ -279,3 +320,105 @@ def test_issues_touched_lands_after_template_divider_and_finds_entry_past_divide
     assert again["success"] is True
     assert again["action"] == "skipped"
     assert "content" not in uploaded2
+
+
+def _assert_after_initiative_headers(uploaded: str, header: str) -> None:
+    _assert_after_template(uploaded, header)
+    assert uploaded.index("##### zeta") < uploaded.index(header)
+    assert uploaded.index("##### Alpha OS") < uploaded.index(header)
+
+
+def test_linear_update_lands_after_initiative_headers():
+    mock_dbx, uploaded = _mock_writer(
+        "services.obsidian.add_daily_action_updates", NOTE_WITH_INITIATIVE_HEADERS
+    )
+    with (
+        patch("services.obsidian.add_daily_action_updates._get_dropbox_client", return_value=mock_dbx),
+        patch("services.obsidian.add_daily_action_updates._find_daily_folder", return_value="/test/vault/_Daily"),
+        patch(
+            "services.obsidian.add_daily_action_updates._find_daily_action_folder",
+            return_value="/test/vault/_Daily/_Daily-Action",
+        ),
+        patch(
+            "services.obsidian.add_daily_action_updates._get_today_daily_action_path",
+            return_value=DA_PATH,
+        ),
+    ):
+        result = upsert_daily_action_update(
+            "initiative",
+            "https://linear.app/x/initiative",
+            "Some Initiative",
+            "shipped the placement fix",
+        )
+    assert result["success"] is True
+    _assert_after_initiative_headers(uploaded["content"], INITIATIVE_UPDATES_HEADER)
+    assert uploaded["content"].count("##### Alpha OS") == 1
+
+
+def test_todoist_append_lands_after_initiative_headers():
+    mock_dbx, uploaded = _mock_writer(
+        "services.obsidian.add_todoist_completed", NOTE_WITH_INITIATIVE_HEADERS
+    )
+    with (
+        patch("services.obsidian.add_todoist_completed._get_dropbox_client", return_value=mock_dbx),
+        patch("services.obsidian.add_todoist_completed._find_daily_folder", return_value="/test/vault/_Daily"),
+        patch(
+            "services.obsidian.add_todoist_completed._find_daily_action_folder",
+            return_value="/test/vault/_Daily/_Daily-Action",
+        ),
+        patch(
+            "services.obsidian.add_todoist_completed._get_today_daily_action_path",
+            return_value=DA_PATH,
+        ),
+    ):
+        append_todoist_completed("Ship the placement fix")
+    _assert_after_initiative_headers(uploaded["content"], TODOIST_COMPLETED_HEADER)
+
+
+def test_manus_lands_after_initiative_headers():
+    mock_dbx, uploaded = _mock_writer(
+        "services.obsidian.add_manus_task", NOTE_WITH_INITIATIVE_HEADERS
+    )
+    with (
+        patch("services.obsidian.add_manus_task._get_dropbox_client", return_value=mock_dbx),
+        patch("services.obsidian.add_manus_task._find_daily_folder", return_value="/test/vault/_Daily"),
+        patch(
+            "services.obsidian.add_manus_task._find_daily_action_folder",
+            return_value="/test/vault/_Daily/_Daily-Action",
+        ),
+        patch("services.obsidian.add_manus_task._get_today_daily_action_path", return_value=DA_PATH),
+    ):
+        result = _upsert_daily_action_manus("abc123", "Test Task", "https://manus.im/app/abc123")
+    assert result["success"] is True
+    _assert_after_initiative_headers(uploaded["content"], DAILY_ACTION_HEADER)
+
+
+def test_issues_touched_lands_after_initiative_headers():
+    mock_dbx, uploaded = _mock_writer(
+        "services.obsidian.add_daily_action_issues_touched", NOTE_WITH_INITIATIVE_HEADERS
+    )
+    with (
+        patch("services.obsidian.add_daily_action_issues_touched._get_dropbox_client", return_value=mock_dbx),
+        patch(
+            "services.obsidian.add_daily_action_issues_touched._find_daily_folder",
+            return_value="/test/vault/_Daily",
+        ),
+        patch(
+            "services.obsidian.add_daily_action_issues_touched._find_daily_action_folder",
+            return_value="/test/vault/_Daily/_Daily-Action",
+        ),
+        patch(
+            "services.obsidian.add_daily_action_issues_touched._get_today_daily_action_path",
+            return_value=DA_PATH,
+        ),
+    ):
+        result = upsert_daily_action_issue_touched(
+            issue_identifier="GD-328",
+            project_name="Centralizing OS",
+            issue_title="Add Issues Touched",
+            status_name="In Progress",
+            issue_url="https://linear.app/chapters/issue/gd-328/add-issues-touched",
+            status_changed=False,
+        )
+    assert result["success"] is True
+    _assert_after_initiative_headers(uploaded["content"], ISSUES_TOUCHED_HEADER)

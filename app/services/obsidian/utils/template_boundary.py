@@ -11,6 +11,10 @@ with no Vision Objective and no Daily Review.
 All inserters call `is_template_boundary` / `template_end_insert_index`
 rather than comparing against a constant directly, so any future
 template change only needs a fix here.
+
+Current notes may also have `##### <initiative>` proposed-work headers
+immediately after the template `---`. Webhook sections (Linear updates,
+Todoist, Manus, issues touched) belong after those headers.
 """
 
 import re
@@ -21,6 +25,8 @@ import re
 TEMPLATE_BOUNDARY = "Vision Objective 1:"
 
 _TEMPLATE_BOUNDARY_RE = re.compile(r"^Vision Objective\s+\d")
+# Exactly five hashes: `##### Hub OS`, not `### Initiative Updates:` or `######`.
+_INITIATIVE_WORK_HEADER_RE = re.compile(r"^#{5}\s+\S")
 
 
 def is_template_boundary(line: str) -> bool:
@@ -34,12 +40,21 @@ def is_template_boundary(line: str) -> bool:
     return _TEMPLATE_BOUNDARY_RE.match(line.strip()) is not None
 
 
-def template_end_insert_index(lines: list[str]) -> int:
-    """Line index after the template's trailing `---`, or EOF if none.
+def is_initiative_work_header(line: str) -> bool:
+    """True for Daily Action `##### <initiative name>` proposed-work headers."""
+    stripped = line.strip()
+    if stripped.startswith("######"):
+        return False
+    return _INITIATIVE_WORK_HEADER_RE.match(stripped) is not None
 
-    New Daily Action notes end with the leverage questions and a
-    standalone `---` divider. Webhook sections belong after that
-    divider so they do not sit above the prompts.
+
+def template_end_insert_index(lines: list[str]) -> int:
+    """Line index after the template `---` and any initiative-work headers.
+
+    New Daily Action notes end with leverage questions and a standalone
+    `---` divider, then one `##### <initiative>` block per Active Linear
+    initiative. Webhook sections belong after that region so they do not
+    sit above the prompts or inside the proposed-work headers.
     """
     last_divider = None
     for i, line in enumerate(lines):
@@ -47,7 +62,30 @@ def template_end_insert_index(lines: list[str]) -> int:
             last_divider = i
     if last_divider is None:
         return len(lines)
-    return last_divider + 1
+
+    insert_at = last_divider + 1
+    i = insert_at
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    if i >= len(lines) or not is_initiative_work_header(lines[i]):
+        return insert_at
+
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped:
+            i += 1
+            continue
+        if is_initiative_work_header(lines[i]):
+            i += 1
+            continue
+        if (
+            stripped.startswith("#")
+            or is_template_boundary(lines[i])
+            or stripped.startswith("Daily Review")
+        ):
+            break
+        i += 1
+    return i
 
 
 def fallback_webhook_insert_index(
@@ -58,8 +96,8 @@ def fallback_webhook_insert_index(
     """Insert index when no later sibling section exists.
 
     Prefer a Vision Objective boundary (legacy notes), then the line
-    after Daily Review (legacy notes), then after the template `---` /
-    EOF (current notes with neither marker).
+    after Daily Review (legacy notes), then after the template `---`
+    and any `#####` initiative-work headers / EOF (current notes).
     """
     if template_boundary_line is not None:
         return template_boundary_line

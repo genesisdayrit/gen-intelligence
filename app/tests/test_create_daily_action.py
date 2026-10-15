@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import dropbox
 import pytz
+import requests
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -134,6 +135,15 @@ def _list_folder(path: str, *, include_templates: bool = True, include_template_
     return _list_result([])
 
 
+def _initiative_node(name: str, status: str = "Active", labels: list[str] | None = None) -> dict:
+    return {
+        "id": f"id-{name}",
+        "name": name,
+        "status": status,
+        "labels": {"nodes": [{"id": f"l-{label}", "name": label} for label in (labels or [])]},
+    }
+
+
 def _run_create(
     *,
     template_content=BODY_ONLY_TEMPLATE,
@@ -141,6 +151,8 @@ def _run_create(
     include_template_file=True,
     existing=False,
     download_error=None,
+    linear_nodes=None,
+    linear_error=None,
 ):
     mock_dbx = MagicMock()
     mock_dbx.files_list_folder.side_effect = lambda path: _list_folder(
@@ -160,6 +172,12 @@ def _run_create(
     else:
         mock_dbx.files_download.side_effect = _download_missing()
 
+    linear_patch = (
+        patch(f"{MODULE}.fetch_all_pages", side_effect=linear_error)
+        if linear_error is not None
+        else patch(f"{MODULE}.fetch_all_pages", return_value=linear_nodes or [])
+    )
+
     with (
         patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
         patch(f"{MODULE}._get_target_day", side_effect=_fake_target_day),
@@ -172,9 +190,17 @@ def _run_create(
                 "weekly_map": GENERATED["_Weekly-Map"],
             },
         ),
+        patch(f"{MODULE}.LINEAR_API_KEY", "test-linear-key"),
+        linear_patch,
     ):
         result = mod.create_daily_action(use_today=False)
     return result, mock_dbx
+
+
+def _uploaded_body(mock_dbx) -> str:
+    uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
+    _meta, body = _parse_note(uploaded)
+    return body
 
 
 def test_strip_body_only_template_is_verbatim():
@@ -256,3 +282,148 @@ def test_create_daily_action_does_not_overwrite_existing():
     assert result is True
     mock_dbx.files_upload.assert_not_called()
     mock_dbx.files_download.assert_not_called()
+
+
+def test_select_active_initiatives_excludes_non_active_archived_shape_and_main_thread():
+    nodes = [
+        _initiative_node("Keep Me"),
+        _initiative_node("Main Thread", labels=["main-thread"]),
+        _initiative_node("Planned Work", status="Planned"),
+        _initiative_node("Done Work", status="Completed"),
+        _initiative_node("MAIN-THREAD-ALT", labels=["Main-Thread"]),
+    ]
+    selected = mod._select_active_initiatives(nodes, exclude_label="main-thread")
+    assert [n["name"] for n in selected] == ["Keep Me"]
+
+
+def test_select_active_initiatives_sorts_case_insensitive():
+    nodes = [
+        _initiative_node("zeta"),
+        _initiative_node("Alpha"),
+        _initiative_node("beta"),
+    ]
+    selected = mod._select_active_initiatives(nodes, exclude_label="main-thread")
+    assert [n["name"] for n in selected] == ["Alpha", "beta", "zeta"]
+
+
+def test_select_active_initiatives_honors_custom_exclude_label():
+    nodes = [
+        _initiative_node("Keep", labels=["main-thread"]),
+        _initiative_node("Skip", labels=["parked"]),
+    ]
+    selected = mod._select_active_initiatives(nodes, exclude_label="parked")
+    assert [n["name"] for n in selected] == ["Keep"]
+
+
+def test_select_active_initiatives_empty_exclude_label_keeps_main_thread():
+    nodes = [
+        _initiative_node("Keep", labels=["main-thread"]),
+        _initiative_node("Also", labels=[]),
+    ]
+    selected = mod._select_active_initiatives(nodes, exclude_label="")
+    assert [n["name"] for n in selected] == ["Also", "Keep"]
+
+
+def test_append_initiative_headers_after_template_divider():
+    names = ["Alpha", "beta"]
+    result = mod._append_initiative_headers(BODY_ONLY_TEMPLATE, names)
+    assert result.startswith(BODY_ONLY_TEMPLATE.rstrip("\n"))
+    divider = result.index("\n---\n")
+    alpha = result.index("##### Alpha")
+    beta = result.index("##### beta")
+    assert divider < alpha < beta
+    assert "- \n" in result[alpha:]
+    lines = result.splitlines()
+    assert lines[lines.index("##### Alpha") + 1] == "- "
+    assert lines[lines.index("##### Alpha") + 2] == ""
+
+
+def test_append_initiative_headers_is_idempotent():
+    names = ["Alpha", "beta"]
+    once = mod._append_initiative_headers(BODY_ONLY_TEMPLATE, names)
+    twice = mod._append_initiative_headers(once, names)
+    assert twice == once
+    assert once.count("##### Alpha") == 1
+    assert once.count("##### beta") == 1
+
+
+def test_append_initiative_headers_adds_only_missing_names():
+    existing = mod._append_initiative_headers(BODY_ONLY_TEMPLATE, ["Alpha"])
+    result = mod._append_initiative_headers(existing, ["Alpha", "beta"])
+    assert result.count("##### Alpha") == 1
+    assert "##### beta" in result
+    assert result.index("##### Alpha") < result.index("##### beta")
+
+
+def test_create_daily_action_includes_active_initiative_headers():
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("Zeta Labs"),
+            _initiative_node("alpha OS"),
+        ]
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    assert body.index("highest leverage") < body.index("\n---\n") < body.index("##### alpha OS")
+    assert body.index("##### alpha OS") < body.index("##### Zeta Labs")
+    assert "##### alpha OS\n- \n" in body
+    assert "##### Zeta Labs\n- \n" in body
+
+
+def test_create_daily_action_linear_failure_still_creates(caplog):
+    result, mock_dbx = _run_create(linear_error=requests.exceptions.Timeout("Linear timed out"))
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    assert body == BODY_ONLY_TEMPLATE
+    assert "##### " not in body
+    assert any("Failed to fetch Linear initiatives" in rec.message for rec in caplog.records)
+
+
+def test_create_daily_action_linear_empty_omits_headers():
+    result, mock_dbx = _run_create(linear_nodes=[])
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    assert body == BODY_ONLY_TEMPLATE
+    assert "##### " not in body
+
+
+def test_create_daily_action_excludes_main_thread_and_non_active():
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("Hub OS"),
+            _initiative_node("Main Thread", labels=["main-thread"]),
+            _initiative_node("Future", status="Planned"),
+        ]
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    assert "##### Hub OS" in body
+    assert "##### Main Thread" not in body
+    assert "##### Future" not in body
+
+
+def test_create_daily_action_orders_headers_case_insensitive():
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("zeta"),
+            _initiative_node("Alpha"),
+            _initiative_node("beta"),
+        ]
+    )
+    body = _uploaded_body(mock_dbx)
+    assert body.index("##### Alpha") < body.index("##### beta") < body.index("##### zeta")
+
+
+def test_create_daily_action_respects_exclude_label_env(monkeypatch):
+    monkeypatch.setenv("DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL", "parked")
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("Keep", labels=["main-thread"]),
+            _initiative_node("Skip", labels=["parked"]),
+        ]
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    assert "##### Keep" in body
+    assert "##### Skip" not in body
