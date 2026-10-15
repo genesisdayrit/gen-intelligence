@@ -22,7 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import padding as crypto_padding
 from cryptography.hazmat.primitives.asymmetric import rsa as rsa_gen
 from fastapi.testclient import TestClient
 
-from main import app
+from main import WRITE_LINEAR_UPDATES_TO_OBSIDIAN, WRITE_MANUS_TO_OBSIDIAN, app
 
 client = TestClient(app)
 
@@ -521,6 +521,38 @@ def test_manus_webhook_key_fetch_failure(mock_fetch):
         },
     )
     assert response.status_code == 500
+
+
+def test_linear_updates_write_flag_is_enabled():
+    assert WRITE_LINEAR_UPDATES_TO_OBSIDIAN is True
+
+
+def test_manus_write_flag_is_disabled():
+    assert WRITE_MANUS_TO_OBSIDIAN is False
+
+
+@patch("main.upsert_manus_task")
+@patch("main.verify_manus_signature", return_value=True)
+@patch("main.fetch_manus_public_key", return_value="unused")
+@patch("main._is_manus_timestamp_valid", return_value=True)
+def test_manus_webhook_acknowledges_without_writing(mock_ts, mock_fetch, mock_verify, mock_upsert):
+    """/manus/webhook returns 200 but does not write while the flag is off."""
+    payload = (
+        b'{"event_type":"task_created","task_detail":'
+        b'{"task_id":"abc-123","task_title":"Do a thing","task_url":"https://manus.im/app/abc-123"}}'
+    )
+    response = client.post(
+        "/manus/webhook",
+        content=payload,
+        headers={
+            "Content-Type": "application/json",
+            "X-Webhook-Signature": "dW51c2Vk",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {"status": "received"}
+    mock_upsert.assert_not_called()
 
 
 @patch("main.verify_manus_signature", return_value=True)

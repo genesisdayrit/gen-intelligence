@@ -14,7 +14,11 @@ from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import (
     fallback_webhook_insert_index,
+    hub_updates_insert_index,
     is_template_boundary,
+    is_webhook_scan_stop,
+    placement_limit,
+    url_in_main_thread_snapshot,
 )
 
 load_dotenv()
@@ -260,20 +264,23 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 daily_review_end_line = 0
 
             existing_line_index = None
-            for i, line in enumerate(lines):
+            scan_end = placement_limit(lines)
+            if url and url_in_main_thread_snapshot(lines, url):
+                return None, "skipped"
+            for i, line in enumerate(lines[:scan_end]):
                 if url in line:
                     existing_line_index = i
                     break
 
             if existing_line_index is not None:
                 entry_end = existing_line_index + 1
-                for i in range(existing_line_index + 1, len(lines)):
+                for i in range(existing_line_index + 1, scan_end):
                     line = lines[i]
                     if LOG_ENTRY_PATTERN.match(line):
                         break
                     elif _is_section_header(line):
                         break
-                    elif is_template_boundary(line):
+                    elif is_webhook_scan_stop(line):
                         break
                     else:
                         entry_end = i + 1
@@ -283,7 +290,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 next_line_index = existing_line_index + 1
                 if next_line_index < len(lines):
                     next_line = lines[next_line_index]
-                    if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or is_template_boundary(next_line):
+                    if LOG_ENTRY_PATTERN.match(next_line) or _is_section_header(next_line) or is_webhook_scan_stop(next_line):
                         lines.insert(next_line_index, '')
                 action = "updated"
             else:
@@ -291,7 +298,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 section_order = _get_section_order()
 
                 header_positions = {}
-                for i, line in enumerate(lines):
+                for i, line in enumerate(lines[:scan_end]):
                     if i < daily_review_end_line:
                         continue
                     for header in section_order:
@@ -301,11 +308,11 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                 if target_header in header_positions:
                     header_index = header_positions[target_header]
                     insert_index = header_index + 1
-                    for i in range(header_index + 1, len(lines)):
+                    for i in range(header_index + 1, scan_end):
                         line = lines[i]
                         if _is_section_header(line):
                             break
-                        elif is_template_boundary(line):
+                        elif is_webhook_scan_stop(line):
                             break
                         else:
                             insert_index = i + 1
@@ -315,7 +322,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                     lines.insert(insert_index, log_entry)
                     next_line_index = insert_index + 1
                     if next_line_index < len(lines):
-                        if _is_section_header(lines[next_line_index]) or is_template_boundary(lines[next_line_index]):
+                        if _is_section_header(lines[next_line_index]) or is_webhook_scan_stop(lines[next_line_index]):
                             lines.insert(next_line_index, '')
                 else:
                     target_order_index = section_order.index(target_header)
@@ -333,7 +340,7 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                         lines.insert(insert_before_index, '')
                     else:
                         template_boundary_line = None
-                        for i in range(daily_review_end_line, len(lines)):
+                        for i in range(daily_review_end_line, scan_end):
                             if is_template_boundary(lines[i]):
                                 template_boundary_line = i
                                 break
@@ -343,7 +350,10 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                             for header in section_order
                             if header != target_header
                         )
-                        if earlier_sibling and template_boundary_line is None:
+                        hub = hub_updates_insert_index(lines)
+                        if hub is not None:
+                            insert_pos = hub
+                        elif earlier_sibling and template_boundary_line is None:
                             insert_pos = len(lines)
                         else:
                             insert_pos = fallback_webhook_insert_index(

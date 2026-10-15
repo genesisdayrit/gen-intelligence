@@ -15,7 +15,9 @@ from services.obsidian.utils.dedup_helpers import extract_task_contents_from_sec
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import (
     fallback_webhook_insert_index,
+    is_mindfold_appended_marker,
     is_template_boundary,
+    is_webhook_scan_stop,
 )
 
 load_dotenv()
@@ -214,6 +216,8 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
     for i, line in enumerate(lines):
         if i < daily_review_end_line:
             continue
+        if is_mindfold_appended_marker(line):
+            break
 
         stripped = line.strip()
 
@@ -238,8 +242,8 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
                 in_project = False
             issues_touched_line = i
             continue
-        elif stripped.startswith('#') or stripped == '---':
-            # Another section header or separator - end current section
+        elif stripped.startswith('#') or stripped == '---' or is_webhook_scan_stop(line):
+            # Another section header, hub-slot, Main Thread, or separator
             if in_initiative:
                 initiative_end = i
                 in_initiative = False

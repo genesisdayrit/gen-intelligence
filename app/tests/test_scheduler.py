@@ -610,12 +610,12 @@ def test_trigger_other_job_does_not_forward_use_today(client):
 
 
 def test_reconcile_missed_obsidian_writes_runs_hourly_in_system_timezone(client):
-    """Top of every hour in SYSTEM_TZ (``0 * * * *``)."""
+    """:12 every hour in SYSTEM_TZ — offset from mindfold's on-the-hour writes."""
     job = scheduler.get_job(RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID)
     assert job is not None
     trigger_str = str(job.trigger).lower()
-    assert "minute='0'" in trigger_str, trigger_str
-    # APScheduler omits wildcard fields, so every-hour is ``cron[minute='0']``.
+    assert "minute='12'" in trigger_str, trigger_str
+    # APScheduler omits wildcard fields, so every-hour is ``cron[minute='12']``.
     assert "hour=" not in trigger_str, trigger_str
     hour_field = next(
         (field for field in job.trigger.fields if field.name == "hour"),
@@ -623,6 +623,18 @@ def test_reconcile_missed_obsidian_writes_runs_hourly_in_system_timezone(client)
     )
     assert hour_field is not None
     assert str(hour_field) == "*"
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
+def test_fetch_manus_tasks_job_is_manual_2099_safety_net(client):
+    """Manus fetch is off-cadence; year-2099 keeps POST /run."""
+    job = scheduler.get_job("fetch_manus_tasks")
+    assert job is not None
+    assert job.name == "Fetch Manus Tasks (manual)"
+    trigger_str = str(job.trigger).lower()
+    assert "2099" in trigger_str
+    assert "*/30" not in trigger_str
     timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
