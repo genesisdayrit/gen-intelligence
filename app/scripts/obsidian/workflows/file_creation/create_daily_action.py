@@ -1,9 +1,21 @@
 #!/usr/bin/env python3
 """Create daily action file in Obsidian vault via Dropbox.
 
-Creates tomorrow's (or today's) daily action file with YAML frontmatter
-containing relationship links (journal, weekly cycle, long cycle, weekly map)
-and structured content prompts. Skips creation if the file already exists.
+Creates tomorrow's (or today's) daily action file from the vault template
+`*_Templates/daily-templates/daily_action_properties.md` (sibling of the
+journal template `daily_note_properties.md`). The `_Templates` folder is
+resolved the same way as `_find_daily_action_folder` — via
+`_find_folder_in_path`, so a numbered prefix like `15_Templates` matches.
+
+Frontmatter is the script-generated `_Journal` / `_Weekly-Cycle` /
+`_Long-Cycle` / `_Weekly-Map` block. The template is body-only and is
+appended verbatim. If a template ever includes YAML frontmatter, that
+block is stripped and ignored (logged) so it cannot duplicate or override
+the generated keys.
+
+If the template is missing or cannot be downloaded, logs a warning and
+falls back to the hardcoded body so the daily note is still created.
+Skips creation if the file already exists.
 
 Usage:
     python -m scripts.obsidian.workflows.file_creation.create_daily_action
@@ -36,6 +48,22 @@ redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_pass
 
 # Timezone
 timezone_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
+
+# Vault path pieces — resolved through `_find_folder_in_path` /
+# `_lookup_file_in_folder`, never concatenated onto DROPBOX_OBSIDIAN_VAULT_PATH.
+DAILY_ACTION_TEMPLATES_SUFFIX = "_Templates"
+DAILY_ACTION_TEMPLATE_SUBFOLDER = "daily-templates"
+DAILY_ACTION_TEMPLATE_STEM = "daily_action_properties"
+
+# Used when the vault template cannot be found or downloaded.
+# Matches the live `daily_action_properties.md` body: two leverage
+# questions, a blank line, then a trailing `---` divider.
+FALLBACK_MAIN_CONTENT = (
+    "What is the highest leverage thing that you can do today to move the ball forward on what you need to?\n"
+    "If you only had 2 hours to work today, what would you need to get done to move forward towards your goals or master vision?\n"
+    "\n"
+    "---\n"
+)
 
 
 # ===== Dropbox Client =====
@@ -301,6 +329,119 @@ def _find_daily_action_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
     return action_folder
 
 
+def _find_daily_action_template_path(dbx: dropbox.Dropbox, vault_path: str) -> str | None:
+    """Resolve `*_Templates/daily-templates/daily_action_properties.md` via folder helpers."""
+    templates_folder = _find_folder_in_path(dbx, vault_path, DAILY_ACTION_TEMPLATES_SUFFIX)
+    if not templates_folder:
+        logger.warning(
+            "Daily Action template folder (*%s) not found; using hardcoded fallback body.",
+            DAILY_ACTION_TEMPLATES_SUFFIX,
+        )
+        return None
+
+    daily_templates_folder = _find_folder_in_path(
+        dbx, templates_folder, DAILY_ACTION_TEMPLATE_SUBFOLDER
+    )
+    if not daily_templates_folder:
+        logger.warning(
+            "Daily Action template subfolder '%s' not found under %s; "
+            "using hardcoded fallback body.",
+            DAILY_ACTION_TEMPLATE_SUBFOLDER,
+            templates_folder,
+        )
+        return None
+
+    template_path, _name = _lookup_file_in_folder(
+        dbx, daily_templates_folder, DAILY_ACTION_TEMPLATE_STEM
+    )
+    if not template_path:
+        logger.warning(
+            "Daily Action template '%s' not found in %s; using hardcoded fallback body.",
+            DAILY_ACTION_TEMPLATE_STEM,
+            daily_templates_folder,
+        )
+        return None
+    return template_path
+
+
+def _load_daily_action_template(dbx: dropbox.Dropbox, vault_path: str) -> str | None:
+    """Download the vault Daily Action template, or None on failure."""
+    template_path = _find_daily_action_template_path(dbx, vault_path)
+    if not template_path:
+        return None
+    try:
+        _, response = dbx.files_download(template_path)
+        raw = response.content.decode("utf-8")
+    except (dropbox.exceptions.ApiError, dropbox.exceptions.HttpError) as e:
+        logger.warning(
+            "Could not download Daily Action template from %s; "
+            "using hardcoded fallback body: %s",
+            template_path,
+            e,
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            "Failed reading Daily Action template from %s; "
+            "using hardcoded fallback body: %s",
+            template_path,
+            e,
+        )
+        return None
+
+    logger.info("Using Daily Action template from %s", template_path)
+    return raw
+
+
+def _strip_template_frontmatter(content: str) -> str:
+    """Return the template body, ignoring YAML frontmatter if present.
+
+    The live template is body-only. If frontmatter reappears, strip it and
+    log so generated `_Journal` / cycle keys are never duplicated or overridden.
+    A later `---` divider in the body is left intact.
+    """
+    if not content.startswith("---"):
+        return content
+
+    lines = content.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return content
+
+    yaml_end_index = -1
+    for i, line in enumerate(lines[1:], 1):
+        if line.strip() == "---":
+            yaml_end_index = i
+            break
+
+    if yaml_end_index == -1:
+        return content
+
+    yaml_block = "\n".join(lines[1:yaml_end_index])
+    try:
+        parsed = yaml.safe_load(yaml_block) if yaml_block.strip() else {}
+    except yaml.YAMLError:
+        return content
+
+    if parsed is None:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        return content
+
+    keys = list(parsed.keys())
+    logger.warning(
+        "Ignoring YAML frontmatter on Daily Action template (%s); using generated frontmatter only.",
+        keys,
+    )
+    return "\n".join(lines[yaml_end_index + 1:]).lstrip("\n")
+
+
+def _resolve_daily_action_body(template_content: str | None) -> str:
+    """Template body, or the hardcoded fallback when the template is missing."""
+    if template_content is None:
+        return FALLBACK_MAIN_CONTENT
+    return _strip_template_frontmatter(template_content)
+
+
 def create_daily_action(use_today: bool = False) -> bool:
     """Create a daily action file in the Obsidian vault.
 
@@ -347,21 +488,8 @@ def create_daily_action(use_today: bool = False) -> bool:
         yaml_str = yaml.safe_dump(yaml_metadata, default_flow_style=False, sort_keys=False)
         yaml_section = f"---\n{yaml_str}---\n\n"
 
-        # Content structure
-        main_content = (
-            "Vision Objective 1:\n"
-            "Vision Objective 2:\n"
-            "Vision Objective 3:\n\n"
-            "One thing that you can do to improve today:\n\n"
-            "Mindset Objective:\n"
-            "Body Objective:\n"
-            "Social Objective:\n\n"
-            "Gratitude:\n\n"
-            "---\n\n"
-            "What is the highest leverage thing that you can do today to move the ball forward on what you need to?\n"
-            "If you only had 2 hours to work today, what would you need to get done to move forward towards your goals or master vision?"
-        )
-
+        template_content = _load_daily_action_template(dbx, vault_path)
+        main_content = _resolve_daily_action_body(template_content)
         content = yaml_section + main_content
         dbx.files_upload(content.encode('utf-8'), dropbox_file_path)
         logger.info(f"Successfully created daily action file '{file_name}' in Dropbox.")

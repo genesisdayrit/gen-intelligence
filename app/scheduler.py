@@ -476,12 +476,16 @@ SCHEDULED_JOBS = [
     },
     {
         "id": "add_daily_review_section",
-        "name": "Add Daily Review Section to Daily Action",
+        "name": "Add Daily Review Section to Daily Action (manual)",
         "func": _add_daily_review_section,
-        # crontab_generation.py: 0 20 * * * UTC (commented 3:00pm ET / EST).
-        # This port writes the section if missing; not a no-op.
+        # Not on a cadence. Daily Action notes no longer include Daily
+        # Review. Year 2099 keeps the job registered so
+        # POST /scheduler/jobs/add_daily_review_section/run can fire it.
         "trigger": CronTrigger(
-            hour=13,
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
             minute=0,
             timezone=SYSTEM_TZ,
         ),

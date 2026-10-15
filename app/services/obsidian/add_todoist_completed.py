@@ -13,7 +13,10 @@ from dotenv import load_dotenv
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dedup_helpers import extract_task_contents_from_section, is_task_duplicate
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
-from services.obsidian.utils.template_boundary import is_template_boundary
+from services.obsidian.utils.template_boundary import (
+    fallback_webhook_insert_index,
+    is_template_boundary,
+)
 
 load_dotenv()
 
@@ -193,8 +196,9 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
     1. After Project Updates section (if exists)
     2. After Initiative Updates section (if exists)
     3. Before Linear Issues Touched section (if exists)
-    4. Before Template Boundary (Vision Objective 1:)
-    5. After Daily Review if no other sections exist
+    4. Before Template Boundary (Vision Objective 1:, legacy notes)
+    5. After Daily Review if present and no other sections exist
+    6. After the template's trailing `---` / EOF (current notes)
 
     Returns the line index where Todoist section should be inserted.
     """
@@ -258,18 +262,19 @@ def _find_todoist_insert_position(lines: list[str], daily_review_end_line: int) 
     if in_project and project_end is None:
         project_end = len(lines)
 
-    # Determine insert position based on what exists
-    # Priority: after Project Updates > after Initiative Updates > before Issues Touched > before template > after daily review
+    # Priority: after Project > after Initiative > before Issues Touched >
+    # before Vision Objective (legacy) > after Daily Review (legacy) >
+    # after template `---` / EOF (current notes).
     if project_end is not None:
         return project_end
     elif initiative_end is not None:
         return initiative_end
     elif issues_touched_line is not None:
         return issues_touched_line
-    elif template_boundary_line is not None:
-        return template_boundary_line
     else:
-        return daily_review_end_line
+        return fallback_webhook_insert_index(
+            lines, daily_review_end_line, template_boundary_line
+        )
 
 
 def append_todoist_completed(task_content: str, target_dt: datetime | None = None) -> None:
@@ -277,7 +282,8 @@ def append_todoist_completed(task_content: str, target_dt: datetime | None = Non
 
     Creates the section if it doesn't exist.
     Positions section after Initiative/Project Updates if present,
-    before Vision Objectives, otherwise after Daily Review.
+    before Vision Objectives (legacy), otherwise after Daily Review
+    (legacy) or after the template's trailing `---` / EOF.
 
     Args:
         task_content: The task text to add

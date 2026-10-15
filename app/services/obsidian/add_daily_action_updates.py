@@ -12,7 +12,10 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
-from services.obsidian.utils.template_boundary import is_template_boundary
+from services.obsidian.utils.template_boundary import (
+    fallback_webhook_insert_index,
+    is_template_boundary,
+)
 
 load_dotenv()
 
@@ -329,7 +332,23 @@ def upsert_daily_action_update(section_type: str, url: str, parent_name: str, co
                         lines.insert(insert_before_index, target_header)
                         lines.insert(insert_before_index, '')
                     else:
-                        insert_pos = daily_review_end_line
+                        template_boundary_line = None
+                        for i in range(daily_review_end_line, len(lines)):
+                            if is_template_boundary(lines[i]):
+                                template_boundary_line = i
+                                break
+
+                        earlier_sibling = any(
+                            header in header_positions
+                            for header in section_order
+                            if header != target_header
+                        )
+                        if earlier_sibling and template_boundary_line is None:
+                            insert_pos = len(lines)
+                        else:
+                            insert_pos = fallback_webhook_insert_index(
+                                lines, daily_review_end_line, template_boundary_line
+                            )
                         new_lines = ['', target_header, log_entry, '']
                         for j, new_line in enumerate(new_lines):
                             lines.insert(insert_pos + j, new_line)
