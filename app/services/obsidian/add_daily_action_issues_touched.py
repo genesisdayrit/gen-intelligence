@@ -14,7 +14,9 @@ from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import (
     fallback_webhook_insert_index,
+    is_mindfold_appended_marker,
     is_template_boundary,
+    is_webhook_scan_stop,
 )
 
 load_dotenv()
@@ -231,6 +233,8 @@ def _find_issues_touched_insert_position(lines: list[str], daily_review_end_line
     for i, line in enumerate(lines):
         if i < daily_review_end_line:
             continue
+        if is_mindfold_appended_marker(line):
+            break
 
         stripped = line.strip()
 
@@ -251,7 +255,7 @@ def _find_issues_touched_insert_position(lines: list[str], daily_review_end_line
             in_todoist = False
             in_project = False
             continue
-        elif stripped.startswith('#') or stripped == '---':
+        elif stripped.startswith('#') or stripped == '---' or is_webhook_scan_stop(line):
             if in_todoist:
                 todoist_end = i
                 in_todoist = False
@@ -344,11 +348,17 @@ def upsert_daily_action_issue_touched(
             in_issues_section = False
 
             for i, line in enumerate(lines):
+                if is_mindfold_appended_marker(line):
+                    break
                 if line.strip() == ISSUES_TOUCHED_HEADER:
                     in_issues_section = True
                     continue
                 if in_issues_section:
-                    if line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
+                    if (
+                        line.strip().startswith('#')
+                        or line.strip() == '---'
+                        or is_webhook_scan_stop(line)
+                    ):
                         break
                     if identifier_pattern.match(line):
                         existing_line_index = i
@@ -373,7 +383,11 @@ def upsert_daily_action_issue_touched(
                         if section_found:
                             if line.strip() == '':
                                 break
-                            elif line.strip().startswith('#') or line.strip() == '---' or is_template_boundary(line):
+                            elif (
+                                line.strip().startswith('#')
+                                or line.strip() == '---'
+                                or is_webhook_scan_stop(line)
+                            ):
                                 break
                             else:
                                 insert_index = i + 1

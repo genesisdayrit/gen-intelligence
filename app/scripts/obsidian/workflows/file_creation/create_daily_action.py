@@ -8,19 +8,32 @@ resolved the same way as `_find_daily_action_folder` — via
 `_find_folder_in_path`, so a numbered prefix like `15_Templates` matches.
 
 Frontmatter is the script-generated `_Journal` / `_Weekly-Cycle` /
-`_Long-Cycle` / `_Weekly-Map` block. The template is body-only and is
-appended verbatim. If a template ever includes YAML frontmatter, that
-block is stripped and ignored (logged) so it cannot duplicate or override
-the generated keys.
+`_Long-Cycle` / `_Weekly-Map` block plus `Date` (YYYY-MM-DD) and
+`Previous Day` / `Next Day` lists (`['[[DA <date±1>]]']`), matching the
+old gd-second-brain-os `create_daily_action_page.py`. The template is
+body-only and is appended verbatim. If a template ever includes YAML
+frontmatter, that block is stripped and ignored (logged) so it cannot
+duplicate or override the generated keys.
 
-After the template's trailing `---`, one `##### <initiative name>`
-header is added for each Active (non-archived) Linear initiative,
-excluding those labelled `main-thread` (override with
-`DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL`). Each header is followed by
-`- ` and a blank line so proposed work can be filled in. Linear
-failures/timeouts are logged and the note is still created without
-this section. Webhook jobs (Linear updates, Todoist, Manus, issues
-touched) append after these headers.
+Body order below the generated YAML:
+
+1. `<!-- mindfold-slot:daily-review -->` (mindfold inserts that date's
+   review here later, above everything).
+2. `<!-- hub-slot:updates -->` — Linear Initiative/Project Updates,
+   Todoist completed, and Linear Issues Touched land immediately above
+   this marker (created on first write). Manus is not seeded.
+3. Latest Main Thread initiative update, under
+   `#### Main Thread (<update date/time PT>)`, omitted if Linear fails
+   or there is no update.
+4. `<!-- mindfold-slot:daily-action-plan -->` (mindfold inserts today's
+   vision/objectives here, above the leverage questions).
+5. Vault template body (leverage questions) verbatim, including its
+   trailing `---`.
+6. One `##### <initiative name>` header per Active (non-archived)
+   Linear initiative, excluding those labelled `main-thread` (override
+   with `DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL`). Each header is
+   followed by `- ` and a blank line. Linear failures/timeouts are
+   logged and the note is still created without this section.
 
 If the template is missing or cannot be downloaded, logs a warning and
 falls back to the hardcoded body so the daily note is still created.
@@ -45,8 +58,15 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
-from scripts.linear.sync_utils import LINEAR_API_KEY, fetch_all_pages
+from scripts.linear.sync_utils import (
+    LINEAR_API_KEY,
+    fetch_all_pages,
+    fetch_initiative_updates,
+)
 from services.obsidian.utils.template_boundary import (
+    HUB_UPDATES_SLOT,
+    MINDFOLD_DAILY_PLAN_SLOT,
+    MINDFOLD_DAILY_REVIEW_SLOT,
     is_initiative_work_header,
     template_end_insert_index,
 )
@@ -92,6 +112,9 @@ query ActiveInitiatives($first: Int!, $after: String) {
   }
 }
 """
+
+MAIN_THREAD_LABEL = "main-thread"
+PT_TZ = pytz.timezone("America/Los_Angeles")
 
 # Used when the vault template cannot be found or downloaded.
 # Matches the live `daily_action_properties.md` body: two leverage
@@ -346,11 +369,31 @@ def _generate_yaml_properties(dbx: dropbox.Dropbox, vault_path: str, use_today: 
     weekly_map_link = _find_weekly_map_link(dbx, vault_path, use_today)
     weekly_map_list = [weekly_map_link] if weekly_map_link else []
 
+    adjacent = _da_adjacent_yaml(use_today)
     return {
         'journal': journal_link,
         'weekly_cycle': weekly_cycle_list,
         'long_cycle': long_cycle_list,
-        'weekly_map': weekly_map_list
+        'weekly_map': weekly_map_list,
+        **adjacent,
+    }
+
+
+def _da_adjacent_yaml(use_today: bool = False) -> dict:
+    """Date + Previous/Next Day DA wikilinks for the target day.
+
+    Matches gd-second-brain-os ``create_daily_action_page.py``: ``Date`` is
+    ISO ``YYYY-MM-DD``; adjacent days are one-item lists
+    ``['[[DA YYYY-MM-DD]]']``.
+    """
+    target = _get_target_day(use_today)
+    iso = target.strftime("%Y-%m-%d")
+    previous = (target - timedelta(days=1)).strftime("%Y-%m-%d")
+    nxt = (target + timedelta(days=1)).strftime("%Y-%m-%d")
+    return {
+        "Date": iso,
+        "Previous Day": [f"[[DA {previous}]]"],
+        "Next Day": [f"[[DA {nxt}]]"],
     }
 
 
@@ -543,14 +586,19 @@ def fetch_active_initiatives() -> list[dict]:
     `scripts.linear.sync_utils.fetch_all_pages`. Returns [] if Linear is
     unconfigured, times out, or otherwise fails — callers still create the note.
     """
+    return _select_active_initiatives(_fetch_initiative_nodes())
+
+
+def _fetch_initiative_nodes() -> list[dict]:
+    """Raw Active-initiative nodes, or [] if Linear is unset/fails."""
     if not LINEAR_API_KEY and not os.getenv("LINEAR_API_KEY"):
         logger.warning(
-            "LINEAR_API_KEY not set; creating Daily Action without initiative headers"
+            "LINEAR_API_KEY not set; creating Daily Action without Linear sections"
         )
         return []
 
     try:
-        nodes = fetch_all_pages(
+        return fetch_all_pages(
             ACTIVE_INITIATIVES_QUERY,
             {"first": 50},
             ["initiatives"],
@@ -558,12 +606,122 @@ def fetch_active_initiatives() -> list[dict]:
     except Exception as e:
         logger.warning(
             "Failed to fetch Linear initiatives for Daily Action; "
-            "creating the note without initiative headers: %s",
+            "creating the note without Linear sections: %s",
             e,
         )
         return []
 
-    return _select_active_initiatives(nodes)
+
+def _resolve_main_thread_initiative(nodes: list[dict]) -> dict | None:
+    """Single Active initiative labelled `main-thread`, or None if 0/many/error."""
+    matches = [
+        node
+        for node in nodes
+        if node.get("status") == ACTIVE_STATUS
+        and MAIN_THREAD_LABEL in _initiative_label_names(node)
+    ]
+    if len(matches) == 0:
+        logger.info("No active initiative carries the '%s' label; omitting Main Thread block.", MAIN_THREAD_LABEL)
+        return None
+    if len(matches) > 1:
+        names = ", ".join(item.get("name", "?") for item in matches)
+        logger.warning(
+            "Expected exactly one '%s' initiative, found %d (%s); omitting Main Thread block.",
+            MAIN_THREAD_LABEL,
+            len(matches),
+            names,
+        )
+        return None
+    return matches[0]
+
+
+def _format_pt_timestamp(created_at: str) -> str | None:
+    """Format a Linear ISO timestamp as `Oct 14, 2026 4:00 PM PT`."""
+    try:
+        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    local = parsed.astimezone(PT_TZ)
+    try:
+        return local.strftime("%b %-d, %Y %-I:%M %p PT")
+    except ValueError:
+        return local.strftime("%b %#d, %Y %#I:%M %p PT")
+
+
+def _sanitize_update_body(body: str) -> str:
+    """Replace standalone `---` so placement logic does not treat it as a divider."""
+    return re.sub(r"^---$", "***", (body or "").strip(), flags=re.MULTILINE)
+
+
+def _format_main_thread_block(update: dict) -> str:
+    """Render `#### Main Thread (<when PT>)` plus the full update body.
+
+    Embeds `<!-- main-thread-update: <url> -->` so webhook Initiative
+    Updates for this same snapshot can be skipped (no duplicate).
+    """
+    when = _format_pt_timestamp(update.get("createdAt") or update.get("updatedAt") or "")
+    if not when:
+        when = "unknown"
+    body = _sanitize_update_body(update.get("body") or "")
+    url = (update.get("url") or "").strip()
+    lines = [f"#### Main Thread ({when})"]
+    if url:
+        lines.append(f"<!-- main-thread-update: {url} -->")
+    if body:
+        lines.append(body)
+    return "\n".join(lines) + "\n"
+
+
+def fetch_latest_main_thread_update(nodes: list[dict] | None = None) -> dict | None:
+    """Newest status update on the `main-thread` initiative, or None.
+
+    Reuses the hub Linear client (`fetch_all_pages` / `fetch_initiative_updates`).
+    Linear unset/timeout/empty/ambiguous target are logged and omitted.
+    """
+    if nodes is None:
+        nodes = _fetch_initiative_nodes()
+    target = _resolve_main_thread_initiative(nodes)
+    if not target:
+        return None
+
+    try:
+        updates = fetch_initiative_updates(target["id"])
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch main-thread initiative updates; omitting Main Thread block: %s",
+            e,
+        )
+        return None
+
+    dated = [item for item in updates if item.get("createdAt") or item.get("updatedAt")]
+    if not dated:
+        logger.info("Main-thread initiative has no status updates; omitting Main Thread block.")
+        return None
+
+    dated.sort(
+        key=lambda item: item.get("createdAt") or item.get("updatedAt") or "",
+        reverse=True,
+    )
+    return dated[0]
+
+
+def _compose_daily_action_body(
+    template_body: str,
+    initiative_names: list[str],
+    main_thread_update: dict | None = None,
+) -> str:
+    """Assemble review slot, hub-slot, Main Thread, plan slot, template, ##### headers."""
+    parts = [MINDFOLD_DAILY_REVIEW_SLOT, "", HUB_UPDATES_SLOT, ""]
+    if main_thread_update:
+        parts.append(_format_main_thread_block(main_thread_update).rstrip("\n"))
+        parts.append("")
+    parts.extend([MINDFOLD_DAILY_PLAN_SLOT, ""])
+    head = "\n".join(parts)
+    if not head.endswith("\n"):
+        head += "\n"
+    template = (template_body or "").rstrip("\n")
+    body = f"{head}\n{template}\n"
+    return _append_initiative_headers(body, initiative_names)
 
 
 def _existing_initiative_header_names(body: str) -> set[str]:
@@ -585,7 +743,8 @@ def _append_initiative_headers(body: str, names: list[str]) -> str:
 
     Idempotent: existing `##### <name>` headers are left in place and not
     duplicated. New headers go after the template divider (and any
-    headers already present) and before webhook sections other jobs append.
+    headers already present). Webhook sections live in the hub-slot
+    region near the top, not after these headers.
     """
     existing = {name.casefold() for name in _existing_initiative_header_names(body)}
     to_add = [name for name in names if name.casefold() not in existing]
@@ -640,19 +799,27 @@ def create_daily_action(use_today: bool = False) -> bool:
 
         # Generate YAML frontmatter
         yaml_props = _generate_yaml_properties(dbx, vault_path, use_today)
+        adjacent = _da_adjacent_yaml(use_today)
         yaml_metadata = {
             '_Journal': yaml_props['journal'],
             '_Weekly-Cycle': yaml_props['weekly_cycle'],
             '_Long-Cycle': yaml_props['long_cycle'],
-            '_Weekly-Map': yaml_props['weekly_map']
+            '_Weekly-Map': yaml_props['weekly_map'],
+            'Date': adjacent['Date'],
+            'Previous Day': adjacent['Previous Day'],
+            'Next Day': adjacent['Next Day'],
         }
         yaml_str = yaml.safe_dump(yaml_metadata, default_flow_style=False, sort_keys=False)
         yaml_section = f"---\n{yaml_str}---\n\n"
 
         template_content = _load_daily_action_template(dbx, vault_path)
-        main_content = _resolve_daily_action_body(template_content)
-        initiative_names = [item["name"] for item in fetch_active_initiatives()]
-        main_content = _append_initiative_headers(main_content, initiative_names)
+        template_body = _resolve_daily_action_body(template_content)
+        initiative_nodes = _fetch_initiative_nodes()
+        initiative_names = [item["name"] for item in _select_active_initiatives(initiative_nodes)]
+        main_thread_update = fetch_latest_main_thread_update(initiative_nodes)
+        main_content = _compose_daily_action_body(
+            template_body, initiative_names, main_thread_update
+        )
         content = yaml_section + main_content
         dbx.files_upload(content.encode('utf-8'), dropbox_file_path)
         logger.info(f"Successfully created daily action file '{file_name}' in Dropbox.")

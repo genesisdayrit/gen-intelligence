@@ -24,6 +24,11 @@ os.environ.setdefault("DROPBOX_ACCESS_SECRET", "test-secret")
 os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
 
 from scripts.obsidian.workflows.file_creation import create_daily_action as mod
+from services.obsidian.utils.template_boundary import (
+    HUB_UPDATES_SLOT,
+    MINDFOLD_DAILY_PLAN_SLOT,
+    MINDFOLD_DAILY_REVIEW_SLOT,
+)
 
 MODULE = "scripts.obsidian.workflows.file_creation.create_daily_action"
 LA = pytz.timezone("America/Los_Angeles")
@@ -61,6 +66,9 @@ GENERATED = {
     "_Weekly-Cycle": ["[[Weekly Cycle Sep. 16 - Sep. 22, 2026]]"],
     "_Long-Cycle": ["[[6-Week Cycle]]"],
     "_Weekly-Map": ["[[Weekly Map 2026-09-20]]"],
+    "Date": "2026-09-17",
+    "Previous Day": ["[[DA 2026-09-16]]"],
+    "Next Day": ["[[DA 2026-09-18]]"],
 }
 
 
@@ -153,6 +161,8 @@ def _run_create(
     download_error=None,
     linear_nodes=None,
     linear_error=None,
+    main_thread_updates=None,
+    main_thread_error=None,
 ):
     mock_dbx = MagicMock()
     mock_dbx.files_list_folder.side_effect = lambda path: _list_folder(
@@ -177,6 +187,14 @@ def _run_create(
         if linear_error is not None
         else patch(f"{MODULE}.fetch_all_pages", return_value=linear_nodes or [])
     )
+    updates_patch = (
+        patch(f"{MODULE}.fetch_initiative_updates", side_effect=main_thread_error)
+        if main_thread_error is not None
+        else patch(
+            f"{MODULE}.fetch_initiative_updates",
+            return_value=main_thread_updates or [],
+        )
+    )
 
     with (
         patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
@@ -192,9 +210,32 @@ def _run_create(
         ),
         patch(f"{MODULE}.LINEAR_API_KEY", "test-linear-key"),
         linear_patch,
+        updates_patch,
     ):
         result = mod.create_daily_action(use_today=False)
     return result, mock_dbx
+
+
+def _assert_body_order(body: str, *, has_main_thread: bool = False, header_names=None):
+    review = body.index(MINDFOLD_DAILY_REVIEW_SLOT)
+    hub = body.index(HUB_UPDATES_SLOT)
+    plan = body.index(MINDFOLD_DAILY_PLAN_SLOT)
+    leverage = body.index("highest leverage")
+    divider = body.index("\n---\n", leverage)
+    assert review < hub < plan < leverage < divider
+    if has_main_thread:
+        main = body.index("#### Main Thread")
+        assert hub < main < plan
+    else:
+        assert "#### Main Thread" not in body
+    if header_names:
+        last = divider
+        for name in header_names:
+            pos = body.index(f"##### {name}")
+            assert pos > last
+            last = pos
+    else:
+        assert "##### " not in body
 
 
 def _uploaded_body(mock_dbx) -> str:
@@ -230,9 +271,11 @@ def test_create_daily_action_uses_body_only_template_under_numbered_templates():
     assert list(meta.keys()) == list(GENERATED.keys())
     assert meta["_Journal"] == GENERATED["_Journal"]
     assert meta["_Weekly-Cycle"] == GENERATED["_Weekly-Cycle"]
-    assert "Date" not in meta
-    assert "Previous Day" not in meta
-    assert body == BODY_ONLY_TEMPLATE
+    assert meta["Date"] == GENERATED["Date"]
+    assert meta["Previous Day"] == GENERATED["Previous Day"]
+    assert meta["Next Day"] == GENERATED["Next Day"]
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    _assert_body_order(body)
 
 
 def test_create_daily_action_strips_template_frontmatter_if_present(caplog):
@@ -241,9 +284,10 @@ def test_create_daily_action_strips_template_frontmatter_if_present(caplog):
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
     meta, body = _parse_note(uploaded)
     assert list(meta.keys()) == list(GENERATED.keys())
-    assert "Date" not in meta
+    assert meta["Date"] == GENERATED["Date"]
     assert "Shuffler" not in meta
-    assert body == BODY_ONLY_TEMPLATE
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    _assert_body_order(body)
     assert any("Ignoring YAML frontmatter" in rec.message for rec in caplog.records)
 
 
@@ -254,8 +298,9 @@ def test_create_daily_action_missing_template_uses_fallback(caplog):
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
     meta, body = _parse_note(uploaded)
     assert meta["_Journal"] == GENERATED["_Journal"]
-    assert body == mod.FALLBACK_MAIN_CONTENT
-    assert body == BODY_ONLY_TEMPLATE
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    assert mod.FALLBACK_MAIN_CONTENT.strip() in body
+    _assert_body_order(body)
     assert "Vision Objective" not in body
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
@@ -265,7 +310,8 @@ def test_create_daily_action_missing_template_file_uses_fallback(caplog):
     assert result is True
     mock_dbx.files_download.assert_not_called()
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
-    assert mod.FALLBACK_MAIN_CONTENT in uploaded
+    assert mod.FALLBACK_MAIN_CONTENT.strip() in uploaded
+    _assert_body_order(_uploaded_body(mock_dbx))
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
 
@@ -273,7 +319,8 @@ def test_create_daily_action_download_error_uses_fallback(caplog):
     result, mock_dbx = _run_create(download_error=_download_missing())
     assert result is True
     uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
-    assert mod.FALLBACK_MAIN_CONTENT in uploaded
+    assert mod.FALLBACK_MAIN_CONTENT.strip() in uploaded
+    _assert_body_order(_uploaded_body(mock_dbx))
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
 
@@ -365,8 +412,7 @@ def test_create_daily_action_includes_active_initiative_headers():
     assert result is True
     body = _uploaded_body(mock_dbx)
     assert BODY_ONLY_TEMPLATE.strip() in body
-    assert body.index("highest leverage") < body.index("\n---\n") < body.index("##### alpha OS")
-    assert body.index("##### alpha OS") < body.index("##### Zeta Labs")
+    _assert_body_order(body, header_names=["alpha OS", "Zeta Labs"])
     assert "##### alpha OS\n- \n" in body
     assert "##### Zeta Labs\n- \n" in body
 
@@ -375,8 +421,8 @@ def test_create_daily_action_linear_failure_still_creates(caplog):
     result, mock_dbx = _run_create(linear_error=requests.exceptions.Timeout("Linear timed out"))
     assert result is True
     body = _uploaded_body(mock_dbx)
-    assert body == BODY_ONLY_TEMPLATE
-    assert "##### " not in body
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    _assert_body_order(body)
     assert any("Failed to fetch Linear initiatives" in rec.message for rec in caplog.records)
 
 
@@ -384,8 +430,8 @@ def test_create_daily_action_linear_empty_omits_headers():
     result, mock_dbx = _run_create(linear_nodes=[])
     assert result is True
     body = _uploaded_body(mock_dbx)
-    assert body == BODY_ONLY_TEMPLATE
-    assert "##### " not in body
+    assert BODY_ONLY_TEMPLATE.strip() in body
+    _assert_body_order(body)
 
 
 def test_create_daily_action_excludes_main_thread_and_non_active():
@@ -427,3 +473,103 @@ def test_create_daily_action_respects_exclude_label_env(monkeypatch):
     body = _uploaded_body(mock_dbx)
     assert "##### Keep" in body
     assert "##### Skip" not in body
+
+
+MAIN_THREAD_UPDATE = {
+    "id": "upd-latest",
+    "url": "https://linear.app/chapters/initiativeUpdate/upd-latest",
+    "body": "## Previous Day's Wins\n- Shipped the DA layout\n\n---\n\nKeep going.",
+    "createdAt": "2026-10-14T23:00:00.000Z",
+    "updatedAt": "2026-10-14T23:00:00.000Z",
+}
+
+
+def test_create_daily_action_includes_latest_main_thread_update():
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("Hub OS"),
+            _initiative_node("Main Thread", labels=["main-thread"]),
+        ],
+        main_thread_updates=[
+            {
+                "id": "upd-old",
+                "url": "https://linear.app/chapters/initiativeUpdate/upd-old",
+                "body": "older",
+                "createdAt": "2026-10-13T23:00:00.000Z",
+            },
+            MAIN_THREAD_UPDATE,
+        ],
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    _assert_body_order(body, has_main_thread=True, header_names=["Hub OS"])
+    assert "#### Main Thread (Oct 14, 2026 4:00 PM PT)" in body
+    assert "<!-- main-thread-update: https://linear.app/chapters/initiativeUpdate/upd-latest -->" in body
+    assert "Shipped the DA layout" in body
+    assert "***" in body
+    assert body.count("---") >= 1
+    assert "older" not in body
+    assert "##### Main Thread" not in body
+
+
+def test_create_daily_action_omits_main_thread_when_updates_fail(caplog):
+    result, mock_dbx = _run_create(
+        linear_nodes=[
+            _initiative_node("Hub OS"),
+            _initiative_node("Main Thread", labels=["main-thread"]),
+        ],
+        main_thread_error=requests.exceptions.Timeout("updates timed out"),
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    _assert_body_order(body, header_names=["Hub OS"])
+    assert any("Failed to fetch main-thread initiative updates" in rec.message for rec in caplog.records)
+
+
+def test_create_daily_action_omits_main_thread_when_none():
+    result, mock_dbx = _run_create(
+        linear_nodes=[_initiative_node("Main Thread", labels=["main-thread"])],
+        main_thread_updates=[],
+    )
+    assert result is True
+    body = _uploaded_body(mock_dbx)
+    _assert_body_order(body)
+    assert MINDFOLD_DAILY_REVIEW_SLOT in body
+    assert HUB_UPDATES_SLOT in body
+    assert MINDFOLD_DAILY_PLAN_SLOT in body
+
+
+def test_da_adjacent_yaml_uses_list_form_for_tomorrow_and_today():
+    with patch(f"{MODULE}._get_target_day", side_effect=_fake_target_day):
+        tomorrow = mod._da_adjacent_yaml(use_today=False)
+        today = mod._da_adjacent_yaml(use_today=True)
+    assert tomorrow == {
+        "Date": "2026-09-17",
+        "Previous Day": ["[[DA 2026-09-16]]"],
+        "Next Day": ["[[DA 2026-09-18]]"],
+    }
+    assert today == {
+        "Date": "2026-09-16",
+        "Previous Day": ["[[DA 2026-09-15]]"],
+        "Next Day": ["[[DA 2026-09-17]]"],
+    }
+
+
+def test_create_daily_action_yaml_has_date_and_adjacent_da_links():
+    result, mock_dbx = _run_create()
+    assert result is True
+    uploaded = mock_dbx.files_upload.call_args.args[0].decode("utf-8")
+    meta, _body = _parse_note(uploaded)
+    assert meta["Date"] == "2026-09-17"
+    assert meta["Previous Day"] == ["[[DA 2026-09-16]]"]
+    assert meta["Next Day"] == ["[[DA 2026-09-18]]"]
+    assert "Previous Day:\n- '[[DA 2026-09-16]]'" in uploaded or "Previous Day:\n- [[DA 2026-09-16]]" in uploaded
+    assert "Next Day:\n- '[[DA 2026-09-18]]'" in uploaded or "Next Day:\n- [[DA 2026-09-18]]" in uploaded
+
+
+def test_format_main_thread_block_sanitizes_divider_and_embeds_url():
+    block = mod._format_main_thread_block(MAIN_THREAD_UPDATE)
+    assert block.startswith("#### Main Thread (Oct 14, 2026 4:00 PM PT)\n")
+    assert "<!-- main-thread-update: https://linear.app/chapters/initiativeUpdate/upd-latest -->" in block
+    assert "***" in block
+    assert "\n---\n" not in f"\n{block}"

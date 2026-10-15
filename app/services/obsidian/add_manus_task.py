@@ -15,7 +15,10 @@ from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 from services.obsidian.utils.template_boundary import (
     fallback_webhook_insert_index,
+    hub_updates_insert_index,
     is_template_boundary,
+    is_webhook_scan_stop,
+    placement_limit,
 )
 
 load_dotenv()
@@ -231,9 +234,10 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
 
             target_header = DAILY_ACTION_HEADER
             section_order = _get_daily_section_order()
+            scan_end = placement_limit(lines)
 
             header_positions = {}
-            for i, line in enumerate(lines):
+            for i, line in enumerate(lines[:scan_end]):
                 if i < daily_review_end_line:
                     continue
                 for header in section_order:
@@ -243,13 +247,13 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
             if target_header in header_positions:
                 header_index = header_positions[target_header]
                 insert_index = header_index + 1
-                for i in range(header_index + 1, len(lines)):
+                for i in range(header_index + 1, scan_end):
                     line = lines[i]
                     if line.strip().startswith('#'):
                         break
                     elif line.strip() == '---':
                         break
-                    elif is_template_boundary(line):
+                    elif is_webhook_scan_stop(line):
                         break
                     elif line.strip() == '':
                         break
@@ -275,7 +279,7 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
                     lines.insert(insert_before_index, '')
                 else:
                     template_boundary_line = None
-                    for i in range(daily_review_end_line, len(lines)):
+                    for i in range(daily_review_end_line, scan_end):
                         if is_template_boundary(lines[i]):
                             template_boundary_line = i
                             break
@@ -285,7 +289,10 @@ def _upsert_daily_action_manus(task_id: str, task_title: str, task_url: str) -> 
                         for header in section_order
                         if header != target_header
                     )
-                    if earlier_sibling and template_boundary_line is None:
+                    hub = hub_updates_insert_index(lines)
+                    if hub is not None:
+                        insert_pos = hub
+                    elif earlier_sibling and template_boundary_line is None:
                         insert_pos = len(lines)
                     else:
                         insert_pos = fallback_webhook_insert_index(

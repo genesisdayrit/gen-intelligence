@@ -4,7 +4,7 @@ Automatically fetch Manus AI tasks created today and write them to your Obsidian
 
 ## Overview
 
-A scheduled job that runs every 30 minutes, fetching tasks from the Manus API for the current effective calendar day and upserting them into both Daily Action and Weekly Cycle pages in Obsidian via Dropbox.
+A manual-only job (year-2099 CronTrigger) that fetches tasks from the Manus API for the current effective calendar day and upserts them into both Daily Action and Weekly Cycle pages in Obsidian via Dropbox. Live `/manus/webhook` events are acknowledged but not written (`WRITE_MANUS_TO_OBSIDIAN = False`).
 
 1. Fetches all Manus tasks via `GET /v1/tasks`
 2. Filters to tasks created during the current effective day (3am rollover)
@@ -47,7 +47,7 @@ REDIS_PORT=6379
 
 ## Schedule
 
-The job is registered in `app/scheduler.py` with a `CronTrigger(minute="*/30")`, which fires at `:00` and `:30` of every hour (48 times per day).
+The job is registered in `app/scheduler.py` as **manual-only**: `CronTrigger(year=2099, month=1, day=1, hour=0, minute=0)` with the name `Fetch Manus Tasks (manual)`. It stays registered so `POST /scheduler/jobs/fetch_manus_tasks/run` can fire it; it does not run on a cadence.
 
 ### Manual Trigger
 

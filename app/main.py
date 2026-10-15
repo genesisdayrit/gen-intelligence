@@ -82,8 +82,12 @@ SYSTEM_TIMEZONE = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 # Feature flags
 # When False, Linear ProjectUpdate/InitiativeUpdate webhook events are
 # acknowledged but NOT written to the Obsidian Daily Action / Weekly Cycle
-# notes. The _Initiatives folder sync still runs. Flip to True to re-enable.
-WRITE_LINEAR_UPDATES_TO_OBSIDIAN = False
+# notes. The _Initiatives folder sync still runs.
+WRITE_LINEAR_UPDATES_TO_OBSIDIAN = True
+# When False, /manus/webhook acknowledges events but does not write to
+# Daily Action / Weekly Cycle. The year-2099 fetch_manus_tasks job can
+# still be fired manually.
+WRITE_MANUS_TO_OBSIDIAN = False
 
 
 # Telegram models (minimal)
@@ -851,25 +855,8 @@ async def manus_webhook(
         if not task_url:
             task_url = f"https://manus.im/app/{task_id}"
 
-        result = upsert_manus_task(task_id, task_title or "Untitled Task", task_url)
-        if result["daily_action_success"]:
-            logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
-        else:
-            logger.error("Failed to write Manus task to Daily Action: %s", result.get("daily_action_error"))
-        if result["weekly_cycle_success"]:
-            logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
-        else:
-            logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
-    elif event_type == "task_progress":
-        logger.info("Manus task progress: %s | %s", task_id, progress_detail.get("message", ""))
-    elif event_type == "task_stopped":
-        stop_reason = task_detail.get("stop_reason", "")
-        logger.info("Manus task stopped: %s | reason=%s", task_id, stop_reason)
-        # Also write to Obsidian - task_stopped has full task_detail
-        if task_title and task_id != "unknown":
-            if not task_url:
-                task_url = f"https://manus.im/app/{task_id}"
-            result = upsert_manus_task(task_id, task_title, task_url)
+        if WRITE_MANUS_TO_OBSIDIAN:
+            result = upsert_manus_task(task_id, task_title or "Untitled Task", task_url)
             if result["daily_action_success"]:
                 logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
             else:
@@ -878,6 +865,28 @@ async def manus_webhook(
                 logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
             else:
                 logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
+        else:
+            logger.info("Skipped Obsidian write (WRITE_MANUS_TO_OBSIDIAN=False)")
+    elif event_type == "task_progress":
+        logger.info("Manus task progress: %s | %s", task_id, progress_detail.get("message", ""))
+    elif event_type == "task_stopped":
+        stop_reason = task_detail.get("stop_reason", "")
+        logger.info("Manus task stopped: %s | reason=%s", task_id, stop_reason)
+        if task_title and task_id != "unknown":
+            if not task_url:
+                task_url = f"https://manus.im/app/{task_id}"
+            if WRITE_MANUS_TO_OBSIDIAN:
+                result = upsert_manus_task(task_id, task_title, task_url)
+                if result["daily_action_success"]:
+                    logger.info("Manus task written to Daily Action: action=%s", result["daily_action_action"])
+                else:
+                    logger.error("Failed to write Manus task to Daily Action: %s", result.get("daily_action_error"))
+                if result["weekly_cycle_success"]:
+                    logger.info("Manus task written to Weekly Cycle: action=%s", result["weekly_cycle_action"])
+                else:
+                    logger.error("Failed to write Manus task to Weekly Cycle: %s", result.get("weekly_cycle_error"))
+            else:
+                logger.info("Skipped Obsidian write (WRITE_MANUS_TO_OBSIDIAN=False)")
     else:
         logger.info("Manus event: %s (unhandled)", event_type)
 

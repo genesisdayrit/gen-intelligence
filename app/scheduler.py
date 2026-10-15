@@ -339,10 +339,17 @@ SCHEDULED_JOBS = [
     },
     {
         "id": "fetch_manus_tasks",
-        "name": "Fetch Manus Tasks",
+        "name": "Fetch Manus Tasks (manual)",
         "func": _fetch_manus_tasks,
+        # Not on a cadence. Genesis turned Manus off; year 2099 keeps
+        # the job registered so POST /scheduler/jobs/fetch_manus_tasks/run
+        # can still fire it.
         "trigger": CronTrigger(
-            minute="*/30",
+            year=2099,
+            month=1,
+            day=1,
+            hour=0,
+            minute=0,
             timezone=SYSTEM_TZ,
         ),
     },
@@ -626,10 +633,10 @@ SCHEDULED_JOBS = [
         "id": RECONCILE_MISSED_OBSIDIAN_WRITES_JOB_ID,
         "name": "Reconcile Missed Obsidian Hub Writes",
         "func": _reconcile_missed_obsidian_writes,
-        # Top of every hour in SYSTEM_TZ. Drains the deferred Dropbox
-        # queue and since-checks Readwise / Granola (stubs for later sources).
+        # :12 every hour in SYSTEM_TZ — after mindfold's on-the-hour
+        # writes, before the :15 folder-journal / Shazam jobs.
         "trigger": CronTrigger(
-            minute=0,
+            minute=12,
             timezone=SYSTEM_TZ,
         ),
     },
