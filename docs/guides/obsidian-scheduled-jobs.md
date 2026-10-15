@@ -16,9 +16,10 @@ curl -X POST http://localhost:8000/scheduler/jobs/add_daily_review_section/run
 | `create_daily_journal` | Daily 18:00 | Tomorrow's journal. See [daily-journal-creation.md](daily-journal-creation.md). |
 | `create_daily_action` | Daily 18:05 | Tomorrow's DA file. |
 | `update_daily_journal_properties` | Daily 18:10 | Tomorrow's journal YAML (relationship links, Daily Action, On this Day, Previous/Next Day). |
+| `ensure_todays_daily_files` | Daily 05:00 | Morning catch-up: create **today's** journal, DA file, and journal properties if last night's 18:00 cluster was skipped (e.g. hub deploy/restart past `misfire_grace_time`). Orchestrates the three helpers with `use_today=True`; already-exists is success. Does not replace the evening-before jobs. |
 | `send_essay_ideas_from_journal` | Daily 04:30 | Already on APScheduler; remapped from old `25 1 * * *` UTC. |
 
-Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ignore that flag.
+Evening daily-creation jobs accept `?use_today=true` for a manual morning recovery. `ensure_todays_daily_files` always targets today (no `use_today` flag). Other jobs ignore that flag.
 
 ## Migrated in this follow-up
 
@@ -44,6 +45,7 @@ Daily creation jobs accept `?use_today=true` for morning recovery. Other jobs ig
 ## Schedule choices
 
 - **Fixed local hours**, not a UTC-cron translation. Fire times stay aligned with Pacific (and Eastern, which stays 3 hours ahead year-round) and drift ±1h vs the old UTC crontab across DST.
+- **`ensure_todays_daily_files` 05:00** is a morning catch-up, not a replacement for the 18:00 tomorrow-creates. APScheduler `misfire_grace_time` is 1 hour, so a hub deploy/restart after 18:00 skips that night's cluster and `next_run` jumps to the following evening. The 05:00 job calls `_create_daily_journal` / `_create_daily_action` / `_update_daily_journal_properties` with `use_today=True` so today's files still appear. Idempotent when last night's run succeeded.
 - **`add_daily_review_section` 13:00** matches the generation comment of 3:00pm ET (EST). The original UTC line was `0 20 * * *`.
 - **`update_modified_files_today` every 15 minutes** instead of the live-host `*/10`. `paths_to_check.txt` lists 13 Dropbox folders (non-recursive `list_folder`). Redis `last_run_folder_journal_relations_at` keeps each pass incremental. 15 minutes is less chatty than every 10 minutes and still near-real-time for `Journal:` links. Generation used a once-daily `5 0 * * *` UTC that did not match its "12:05am Eastern" comment.
 - **Conflict guards on hub writes.** Live writers capture each file's Dropbox `rev` on download and write with `WriteMode.update(rev)` or `WriteMode.add` for true creates (`autorename=False`) via `services.obsidian.utils.dropbox_rev_safe`. If Obsidian or Dropbox desktop changed the file after download, the hub does **not** `WriteMode.overwrite` and does **not** create `Name (conflicted copy).md`. It retries once immediately after a re-download; if that still mismatches, it enqueues Redis `obsidian_reconcile:deferred` for the hourly reconcile. Latest cloud content wins. Paths whose name already contains `conflicted copy` are skipped so folder-journal never writes YAML onto a fork. Adopted by folder-journal relations, Readwise journal/KH, Granola journal notes, share-link / YouTube KH, daily journal properties, Daily Action / Todoist / Manus, Telegram logs, and Spotify Music of the Day.

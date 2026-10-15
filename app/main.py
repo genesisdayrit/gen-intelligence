@@ -1245,6 +1245,8 @@ async def trigger_job(
     ``create_daily_action``, ``update_daily_journal_properties``) accept
     ``use_today`` (default false = tomorrow, matching the evening-before
     cadence; true = today's files for morning recovery).
+    ``ensure_todays_daily_files`` always targets today (no ``use_today``
+    flag); it is the 05:00 Pacific catch-up if last night's cluster missed.
     ``spotify_music_of_the_day`` accepts optional ``date`` (``YYYY-MM-DD``
     journal day; omit to write the previous calendar day in
     ``SYSTEM_TZ``). ``reconcile_missed_obsidian_writes`` accepts optional
