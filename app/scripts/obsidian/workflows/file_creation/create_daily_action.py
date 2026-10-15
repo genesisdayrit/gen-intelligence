@@ -13,6 +13,15 @@ appended verbatim. If a template ever includes YAML frontmatter, that
 block is stripped and ignored (logged) so it cannot duplicate or override
 the generated keys.
 
+After the template's trailing `---`, one `##### <initiative name>`
+header is added for each Active (non-archived) Linear initiative,
+excluding those labelled `main-thread` (override with
+`DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL`). Each header is followed by
+`- ` and a blank line so proposed work can be filled in. Linear
+failures/timeouts are logged and the note is still created without
+this section. Webhook jobs (Linear updates, Todoist, Manus, issues
+touched) append after these headers.
+
 If the template is missing or cannot be downloaded, logs a warning and
 falls back to the hardcoded body so the daily note is still created.
 Skips creation if the file already exists.
@@ -36,6 +45,12 @@ import requests
 import yaml
 from dotenv import load_dotenv
 
+from scripts.linear.sync_utils import LINEAR_API_KEY, fetch_all_pages
+from services.obsidian.utils.template_boundary import (
+    is_initiative_work_header,
+    template_end_insert_index,
+)
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -54,6 +69,29 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
 DAILY_ACTION_TEMPLATES_SUFFIX = "_Templates"
 DAILY_ACTION_TEMPLATE_SUBFOLDER = "daily-templates"
 DAILY_ACTION_TEMPLATE_STEM = "daily_action_properties"
+
+# Linear's `initiative.status` for an in-flight initiative. Matches
+# `fetch_active_initiatives` in scripts.linear.test_find_main_thread_initiative.
+ACTIVE_STATUS = "Active"
+DEFAULT_EXCLUDE_INITIATIVE_LABEL = "main-thread"
+
+# Same GraphQL shape as test_find_main_thread_initiative / send_main_thread_rollup:
+# Active, non-archived, with labels so `main-thread` can be excluded.
+ACTIVE_INITIATIVES_QUERY = """
+query ActiveInitiatives($first: Int!, $after: String) {
+  initiatives(first: $first, after: $after, includeArchived: false, orderBy: updatedAt) {
+    nodes {
+      id
+      name
+      slugId
+      url
+      status
+      labels { nodes { id name } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
 
 # Used when the vault template cannot be found or downloaded.
 # Matches the live `daily_action_properties.md` body: two leverage
@@ -442,6 +480,129 @@ def _resolve_daily_action_body(template_content: str | None) -> str:
     return _strip_template_frontmatter(template_content)
 
 
+def _exclude_initiative_label() -> str:
+    """Label to skip when listing Active initiatives (default: main-thread)."""
+    if "DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL" not in os.environ:
+        return DEFAULT_EXCLUDE_INITIATIVE_LABEL
+    return os.environ["DAILY_ACTION_EXCLUDE_INITIATIVE_LABEL"].strip()
+
+
+def _initiative_label_names(initiative: dict) -> list[str]:
+    """Lowercased label names from a Linear initiative node.
+
+    Accepts the GraphQL shape `{labels: {nodes: [{name}]}}` used by
+    `fetch_all_pages` / `INITIATIVES_QUERY`, or a flattened `labels: ["a"]`.
+    """
+    labels = initiative.get("labels")
+    if not labels:
+        return []
+    if isinstance(labels, list):
+        names = []
+        for item in labels:
+            if isinstance(item, str):
+                names.append(item.lower())
+            elif isinstance(item, dict) and item.get("name"):
+                names.append(str(item["name"]).lower())
+        return names
+    nodes = labels.get("nodes") or []
+    return [str(n.get("name", "")).lower() for n in nodes if n.get("name")]
+
+
+def _select_active_initiatives(
+    nodes: list[dict],
+    exclude_label: str | None = None,
+) -> list[dict]:
+    """Active, non-empty-name initiatives, excluding `exclude_label`, sorted by name."""
+    if exclude_label is None:
+        exclude_label = _exclude_initiative_label()
+    exclude = exclude_label.strip().lower()
+    selected: list[dict] = []
+    seen: set[str] = set()
+    for node in nodes:
+        if node.get("status") != ACTIVE_STATUS:
+            continue
+        name = (node.get("name") or "").strip()
+        if not name:
+            continue
+        labels = _initiative_label_names(node)
+        if exclude and exclude in labels:
+            continue
+        key = name.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(node)
+    selected.sort(key=lambda item: item["name"].casefold())
+    return selected
+
+
+def fetch_active_initiatives() -> list[dict]:
+    """Active (non-archived, status == Active) initiatives via the hub Linear client.
+
+    Same query/client as `scripts.linear.test_find_main_thread_initiative` and
+    `scripts.linear.sync_utils.fetch_all_pages`. Returns [] if Linear is
+    unconfigured, times out, or otherwise fails — callers still create the note.
+    """
+    if not LINEAR_API_KEY and not os.getenv("LINEAR_API_KEY"):
+        logger.warning(
+            "LINEAR_API_KEY not set; creating Daily Action without initiative headers"
+        )
+        return []
+
+    try:
+        nodes = fetch_all_pages(
+            ACTIVE_INITIATIVES_QUERY,
+            {"first": 50},
+            ["initiatives"],
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to fetch Linear initiatives for Daily Action; "
+            "creating the note without initiative headers: %s",
+            e,
+        )
+        return []
+
+    return _select_active_initiatives(nodes)
+
+
+def _existing_initiative_header_names(body: str) -> set[str]:
+    """Initiative names that already have a `##### <name>` header in `body`."""
+    names: set[str] = set()
+    for line in body.splitlines():
+        if is_initiative_work_header(line):
+            names.add(line.strip()[5:].strip())
+    return names
+
+
+def _format_initiative_work_block(name: str) -> list[str]:
+    """One `##### <name>` header, a `- ` prompt, and a trailing blank line."""
+    return [f"##### {name}", "- ", ""]
+
+
+def _append_initiative_headers(body: str, names: list[str]) -> str:
+    """Insert missing initiative-work headers after the template `---`.
+
+    Idempotent: existing `##### <name>` headers are left in place and not
+    duplicated. New headers go after the template divider (and any
+    headers already present) and before webhook sections other jobs append.
+    """
+    existing = {name.casefold() for name in _existing_initiative_header_names(body)}
+    to_add = [name for name in names if name.casefold() not in existing]
+    if not to_add:
+        return body
+
+    lines = body.split("\n")
+    insert_at = template_end_insert_index(lines)
+    new_lines: list[str] = []
+    if insert_at > 0 and lines[insert_at - 1].strip() != "":
+        new_lines.append("")
+    for name in to_add:
+        new_lines.extend(_format_initiative_work_block(name))
+    result = lines[:insert_at] + new_lines + lines[insert_at:]
+    return "\n".join(result)
+
+
 def create_daily_action(use_today: bool = False) -> bool:
     """Create a daily action file in the Obsidian vault.
 
@@ -490,6 +651,8 @@ def create_daily_action(use_today: bool = False) -> bool:
 
         template_content = _load_daily_action_template(dbx, vault_path)
         main_content = _resolve_daily_action_body(template_content)
+        initiative_names = [item["name"] for item in fetch_active_initiatives()]
+        main_content = _append_initiative_headers(main_content, initiative_names)
         content = yaml_section + main_content
         dbx.files_upload(content.encode('utf-8'), dropbox_file_path)
         logger.info(f"Successfully created daily action file '{file_name}' in Dropbox.")
