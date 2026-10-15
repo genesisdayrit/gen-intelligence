@@ -229,7 +229,8 @@ def test_create_daily_action_missing_template_uses_fallback(caplog):
     meta, body = _parse_note(uploaded)
     assert meta["_Journal"] == GENERATED["_Journal"]
     assert body == mod.FALLBACK_MAIN_CONTENT
-    assert "Vision Objective 1:" in body
+    assert body == BODY_ONLY_TEMPLATE
+    assert "Vision Objective" not in body
     assert any("fallback" in rec.message.lower() for rec in caplog.records)
 
 

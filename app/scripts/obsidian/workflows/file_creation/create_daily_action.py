@@ -56,20 +56,13 @@ DAILY_ACTION_TEMPLATE_SUBFOLDER = "daily-templates"
 DAILY_ACTION_TEMPLATE_STEM = "daily_action_properties"
 
 # Used when the vault template cannot be found or downloaded.
-# Keep Vision Objective lines and the `---` divider so template-boundary
-# inserters and daily_prep/daily_reflection still have their markers.
+# Matches the live `daily_action_properties.md` body: two leverage
+# questions, a blank line, then a trailing `---` divider.
 FALLBACK_MAIN_CONTENT = (
-    "Vision Objective 1:\n"
-    "Vision Objective 2:\n"
-    "Vision Objective 3:\n\n"
-    "One thing that you can do to improve today:\n\n"
-    "Mindset Objective:\n"
-    "Body Objective:\n"
-    "Social Objective:\n\n"
-    "Gratitude:\n\n"
-    "---\n\n"
     "What is the highest leverage thing that you can do today to move the ball forward on what you need to?\n"
-    "If you only had 2 hours to work today, what would you need to get done to move forward towards your goals or master vision?"
+    "If you only had 2 hours to work today, what would you need to get done to move forward towards your goals or master vision?\n"
+    "\n"
+    "---\n"
 )
 
 

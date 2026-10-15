@@ -274,6 +274,18 @@ def test_granola_sync_job_is_manual_2099_safety_net(client):
     assert timezone_key == SYSTEM_TIMEZONE_STR
 
 
+def test_add_daily_review_section_job_is_manual_2099_safety_net(client):
+    """Daily Review is no longer on a cadence; year-2099 keeps POST /run."""
+    job = scheduler.get_job("add_daily_review_section")
+    assert job is not None
+    assert job.name == "Add Daily Review Section to Daily Action (manual)"
+    trigger_str = str(job.trigger).lower()
+    assert "2099" in trigger_str
+    assert "hour='13'" not in trigger_str
+    timezone_key = getattr(job.trigger.timezone, "key", str(job.trigger.timezone))
+    assert timezone_key == SYSTEM_TIMEZONE_STR
+
+
 def test_sunday_wrap_up_job_runs_sunday_6am_system_timezone(client):
     """The Sunday wrap-up job is scheduled Sunday 6:00am in system timezone."""
     job = scheduler.get_job("send_sunday_wrap_up_email")
@@ -319,7 +331,6 @@ def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
 
 def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
     """Migrated crontab jobs use fixed SYSTEM_TZ hours (DST-stable)."""
-    _assert_cron("add_daily_review_section", hour="13", minute="0")
     _assert_cron("create_weeks", day_of_week="sun", hour="23", minute="0")
     _assert_cron("create_newsletter_page", day_of_week="thu", hour="23", minute="30")
     _assert_cron("create_new_cycle_page", day_of_week="tue", hour="1", minute="30")

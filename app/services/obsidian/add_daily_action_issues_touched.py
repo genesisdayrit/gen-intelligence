@@ -12,7 +12,10 @@ from dotenv import load_dotenv
 
 from services.obsidian.utils.date_helpers import get_effective_date
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
-from services.obsidian.utils.template_boundary import is_template_boundary
+from services.obsidian.utils.template_boundary import (
+    fallback_webhook_insert_index,
+    is_template_boundary,
+)
 
 load_dotenv()
 
@@ -208,8 +211,13 @@ def _find_issues_touched_insert_position(lines: list[str], daily_review_end_line
     1. After Todoist Completed section (if exists)
     2. After Project Updates section (if exists and no Todoist)
     3. After Initiative Updates section (if exists and no others)
-    4. Before Template Boundary (Vision Objective 1:)
-    5. After Daily Review if no other sections exist
+    4. Before Template Boundary (Vision Objective 1:, legacy notes)
+    5. After Daily Review if present and no other sections exist
+    6. After the template's trailing `---` / EOF (current notes)
+
+    The template's trailing `---` sits *before* webhook sections, so it
+    does not terminate this section. A `---` encountered while already
+    inside Todoist/Project/Initiative still ends that sibling.
     """
     todoist_end = None
     project_end = None
@@ -272,17 +280,19 @@ def _find_issues_touched_insert_position(lines: list[str], daily_review_end_line
     if in_initiative and initiative_end is None:
         initiative_end = len(lines)
 
-    # Priority: after Todoist > after Project > after Initiative > before template > after daily review
+    # Priority: after Todoist > after Project > after Initiative >
+    # before Vision Objective (legacy) > after Daily Review (legacy) >
+    # after template `---` / EOF (current notes).
     if todoist_end is not None:
         return todoist_end
     elif project_end is not None:
         return project_end
     elif initiative_end is not None:
         return initiative_end
-    elif template_boundary_line is not None:
-        return template_boundary_line
     else:
-        return daily_review_end_line
+        return fallback_webhook_insert_index(
+            lines, daily_review_end_line, template_boundary_line
+        )
 
 
 def upsert_daily_action_issue_touched(
