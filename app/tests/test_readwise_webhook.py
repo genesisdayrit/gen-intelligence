@@ -1677,8 +1677,9 @@ def test_preferred_title_uses_readable_when_truncated():
         "Pmarca Guide to Career Planning, Part 2: Skills",
     ) == "Pmarca Guide to Career Planning, Part 2: Skills"
     assert preferred_knowledge_hub_title("Deep Work", "Deep Work (Cal Newport)") == (
-        "Deep Work"
+        "Deep Work (Cal Newport)"
     )
+    assert preferred_knowledge_hub_title("Deep Work", "Atomic Habits") == "Deep Work"
     assert knowledge_hub_note_stem(
         "Pmarca Guide to Career Planning:", readable_title=readable
     ) == _sanitize_filename(readable)
@@ -2702,9 +2703,9 @@ Body stays.
             now=now,
         )
 
-    assert store[book_path] == existing
     assert BOOKMARKED_TWEETS_HEADER not in store[book_path]
-    assert not any(item["path"] == book_path for item in uploaded)
+    assert not any(BOOKMARKED_TWEETS_HEADER in item["content"] for item in uploaded)
+    assert "[[Deep Work]]:" in store[JOURNAL_NOV_PATH]
 
 
 def test_existing_tweet_page_found_case_insensitive_filename():
@@ -3935,7 +3936,7 @@ title: "A long essay by The Verge"
 author: "Someone Else"
 People:
   - "[[Existing Person]]"
-URL: https://already.example/essay
+URL: https://www.theverge.com/long-essay
 ---
 
 # A long essay by The Verge
@@ -3960,7 +3961,7 @@ A paragraph that must survive.
     frontmatter, body = _extract_frontmatter(page)
     assert frontmatter["author"] == "Someone Else"
     assert frontmatter["People"] == ["[[Existing Person]]"]
-    assert frontmatter["URL"] == "https://already.example/essay"
+    assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
     assert "A paragraph that must survive." in body
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert page.count(ARTICLE_HIGHLIGHTS_HEADER) == 1

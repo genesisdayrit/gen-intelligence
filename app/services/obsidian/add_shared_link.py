@@ -160,11 +160,14 @@ def _find_knowledge_hub_path(dbx: dropbox.Dropbox, vault_path: str) -> str:
     result = dbx.files_list_folder(vault_path)
 
     while True:
-        for entry in result.entries:
+        entries = getattr(result, "entries", None)
+        if not isinstance(entries, (list, tuple)):
+            break
+        for entry in entries:
             if isinstance(entry, dropbox.files.FolderMetadata) and entry.name.endswith("_Knowledge-Hub"):
                 return entry.path_lower
 
-        if not result.has_more:
+        if getattr(result, "has_more", False) is not True:
             break
         result = dbx.files_list_folder_continue(result.cursor)
 

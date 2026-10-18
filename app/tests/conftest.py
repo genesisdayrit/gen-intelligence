@@ -43,3 +43,13 @@ def _noop_readwise_concurrency(request, monkeypatch):
         lambda *_args, **_kwargs: None,
         raising=False,
     )
+    monkeypatch.setattr(
+        "services.obsidian.add_readwise_buffet.get_hub_path_for_book_id",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "services.obsidian.add_readwise_buffet.set_hub_path_for_book_id",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )

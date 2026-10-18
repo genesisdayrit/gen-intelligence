@@ -1783,7 +1783,6 @@ def _note_matches_identity(
     by URL.
     """
     from services.obsidian.add_shared_link import _extract_frontmatter
-    from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
     frontmatter, _body = _extract_frontmatter(content)
     want_id = str(readwise_id).strip() if readwise_id is not None else ""
@@ -1796,12 +1795,6 @@ def _note_matches_identity(
         return True
     note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
     want_url = _http_url(url) or _nonempty(url)
-    want_video = None
-    have_video = None
-    if want_url and is_valid_youtube_url(want_url):
-        want_video = _extract_video_id(want_url)
-    if note_url and is_valid_youtube_url(note_url):
-        have_video = _extract_video_id(note_url)
     if _urls_equivalent(want_url, note_url):
         return True
     if _note_identity_conflicts(
