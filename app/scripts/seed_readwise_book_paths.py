@@ -4,6 +4,7 @@
 Usage (from ``app/``, or via docker exec into the app container):
 
     uv run python -m services.obsidian.seed_readwise_book_paths
+    uv run python -m services.obsidian.seed_readwise_book_paths --dry-run
     uv run python scripts/seed_readwise_book_paths.py
 """
 

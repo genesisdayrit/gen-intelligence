@@ -21,6 +21,7 @@ os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
     _identity_search_terms,
+    _note_identity_conflicts,
     _note_matches_identity,
     find_hub_note_by_identity,
 )
@@ -395,6 +396,63 @@ readwise_book_id: 64421671
     assert found == (note_path, note)
     queries = [call.args[0] for call in mock_dbx.files_search_v2.call_args_list]
     assert "64421671" in queries
+
+
+def test_note_identity_conflicts_url_or_book_id_clears_readwise_id_kind_mismatch():
+    reader_note = """---
+URL: https://www.theverge.com/long-essay
+readwise_id: 01m55we4abcdefghijklmnop
+---
+
+# Essay
+"""
+    assert not _note_identity_conflicts(
+        reader_note,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+    assert _note_matches_identity(
+        reader_note,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+    book_match = """---
+URL: https://other.example/page
+readwise_id: 01m55we4abcdefghijklmnop
+readwise_book_id: 8237
+---
+
+# Essay
+"""
+    assert not _note_identity_conflicts(
+        book_match,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+
+
+def test_note_identity_conflicts_same_kind_readwise_id_mismatch():
+    numeric = """---
+readwise_id: 111
+---
+
+# Book
+"""
+    assert _note_identity_conflicts(numeric, readwise_id="222")
+    reader = """---
+readwise_id: 01aaaaaaaaaaaaaaaaaaaaa
+---
+
+# Article
+"""
+    assert _note_identity_conflicts(reader, readwise_id="01bbbbbbbbbbbbbbbbbbbbb")
+    assert not _note_identity_conflicts(
+        reader,
+        readwise_id="8237",
+    )
 
 
 def test_note_matches_identity_legacy_url_without_book_id():

@@ -1708,6 +1708,18 @@ def _yaml_ids_equivalent(want: str, have: str) -> bool:
     return bool(want) and bool(have) and want == have
 
 
+def _is_numeric_readwise_id(value: str) -> bool:
+    """True for a Readwise book id (digits only), not a Reader document id."""
+    return bool(value) and value.isdigit()
+
+
+def _readwise_ids_same_kind(want: str, have: str) -> bool:
+    """True when both ids are numeric book ids or both are Reader document ids."""
+    if not want or not have:
+        return False
+    return _is_numeric_readwise_id(want) == _is_numeric_readwise_id(have)
+
+
 def _urls_equivalent(want_url: str | None, note_url: str | None) -> bool:
     """True when two KH URLs name the same page (YouTube video id counts)."""
     if not want_url or not note_url:
@@ -1734,33 +1746,36 @@ def _note_identity_conflicts(
     readwise_id: str | None = None,
     readwise_book_id: str | None = None,
 ) -> bool:
-    """True when YAML names a *different* URL / readwise id / book id.
+    """True when YAML names a *different* URL / same-kind readwise id / book id.
 
+    Matching ``readwise_book_id`` or URL is the same document and clears a
+    ``readwise_id`` kind mismatch (Reader document id vs numeric book id).
+    ``readwise_id`` is compared only when both values are the same kind.
     A note with no identity fields does not conflict (legacy name match).
     """
     from services.obsidian.add_shared_link import _extract_frontmatter
-    from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
     frontmatter, _body = _extract_frontmatter(content)
     want_id = str(readwise_id).strip() if readwise_id is not None else ""
     have_id = str(frontmatter.get("readwise_id") or "").strip()
     want_book = str(readwise_book_id).strip() if readwise_book_id is not None else ""
     have_book = _frontmatter_book_id(frontmatter)
-    if want_book and have_book and want_book != have_book:
-        return True
-    if want_id and have_id and want_id != have_id:
-        return True
+    if want_book and have_book and want_book == have_book:
+        return False
     note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
     want_url = _http_url(url) or _nonempty(url)
-    if want_url and note_url and not _urls_equivalent(want_url, note_url):
-        want_video = (
-            _extract_video_id(want_url) if is_valid_youtube_url(want_url) else None
-        )
-        have_video = (
-            _extract_video_id(note_url) if is_valid_youtube_url(note_url) else None
-        )
-        if want_video and have_video and want_video == have_video:
-            return False
+    if _urls_equivalent(want_url, note_url):
+        return False
+    if want_book and have_book and want_book != have_book:
+        return True
+    if (
+        want_id
+        and have_id
+        and want_id != have_id
+        and _readwise_ids_same_kind(want_id, have_id)
+    ):
+        return True
+    if want_url and note_url:
         return True
     return False
 
@@ -2368,7 +2383,9 @@ def _resolved_hub_for_payload(
         hub_path,
         stem=stem,
         url=_identity_url(payload, book=book),
-        readwise_id=_payload_book_id(payload, book) or _reader_document_id(payload),
+        readwise_id=(
+            _reader_document_id(payload) if is_document_event(payload) else None
+        ),
         readwise_book_id=_payload_book_id(payload, book),
         title=_nonempty((book or {}).get("title")) or _nonempty(payload.get("title")),
         readable_title=_payload_readable_title(payload, book),
@@ -2896,7 +2913,12 @@ def _article_page_stem(book: dict | None, payload: dict) -> str | None:
 
 
 def _article_page_extras(payload: dict, book: dict | None) -> dict:
-    """Minimal YAML extras for an article page: author + fill-if-empty URL."""
+    """Minimal YAML extras: author, URL, and ``readwise_book_id`` only.
+
+    Article notes keep ``readwise_id`` for the Reader document id written
+    on document save. Highlight appends must not overwrite it with the
+    numeric book id.
+    """
     extras: dict = {}
     author, _people = _book_author_people(book, payload)
     if author:
@@ -2907,7 +2929,6 @@ def _article_page_extras(payload: dict, book: dict | None) -> dict:
     book_id = _payload_book_id(payload, book)
     if book_id:
         extras["readwise_book_id"] = book_id
-        extras["readwise_id"] = book_id
     return extras
 
 

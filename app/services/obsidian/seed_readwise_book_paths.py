@@ -7,6 +7,7 @@ update this map after a successful resolve. Safe to re-run.
 Usage (from ``app/``):
 
     uv run python -m services.obsidian.seed_readwise_book_paths
+    uv run python -m services.obsidian.seed_readwise_book_paths --dry-run
     uv run python scripts/seed_readwise_book_paths.py
 """
 
@@ -47,14 +48,21 @@ def _iter_knowledge_hub_md(dbx: dropbox.Dropbox, kh_path: str):
         result = dbx.files_list_folder_continue(result.cursor)
 
 
-def seed_readwise_book_paths(*, dbx: dropbox.Dropbox | None = None) -> dict:
-    """Scan KH YAML and write ``book_id → path_display`` into Redis."""
+def seed_readwise_book_paths(
+    *,
+    dbx: dropbox.Dropbox | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Scan KH YAML and write ``book_id → path_display`` into Redis.
+
+    ``dry_run=True`` reports what would be seeded and does not write Redis.
+    """
     client = dbx if dbx is not None else _get_dropbox_client()
     vault_path = os.getenv("DROPBOX_OBSIDIAN_VAULT_PATH")
     if not vault_path:
         raise EnvironmentError("DROPBOX_OBSIDIAN_VAULT_PATH not set")
     kh_path = _find_knowledge_hub_path(client, vault_path)
-    summary = {"notes_scanned": 0, "seeded": 0, "skipped": 0}
+    summary = {"notes_scanned": 0, "seeded": 0, "skipped": 0, "dry_run": dry_run}
     for _name, path in _iter_knowledge_hub_md(client, kh_path):
         summary["notes_scanned"] += 1
         try:
@@ -69,9 +77,14 @@ def seed_readwise_book_paths(*, dbx: dropbox.Dropbox | None = None) -> dict:
         if book_id is None or book_id == "":
             summary["skipped"] += 1
             continue
-        set_hub_path_for_book_id(str(book_id).strip(), path)
+        if dry_run:
+            logger.info(
+                "Dry-run would seed readwise_book_id=%s path=%s", book_id, path
+            )
+        else:
+            set_hub_path_for_book_id(str(book_id).strip(), path)
+            logger.info("Seeded readwise_book_id=%s path=%s", book_id, path)
         summary["seeded"] += 1
-        logger.info("Seeded readwise_book_id=%s path=%s", book_id, path)
     return summary
 
 
@@ -79,11 +92,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Seed Redis book_id → Knowledge Hub path_display from YAML."
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Scan KH notes and report mappings without writing Redis.",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    summary = seed_readwise_book_paths()
+    summary = seed_readwise_book_paths(dry_run=args.dry_run)
+    prefix = "dry-run " if summary.get("dry_run") else ""
     print(
-        f"notes_scanned={summary['notes_scanned']} "
+        f"{prefix}notes_scanned={summary['notes_scanned']} "
         f"seeded={summary['seeded']} skipped={summary['skipped']}"
     )
     return 0

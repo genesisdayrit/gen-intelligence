@@ -3876,6 +3876,7 @@ def test_article_highlight_creates_title_by_author_page():
     assert frontmatter["People"] == ["[[The Verge]]"]
     assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
     assert str(frontmatter["readwise_book_id"]) == "8237"
+    assert "readwise_id" not in frontmatter
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert (
         '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
@@ -3968,6 +3969,55 @@ A paragraph that must survive.
     assert page.index(ARTICLE_HIGHLIGHTS_HEADER) < page.index("# A long essay by The Verge")
     assert page.index("# A long essay by The Verge") < page.index("A paragraph that must survive.")
     assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+
+
+def test_article_highlight_reuses_legacy_reader_id_when_search_misses():
+    """Same URL + Reader readwise_id vs numeric book id must not duplicate.
+
+    Redis is a no-op in tests. Search is forced empty (unindexed right after
+    a Reader document save). The constructed stem still finds the note;
+    identity must treat the URL as the same document.
+    """
+    clear_book_cache()
+    reader_id = "01m55we4abcdefghijklmnop"
+    existing = f"""---
+title: "A long essay by The Verge"
+URL: https://www.theverge.com/long-essay
+readwise_id: {reader_id}
+---
+
+# A long essay by The Verge
+
+Saved from Reader.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        ARTICLE_PAGE_PATH: existing,
+    })
+    empty = MagicMock()
+    empty.has_more = False
+    empty.matches = []
+    mock_dbx.files_search_v2.side_effect = None
+    mock_dbx.files_search_v2.return_value = empty
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_article_highlight(), now=now)
+
+    assert result["success"] is True
+    kh_paths = [path for path in store if path.startswith(KH_FOLDER)]
+    assert kh_paths == [ARTICLE_PAGE_PATH]
+    assert not any(
+        item["path"] != JOURNAL_NOV_PATH and item["path"] != ARTICLE_PAGE_PATH
+        for item in uploaded
+    )
+    page = store[ARTICLE_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["readwise_id"] == reader_id
+    assert str(frontmatter.get("readwise_book_id")) == "8237"
+    assert "Saved from Reader." in body
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+    assert "- [[A long essay by The Verge]]:" in store[JOURNAL_NOV_PATH]
 
 
 def test_article_highlight_fills_empty_url_on_existing_note():
