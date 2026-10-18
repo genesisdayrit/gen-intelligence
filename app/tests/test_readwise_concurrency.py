@@ -23,11 +23,14 @@ from services.obsidian.add_readwise_buffet import (
 from services.obsidian.utils.readwise_concurrency import (
     READER_SINGLEFLIGHT_TTL_SECONDS,
     claim_reader_document_singleflight,
+    get_hub_path_for_book_id,
     lock_readwise_target,
     normalize_knowledge_hub_url,
     reader_singleflight_key,
+    readwise_book_path_key,
     readwise_target_lock_key,
     release_reader_document_singleflight,
+    set_hub_path_for_book_id,
 )
 from services.obsidian.utils.redis_lock import (
     DEFAULT_LOCK_TTL_SECONDS,
@@ -242,6 +245,25 @@ def test_lock_acquire_uses_set_nx_and_ttl():
     _key, _value, nx, ex = fake.set_calls[0]
     assert nx is True
     assert ex == 60
+
+
+def test_book_path_map_round_trip_and_fail_open():
+    fake = FakeRedis()
+    path = "/obsidian/personal/05_Knowledge-Hub/Part 1.md"
+    set_hub_path_for_book_id("64421671", path, client=fake)
+    assert fake.store[readwise_book_path_key("64421671")] == path
+    assert get_hub_path_for_book_id("64421671", client=fake) == path
+    assert get_hub_path_for_book_id("missing", client=fake) is None
+
+    class Boom:
+        def get(self, _key):
+            raise RuntimeError("redis down")
+
+        def set(self, *_args, **_kwargs):
+            raise RuntimeError("redis down")
+
+    assert get_hub_path_for_book_id("64421671", client=Boom()) is None
+    set_hub_path_for_book_id("64421671", path, client=Boom())
 
 
 def test_lock_readwise_target_prefixes_identity():

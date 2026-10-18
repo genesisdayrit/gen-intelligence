@@ -21,6 +21,7 @@ os.environ.setdefault("DROPBOX_REFRESH_TOKEN", "test-refresh")
 
 from services.obsidian.add_readwise_buffet import (  # noqa: E402
     _identity_search_terms,
+    _note_identity_conflicts,
     _note_matches_identity,
     find_hub_note_by_identity,
 )
@@ -329,4 +330,145 @@ def test_note_matches_identity_tracking_param_urls_are_same_video():
     assert not _note_matches_identity(
         EXISTING_NOTE,
         url="https://www.youtube.com/watch?v=zPLc3jjHbnU",
+    )
+
+
+def test_find_hub_note_by_identity_stem_conflict_does_not_reuse():
+    other_path = f"{KH_FOLDER}/Same Title.md"
+    other_note = """---
+URL: https://pmarchive.com/other.html
+readwise_book_id: 111
+---
+
+# Same Title
+"""
+
+    def download(path):
+        if path == other_path:
+            return _download_response(other_note)
+        raise FileNotFoundError(path)
+
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = download
+    mock_dbx.files_search_v2.return_value = _search_result([])
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Same Title",
+        url="https://pmarchive.com/guide.html",
+        readwise_book_id="222",
+    )
+
+    assert found is None
+    mock_dbx.files_list_folder.assert_not_called()
+
+
+def test_find_hub_note_by_identity_book_id_search_match():
+    note_path = f"{KH_FOLDER}/Pmarchive - Guide to Career Planning, Part 1_ Opportunity.md"
+    note = """---
+URL: https://pmarchive.com/guide_to_career_planning_part1.html
+readwise_book_id: 64421671
+---
+
+# Part 1
+"""
+
+    def download(path):
+        if path == note_path:
+            return _download_response(note)
+        raise FileNotFoundError(path)
+
+    mock_dbx = MagicMock()
+    mock_dbx.files_download.side_effect = download
+    mock_dbx.files_search_v2.return_value = _search_result(
+        [_search_match(note_path)]
+    )
+
+    found = find_hub_note_by_identity(
+        mock_dbx,
+        KH_FOLDER,
+        stem="Pmarca Guide to Career Planning_",
+        url="https://pmarchive.com/guide_to_career_planning_part1.html",
+        readwise_book_id="64421671",
+    )
+
+    assert found == (note_path, note)
+    queries = [call.args[0] for call in mock_dbx.files_search_v2.call_args_list]
+    assert "64421671" in queries
+
+
+def test_note_identity_conflicts_url_or_book_id_clears_readwise_id_kind_mismatch():
+    reader_note = """---
+URL: https://www.theverge.com/long-essay
+readwise_id: 01m55we4abcdefghijklmnop
+---
+
+# Essay
+"""
+    assert not _note_identity_conflicts(
+        reader_note,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+    assert _note_matches_identity(
+        reader_note,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+    book_match = """---
+URL: https://other.example/page
+readwise_id: 01m55we4abcdefghijklmnop
+readwise_book_id: 8237
+---
+
+# Essay
+"""
+    assert not _note_identity_conflicts(
+        book_match,
+        url="https://www.theverge.com/long-essay",
+        readwise_id="8237",
+        readwise_book_id="8237",
+    )
+
+
+def test_note_identity_conflicts_same_kind_readwise_id_mismatch():
+    numeric = """---
+readwise_id: 111
+---
+
+# Book
+"""
+    assert _note_identity_conflicts(numeric, readwise_id="222")
+    reader = """---
+readwise_id: 01aaaaaaaaaaaaaaaaaaaaa
+---
+
+# Article
+"""
+    assert _note_identity_conflicts(reader, readwise_id="01bbbbbbbbbbbbbbbbbbbbb")
+    assert not _note_identity_conflicts(
+        reader,
+        readwise_id="8237",
+    )
+
+
+def test_note_matches_identity_legacy_url_without_book_id():
+    note = """---
+URL: https://pmarchive.com/guide_to_career_planning_part2.html
+---
+
+# Part 2
+"""
+    assert _note_matches_identity(
+        note,
+        url="https://pmarchive.com/guide_to_career_planning_part2.html",
+        readwise_book_id="64421779",
+    )
+    assert not _note_matches_identity(
+        note,
+        url="https://pmarchive.com/guide_to_career_planning_part3.html",
+        readwise_book_id="64422269",
     )

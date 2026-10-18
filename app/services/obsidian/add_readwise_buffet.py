@@ -30,9 +30,11 @@ from services.obsidian.utils.dropbox_rev_safe import (
 from services.obsidian.utils.readwise_concurrency import (
     READER_SINGLEFLIGHT_TTL_SECONDS,
     claim_reader_document_singleflight,
+    get_hub_path_for_book_id,
     lock_readwise_target,
     normalize_knowledge_hub_url,
     release_reader_document_singleflight,
+    set_hub_path_for_book_id,
     strip_tracking_query,
 )
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
@@ -72,6 +74,9 @@ _IGNORED_READER_SUFFIXES = (
     ".shortlisted",
 )
 _SHORT_ATTR_MAX = 80
+_RESOLVED_STEM_KEY = "_kh_resolved_stem"
+_RESOLVED_PATH_KEY = "_kh_resolved_path"
+_PART_SUFFIX = re.compile(r"(Part\s+\d+\b.*)$", re.I)
 
 # book_id → title/author/category/source/source_url/highlights_url (or None after a failed lookup)
 _book_cache: dict[str, dict | None] = {}
@@ -397,6 +402,9 @@ def fetch_book(book_id: object) -> dict | None:
         "highlights_url": _nonempty(data.get("highlights_url")),
         "source_url": _nonempty(data.get("source_url")),
     }
+    readable = _nonempty(data.get("readable_title"))
+    if readable:
+        book["readable_title"] = readable
     _book_cache[key] = book
     return book
 
@@ -419,7 +427,37 @@ def _sanitize_note_filename(title: str) -> str:
     return _sanitize_filename(title)
 
 
-def knowledge_hub_note_stem(title: str | None) -> str | None:
+def preferred_knowledge_hub_title(
+    title: str | None,
+    readable_title: str | None = None,
+) -> str | None:
+    """Choose the KH title when Readwise's ``title`` is truncated.
+
+    Use ``readable_title`` when ``title`` ends in ``:`` or ``-``, or when
+    ``title`` is a strict prefix of ``readable_title``. Otherwise keep
+    ``title`` (or ``readable_title`` if title is empty).
+    """
+    raw = _nonempty(title)
+    readable = _nonempty(readable_title)
+    if not raw:
+        return readable
+    if not readable:
+        return raw
+    stripped = raw.rstrip()
+    if stripped.endswith((":", "-")):
+        return readable
+    if readable.casefold().startswith(stripped.casefold()) and (
+        readable.casefold() != stripped.casefold()
+    ):
+        return readable
+    return raw
+
+
+def knowledge_hub_note_stem(
+    title: str | None,
+    *,
+    readable_title: str | None = None,
+) -> str | None:
     """Turn a document/book title into the Knowledge Hub filename stem.
 
     Applies ``_sanitize_filename`` then ``_wikilink_from_note_stem`` so
@@ -427,9 +465,11 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
     Title-only — regular iOS share-link uses this shape. YouTube notes
     use ``reader_knowledge_hub_note_stem`` (Title by Author when author
     exists) so later highlights resolve to the same file.
+    When ``readable_title`` is passed, a truncated ``title`` (trailing
+    ``:`` / ``-``, or a prefix of ``readable_title``) uses that instead.
     Returns None when the title is empty or sanitizes to junk.
     """
-    text = _nonempty(title)
+    text = preferred_knowledge_hub_title(title, readable_title)
     if not text:
         return None
     stem = _wikilink_from_note_stem(_sanitize_note_filename(text))
@@ -441,19 +481,24 @@ def knowledge_hub_note_stem(title: str | None) -> str | None:
 def reader_knowledge_hub_note_stem(
     title: str | None,
     author: str | None = None,
+    *,
+    readable_title: str | None = None,
 ) -> str | None:
     """Reader KH filename stem: ``Title by Author`` when author/creator exists.
 
     Same sanitizing as share-link (``_sanitize_filename`` then wikilink
     sanitize). No usable author → title-only stem. Empty/junk title → None.
     Author is always plain text — never ``Title by [[Author]]``.
+    Truncated titles prefer ``readable_title`` (see
+    ``preferred_knowledge_hub_title``).
     """
-    base = knowledge_hub_note_stem(title)
+    chosen = preferred_knowledge_hub_title(title, readable_title)
+    base = knowledge_hub_note_stem(chosen)
     if not base:
         return None
     author_text = plain_author_label(author)
     if author_text and knowledge_hub_note_stem(author_text):
-        return knowledge_hub_note_stem(f"{_nonempty(title)} by {author_text}")
+        return knowledge_hub_note_stem(f"{chosen} by {author_text}")
     return base
 
 
@@ -576,6 +621,9 @@ def reader_document_extra_frontmatter(payload: dict) -> dict:
     doc_id = _reader_document_id(payload)
     if doc_id:
         extra["readwise_id"] = doc_id
+    book_id = _payload_book_id(payload)
+    if book_id:
+        extra["readwise_book_id"] = book_id
     readwise_url = _reader_personal_url(payload)
     if readwise_url:
         extra["readwise_url"] = readwise_url
@@ -609,6 +657,7 @@ def _create_shared_link(
     title: str | None,
     journal_date: str,
     extra_frontmatter: dict | None = None,
+    readable_title: str | None = None,
 ) -> dict:
     from services.obsidian.add_shared_link import add_shared_link
 
@@ -617,6 +666,7 @@ def _create_shared_link(
         title=title,
         journal_date=journal_date,
         extra_frontmatter=extra_frontmatter,
+        readable_title=readable_title,
     )
 
 
@@ -649,11 +699,28 @@ def _book_from_payload(payload: dict) -> dict:
     """Book fields already present on a webhook/export payload."""
     return {
         "title": _nonempty(payload.get("title")),
+        "readable_title": _nonempty(payload.get("readable_title")),
         "author": _nonempty(payload.get("author")) or _nonempty(payload.get("creator")),
         "category": _nonempty(payload.get("category")),
         "source": _nonempty(payload.get("source")),
         "source_url": _nonempty(payload.get("source_url")),
     }
+
+
+def _payload_book_id(payload: dict, book: dict | None = None) -> str | None:
+    """Readwise book id from a highlight/document payload or book lookup."""
+    for source in (payload, book or {}):
+        for key in ("book_id", "user_book_id", "readwise_book_id"):
+            value = source.get(key)
+            if value is not None and value != "":
+                return str(value).strip() or None
+    return None
+
+
+def _payload_readable_title(payload: dict, book: dict | None = None) -> str | None:
+    return _nonempty((book or {}).get("readable_title")) or _nonempty(
+        payload.get("readable_title")
+    )
 
 
 def _has_book_identity(book: dict | None) -> bool:
@@ -838,14 +905,21 @@ def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
     quote = _quoted_highlight_text(_collapse(text), highlight_url)
 
     tweet_target = _tweet_wikilink_target(book)
+    resolved_stem = _nonempty(payload.get(_RESOLVED_STEM_KEY))
     if tweet_target:
         stem = tweet_target
+    elif resolved_stem and not _is_tweet_book(book):
+        stem = resolved_stem
     elif _is_tweet_book(book):
-        stem = knowledge_hub_note_stem(raw_title)
+        stem = knowledge_hub_note_stem(
+            raw_title,
+            readable_title=_payload_readable_title(payload, book),
+        )
     else:
         stem = reader_knowledge_hub_note_stem(
             raw_title,
             _reader_author(book or {}) or _reader_author(payload),
+            readable_title=_payload_readable_title(payload, book),
         )
     if stem:
         line = f"- [[{stem}]]: {quote}"
@@ -1626,50 +1700,124 @@ def _title_only_hub_stems(*titles: str | None) -> list[str]:
     return stems
 
 
+def _frontmatter_book_id(frontmatter: dict) -> str:
+    return str(frontmatter.get("readwise_book_id") or "").strip()
+
+
+def _yaml_ids_equivalent(want: str, have: str) -> bool:
+    return bool(want) and bool(have) and want == have
+
+
+def _is_numeric_readwise_id(value: str) -> bool:
+    """True for a Readwise book id (digits only), not a Reader document id."""
+    return bool(value) and value.isdigit()
+
+
+def _readwise_ids_same_kind(want: str, have: str) -> bool:
+    """True when both ids are numeric book ids or both are Reader document ids."""
+    if not want or not have:
+        return False
+    return _is_numeric_readwise_id(want) == _is_numeric_readwise_id(have)
+
+
+def _urls_equivalent(want_url: str | None, note_url: str | None) -> bool:
+    """True when two KH URLs name the same page (YouTube video id counts)."""
+    if not want_url or not note_url:
+        return False
+    if want_url.rstrip("/") == note_url.rstrip("/"):
+        return True
+    if _strip_tracking_query(want_url).rstrip("/") == _strip_tracking_query(
+        note_url
+    ).rstrip("/"):
+        return True
+    from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
+
+    if is_valid_youtube_url(want_url) and is_valid_youtube_url(note_url):
+        want_video = _extract_video_id(want_url)
+        have_video = _extract_video_id(note_url)
+        return bool(want_video and have_video and want_video == have_video)
+    return False
+
+
+def _note_identity_conflicts(
+    content: str,
+    *,
+    url: str | None = None,
+    readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
+) -> bool:
+    """True when YAML names a *different* URL / same-kind readwise id / book id.
+
+    Matching ``readwise_book_id`` or URL is the same document and clears a
+    ``readwise_id`` kind mismatch (Reader document id vs numeric book id).
+    ``readwise_id`` is compared only when both values are the same kind.
+    A note with no identity fields does not conflict (legacy name match).
+    """
+    from services.obsidian.add_shared_link import _extract_frontmatter
+
+    frontmatter, _body = _extract_frontmatter(content)
+    want_id = str(readwise_id).strip() if readwise_id is not None else ""
+    have_id = str(frontmatter.get("readwise_id") or "").strip()
+    want_book = str(readwise_book_id).strip() if readwise_book_id is not None else ""
+    have_book = _frontmatter_book_id(frontmatter)
+    if want_book and have_book and want_book == have_book:
+        return False
+    note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
+    want_url = _http_url(url) or _nonempty(url)
+    if _urls_equivalent(want_url, note_url):
+        return False
+    if want_book and have_book and want_book != have_book:
+        return True
+    if (
+        want_id
+        and have_id
+        and want_id != have_id
+        and _readwise_ids_same_kind(want_id, have_id)
+    ):
+        return True
+    if want_url and note_url:
+        return True
+    return False
+
+
 def _note_matches_identity(
     content: str,
     *,
     url: str | None = None,
     readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
     title_only_stems: list[str] | None = None,
     path: str | None = None,
 ) -> bool:
-    """True when KH YAML ``URL`` / ``readwise_id`` or title-only filename matches.
+    """True when KH YAML ``URL`` / ``readwise_id`` / ``readwise_book_id`` matches.
 
     YouTube URLs compare by video id (tracking query is ignored). A title-only
-    filename match is allowed only when YAML does not name a different video
-    or ``readwise_id``. Hits that merely share a title word are rejected.
+    filename match is allowed only when YAML does not name a different video,
+    URL, ``readwise_id``, or ``readwise_book_id``. Hits that merely share a
+    title word are rejected. Legacy notes without ``readwise_book_id`` match
+    by URL.
     """
     from services.obsidian.add_shared_link import _extract_frontmatter
-    from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
     frontmatter, _body = _extract_frontmatter(content)
     want_id = str(readwise_id).strip() if readwise_id is not None else ""
     have_id = str(frontmatter.get("readwise_id") or "").strip()
-    if want_id and have_id and want_id == have_id:
+    want_book = str(readwise_book_id).strip() if readwise_book_id is not None else ""
+    have_book = _frontmatter_book_id(frontmatter)
+    if _yaml_ids_equivalent(want_book, have_book):
+        return True
+    if _yaml_ids_equivalent(want_id, have_id):
         return True
     note_url = _http_url(frontmatter.get("URL") or frontmatter.get("url"))
     want_url = _http_url(url) or _nonempty(url)
-    want_video = None
-    have_video = None
-    if want_url and is_valid_youtube_url(want_url):
-        want_video = _extract_video_id(want_url)
-    if note_url and is_valid_youtube_url(note_url):
-        have_video = _extract_video_id(note_url)
-    if want_url and note_url:
-        if want_url.rstrip("/") == note_url.rstrip("/"):
-            return True
-        if _strip_tracking_query(want_url).rstrip("/") == _strip_tracking_query(
-            note_url
-        ).rstrip("/"):
-            return True
-        if want_video and have_video and want_video == have_video:
-            return True
-    conflicting = bool(
-        (want_id and have_id and want_id != have_id)
-        or (want_video and have_video and want_video != have_video)
-    )
-    if conflicting:
+    if _urls_equivalent(want_url, note_url):
+        return True
+    if _note_identity_conflicts(
+        content,
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=readwise_book_id,
+    ):
         return False
     if path and title_only_stems:
         file_stem = _hub_filename_stem(path)
@@ -1687,6 +1835,7 @@ def _identity_search_terms(
     *,
     url: str | None = None,
     readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
     title_only_stems: list[str] | None = None,
 ) -> list[tuple[str, str]]:
     """Distinctive KH search queries: ``(kind, query)``. Never file bodies."""
@@ -1711,6 +1860,7 @@ def _identity_search_terms(
             if video_id:
                 add("watch_v", f"watch?v={video_id}")
                 add("video_id", video_id)
+    add("readwise_book_id", readwise_book_id)
     add("readwise_id", readwise_id)
     for stem in title_only_stems or []:
         add("title", stem)
@@ -1822,6 +1972,47 @@ def _search_hub_identity_paths(
     return paths
 
 
+def _constructed_note_if_identity_ok(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    filename: str,
+    *,
+    url: str | None = None,
+    readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
+    title_only_stems: list[str] | None = None,
+) -> tuple[str, str] | None:
+    """Constructed-path hit, or None when missing or YAML identity conflicts.
+
+    A name-only file whose URL / id differs is never reused. A legacy note
+    with no URL / id is still a hit. When the caller supplied identity
+    fields, a matching URL / book_id / readwise_id also counts.
+    """
+    existing = _try_constructed_hub_note(dbx, hub_path, filename)
+    if not existing:
+        return None
+    path, content = existing
+    if not (url or readwise_id or readwise_book_id):
+        return existing
+    if _note_matches_identity(
+        content,
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=readwise_book_id,
+        title_only_stems=title_only_stems,
+        path=path,
+    ):
+        return existing
+    if _note_identity_conflicts(
+        content,
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=readwise_book_id,
+    ):
+        return None
+    return existing
+
+
 def find_hub_note_by_identity(
     dbx: dropbox.Dropbox,
     hub_path: str,
@@ -1831,33 +2022,51 @@ def find_hub_note_by_identity(
     titles: list[str] | None = None,
     url: str | None = None,
     readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
 ) -> tuple[str, str] | None:
     """Find a Knowledge Hub note by stem, title-only stem, then identity search.
 
     Order: exact ``stem`` filename (Title by Author / Channel), then sanitized
     title-only filename (no `` by Author`` / `` by Channel`` suffix), then
     ``files_search_v2`` on stripped URL, ``watch?v=VIDEOID``, video id,
-    ``readwise_id``, and the title-only string. Downloads only those hits and
-    confirms YAML video id / ``readwise_id`` / title-only filename. Search miss
-    or error means no existing note — never list-folder + download-all. Does
-    not create, rename, or merge files.
+    ``readwise_book_id``, ``readwise_id``, and the title-only string.
+    Constructed-path hits whose YAML URL / id belongs to a different
+    document are skipped. Downloads only search hits and confirms YAML
+    video id / ``readwise_id`` / ``readwise_book_id`` / title-only filename.
+    Search miss or error means no existing note — never list-folder +
+    download-all. Does not create, rename, or merge files.
     """
     title_only_stems = _title_only_hub_stems(title, *(titles or []))
     if stem:
-        existing = _try_constructed_hub_note(dbx, hub_path, _hub_note_filename(stem))
+        existing = _constructed_note_if_identity_ok(
+            dbx,
+            hub_path,
+            _hub_note_filename(stem),
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=readwise_book_id,
+            title_only_stems=title_only_stems,
+        )
         if existing:
             return existing
     for title_only in title_only_stems:
         if stem and title_only == stem:
             continue
-        existing = _try_constructed_hub_note(
-            dbx, hub_path, _hub_note_filename(title_only)
+        existing = _constructed_note_if_identity_ok(
+            dbx,
+            hub_path,
+            _hub_note_filename(title_only),
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=readwise_book_id,
+            title_only_stems=title_only_stems,
         )
         if existing:
             return existing
     terms = _identity_search_terms(
         url=url,
         readwise_id=readwise_id,
+        readwise_book_id=readwise_book_id,
         title_only_stems=title_only_stems,
     )
     if not terms:
@@ -1880,6 +2089,7 @@ def find_hub_note_by_identity(
             content,
             url=url,
             readwise_id=readwise_id,
+            readwise_book_id=readwise_book_id,
             title_only_stems=title_only_stems,
             path=path,
         ):
@@ -1895,6 +2105,320 @@ def find_hub_note_by_identity(
         downloaded,
     )
     return None
+
+
+def remember_hub_path_for_book_id(book_id: str | None, path_display: str | None) -> None:
+    """Cache ``book_id → path_display`` after a successful KH write."""
+    if not book_id or not path_display:
+        return
+    set_hub_path_for_book_id(str(book_id).strip(), path_display)
+
+
+def _url_path_slug(url: str | None) -> str | None:
+    href = _http_url(url) or _nonempty(url)
+    if not href:
+        return None
+    parsed = urlparse(href)
+    segment = (parsed.path or "").rstrip("/").split("/")[-1]
+    if not segment:
+        return None
+    if "." in segment and not segment.startswith("."):
+        segment = segment.rsplit(".", 1)[0]
+    return knowledge_hub_note_stem(segment)
+
+
+def _disambiguation_suffixes(
+    title: str | None,
+    readable_title: str | None,
+    url: str | None,
+) -> list[str]:
+    """Subtitle / ``Part N`` first, then the URL slug, then ``Part 2+``."""
+    suffixes: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: str | None) -> None:
+        text = _nonempty(value)
+        if not text:
+            return
+        key = text.casefold()
+        if key in seen:
+            return
+        seen.add(key)
+        suffixes.append(text)
+
+    source = _nonempty(readable_title) or _nonempty(title) or ""
+    part = _PART_SUFFIX.search(source)
+    if part:
+        add(part.group(1).strip())
+    for sep in (":", " — ", " – ", " - "):
+        if sep in source:
+            add(source.rsplit(sep, 1)[-1].strip())
+            break
+    add(_url_path_slug(url))
+    for index in range(2, 10):
+        add(f"Part {index}")
+    return suffixes
+
+
+def _disambiguate_hub_stem(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    stem: str,
+    *,
+    title: str | None,
+    readable_title: str | None,
+    url: str | None,
+    readwise_id: str | None,
+    readwise_book_id: str | None,
+) -> str:
+    """Append subtitle / Part N / URL slug when ``stem`` belongs to another doc."""
+    for suffix in _disambiguation_suffixes(title, readable_title, url):
+        candidate = knowledge_hub_note_stem(f"{stem} {suffix}")
+        if not candidate or candidate.casefold() == stem.casefold():
+            continue
+        existing = _try_constructed_hub_note(
+            dbx, hub_path, _hub_note_filename(candidate)
+        )
+        if existing is None:
+            return candidate
+        path, content = existing
+        if _note_matches_identity(
+            content,
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=readwise_book_id,
+            path=path,
+        ):
+            return candidate
+        if _note_identity_conflicts(
+            content,
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=readwise_book_id,
+        ):
+            continue
+        return candidate
+    tail = readwise_book_id or _url_path_slug(url) or "note"
+    return knowledge_hub_note_stem(f"{stem} {tail}") or stem
+
+
+class ResolvedHubNote:
+    """KH stem plus existing ``path_display`` when the note already exists."""
+
+    __slots__ = ("stem", "path", "content")
+
+    def __init__(
+        self,
+        stem: str,
+        path: str | None = None,
+        content: str | None = None,
+    ):
+        self.stem = stem
+        self.path = path
+        self.content = content
+
+
+def resolve_readwise_hub_note(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    *,
+    stem: str | None,
+    url: str | None = None,
+    readwise_id: str | None = None,
+    readwise_book_id: str | None = None,
+    title: str | None = None,
+    readable_title: str | None = None,
+    titles: list[str] | None = None,
+    pending: dict[str, str] | None = None,
+) -> ResolvedHubNote | None:
+    """Resolve the KH note for a Readwise document or highlight.
+
+    Order: Redis ``book_id → path_display``, then Dropbox search by
+    ``readwise_book_id`` / URL (PR 186), then a name match that does not
+    belong to a different document. A colliding stem is disambiguated
+    (subtitle / Part N / URL slug) instead of appending to the wrong note.
+    """
+    if not stem:
+        return None
+    book_key = str(readwise_book_id).strip() if readwise_book_id else ""
+    identity = book_key or (_http_url(url) or _nonempty(url) or "")
+    extra_titles = [value for value in (title, readable_title, *(titles or [])) if value]
+
+    if book_key:
+        mapped = get_hub_path_for_book_id(book_key)
+        if mapped:
+            try:
+                content = _get_file_content(dbx, mapped)
+            except FileNotFoundError:
+                content = None
+            except Exception:
+                logger.warning(
+                    "KH Redis book path download failed book_id=%s", book_key
+                )
+                content = None
+            if content and (
+                _note_matches_identity(
+                    content,
+                    url=url,
+                    readwise_id=readwise_id,
+                    readwise_book_id=book_key,
+                    path=mapped,
+                )
+                or not _note_identity_conflicts(
+                    content,
+                    url=url,
+                    readwise_id=readwise_id,
+                    readwise_book_id=book_key,
+                )
+            ):
+                return ResolvedHubNote(
+                    _hub_filename_stem(mapped), mapped, content
+                )
+
+    search_terms = _identity_search_terms(
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=book_key or None,
+    )
+    if search_terms:
+        for path in _search_hub_identity_paths(dbx, hub_path, search_terms):
+            try:
+                content = _get_file_content(dbx, path)
+            except Exception:
+                continue
+            if _note_matches_identity(
+                content,
+                url=url,
+                readwise_id=readwise_id,
+                readwise_book_id=book_key or None,
+                path=path,
+            ):
+                remember_hub_path_for_book_id(book_key or None, path)
+                return ResolvedHubNote(_hub_filename_stem(path), path, content)
+
+    found = find_hub_note_by_identity(
+        dbx,
+        hub_path,
+        stem=stem,
+        title=title,
+        titles=extra_titles,
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=book_key or None,
+    )
+    if found:
+        path, content = found
+        if not _note_identity_conflicts(
+            content,
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=book_key or None,
+        ):
+            remember_hub_path_for_book_id(book_key or None, path)
+            return ResolvedHubNote(_hub_filename_stem(path), path, content)
+
+    pending_owner = (pending or {}).get(stem.casefold())
+    constructed = _try_constructed_hub_note(dbx, hub_path, _hub_note_filename(stem))
+    taken = False
+    if constructed and _note_identity_conflicts(
+        constructed[1],
+        url=url,
+        readwise_id=readwise_id,
+        readwise_book_id=book_key or None,
+    ):
+        taken = True
+    if pending_owner and identity and pending_owner != identity:
+        taken = True
+    if taken:
+        stem = _disambiguate_hub_stem(
+            dbx,
+            hub_path,
+            stem,
+            title=title,
+            readable_title=readable_title,
+            url=url,
+            readwise_id=readwise_id,
+            readwise_book_id=book_key or None,
+        )
+    return ResolvedHubNote(stem)
+
+
+def _candidate_hub_stem(payload: dict, book: dict | None) -> str | None:
+    """Preferred Title-by-Author stem before identity resolve."""
+    if _is_tweet_book(book):
+        return None
+    title = _nonempty((book or {}).get("title")) or _nonempty(payload.get("title"))
+    readable = _payload_readable_title(payload, book)
+    if _is_book_highlight(book) or _is_article_highlight(book, payload):
+        return reader_knowledge_hub_note_stem(
+            title,
+            _reader_author(book or {}) or _reader_author(payload),
+            readable_title=readable,
+        )
+    return reader_knowledge_hub_note_stem(
+        title,
+        _reader_author(book or {}) or _reader_author(payload),
+        readable_title=readable,
+    )
+
+
+def _resolved_hub_for_payload(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    payload: dict,
+    book: dict | None,
+    *,
+    pending: dict[str, str] | None = None,
+) -> ResolvedHubNote | None:
+    """Reuse an attached resolve, else look up by book_id / URL."""
+    attached_stem = _nonempty(payload.get(_RESOLVED_STEM_KEY))
+    attached_path = _nonempty(payload.get(_RESOLVED_PATH_KEY))
+    if attached_stem:
+        return ResolvedHubNote(attached_stem, attached_path)
+    stem = _candidate_hub_stem(payload, book)
+    if not stem:
+        return None
+    return resolve_readwise_hub_note(
+        dbx,
+        hub_path,
+        stem=stem,
+        url=_identity_url(payload, book=book),
+        readwise_id=(
+            _reader_document_id(payload) if is_document_event(payload) else None
+        ),
+        readwise_book_id=_payload_book_id(payload, book),
+        title=_nonempty((book or {}).get("title")) or _nonempty(payload.get("title")),
+        readable_title=_payload_readable_title(payload, book),
+        pending=pending,
+    )
+
+
+def _attach_resolved_hub_notes(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    payloads: list[dict],
+) -> None:
+    """Set ``_kh_resolved_stem`` / path so journal wikilinks match the KH note."""
+    pending: dict[str, str] = {}
+    for payload in payloads:
+        if not is_highlight_event(payload):
+            continue
+        book = _resolve_highlight_book(payload)
+        if _is_tweet_book(book):
+            continue
+        resolved = _resolved_hub_for_payload(
+            dbx, hub_path, payload, book, pending=pending
+        )
+        if not resolved:
+            continue
+        payload[_RESOLVED_STEM_KEY] = resolved.stem
+        if resolved.path:
+            payload[_RESOLVED_PATH_KEY] = resolved.path
+        identity = _payload_book_id(payload, book) or (
+            _identity_url(payload, book=book) or ""
+        )
+        if identity:
+            pending[resolved.stem.casefold()] = identity
 
 
 def _append_tweet_page(
@@ -2008,9 +2532,13 @@ def _book_page_stem(book: dict | None, payload: dict) -> str | None:
     """``Title by Author`` stem (title-only if no author) for a book highlight."""
     if not _is_book_highlight(book):
         return None
+    resolved = _nonempty(payload.get(_RESOLVED_STEM_KEY))
+    if resolved:
+        return resolved
     return reader_knowledge_hub_note_stem(
         _nonempty((book or {}).get("title")),
         _reader_author(book or {}) or _reader_author(payload),
+        readable_title=_payload_readable_title(payload, book),
     )
 
 
@@ -2055,9 +2583,10 @@ def _book_page_extras(payload: dict, book: dict | None) -> dict:
     source_url = _http_url((book or {}).get("source_url") or payload.get("source_url"))
     if source_url:
         extras["URL"] = source_url
-    book_id = payload.get("book_id")
-    if book_id is not None and book_id != "":
-        extras["readwise_id"] = str(book_id)
+    book_id = _payload_book_id(payload, book)
+    if book_id:
+        extras["readwise_id"] = book_id
+        extras["readwise_book_id"] = book_id
     category = _nonempty((book or {}).get("category") or payload.get("category"))
     if category:
         extras["category"] = category
@@ -2131,7 +2660,7 @@ def _new_book_page_markdown(
         lines.append("People:")
         for link in people_links:
             lines.append(f'  - "{link}"')
-    for key in ("URL", "readwise_id", "category", "source"):
+    for key in ("URL", "readwise_id", "readwise_book_id", "category", "source"):
         value = extras.get(key)
         if value is None or (isinstance(value, str) and not str(value).strip()):
             continue
@@ -2209,7 +2738,8 @@ def _append_book_page(
     book = _resolve_highlight_book(payload)
     if not _is_book_highlight(book):
         return None
-    stem = _book_page_stem(book, payload)
+    resolved = _resolved_hub_for_payload(dbx, hub_path, payload, book)
+    stem = (resolved.stem if resolved else None) or _book_page_stem(book, payload)
     if not stem:
         return None
     bullet = _format_book_page_bullet(payload, book)
@@ -2220,11 +2750,44 @@ def _append_book_page(
     extras["title"] = stem
     _author, people_links = _book_author_people(book, payload)
     filename = _hub_note_filename(stem)
-    file_path = f"{hub_path}/{filename}"
+    file_path = (resolved.path if resolved else None) or f"{hub_path}/{filename}"
     with lock_readwise_target(
         readwise_target_identity(payload, book=book, dropbox_target=file_path)
     ):
-        existing = _download_hub_note(dbx, hub_path, filename)
+        existing = None
+        if resolved and resolved.path:
+            try:
+                existing = _download_text_with_rev(dbx, resolved.path)
+            except FileNotFoundError:
+                existing = None
+            except ValueError:
+                logger.error(
+                    "No Dropbox rev on download for %s; skipping KH note write.",
+                    resolved.path,
+                )
+                return None
+        if existing is None:
+            existing = _download_hub_note(dbx, hub_path, filename)
+            if existing is not None and _note_identity_conflicts(
+                existing.content,
+                url=extras.get("URL"),
+                readwise_id=extras.get("readwise_id"),
+                readwise_book_id=extras.get("readwise_book_id"),
+            ):
+                existing = None
+                stem = _disambiguate_hub_stem(
+                    dbx,
+                    hub_path,
+                    stem,
+                    title=_nonempty((book or {}).get("title")) or _nonempty(payload.get("title")),
+                    readable_title=_payload_readable_title(payload, book),
+                    url=extras.get("URL"),
+                    readwise_id=extras.get("readwise_id"),
+                    readwise_book_id=extras.get("readwise_book_id"),
+                )
+                extras["title"] = stem
+                filename = _hub_note_filename(stem)
+                file_path = f"{hub_path}/{filename}"
         if existing is None:
             markdown = _new_book_page_markdown(stem, bullet, extras, people_links)
             if not _rev_safe_create(
@@ -2235,6 +2798,7 @@ def _append_book_page(
             ):
                 return "deferred"
             logger.info("Book page created path=%s", file_path)
+            remember_hub_path_for_book_id(extras.get("readwise_book_id"), file_path)
             return "created"
 
         def apply(content: str) -> tuple[str | None, str]:
@@ -2260,6 +2824,7 @@ def _append_book_page(
                 logger.info("Book page %s path=%s", action, existing.path)
         elif action == "skipped":
             logger.info("Book page skipped (duplicate) path=%s", existing.path)
+        remember_hub_path_for_book_id(extras.get("readwise_book_id"), existing.path)
         return action
 
 
@@ -2337,14 +2902,23 @@ def _article_page_stem(book: dict | None, payload: dict) -> str | None:
     """``Title by Author`` stem (title-only if no author) for an article highlight."""
     if not _is_article_highlight(book, payload):
         return None
+    resolved = _nonempty(payload.get(_RESOLVED_STEM_KEY))
+    if resolved:
+        return resolved
     return reader_knowledge_hub_note_stem(
         _nonempty((book or {}).get("title")),
         _reader_author(book or {}) or _reader_author(payload),
+        readable_title=_payload_readable_title(payload, book),
     )
 
 
 def _article_page_extras(payload: dict, book: dict | None) -> dict:
-    """Minimal YAML extras for an article page: author + fill-if-empty URL."""
+    """Minimal YAML extras: author, URL, and ``readwise_book_id`` only.
+
+    Article notes keep ``readwise_id`` for the Reader document id written
+    on document save. Highlight appends must not overwrite it with the
+    numeric book id.
+    """
     extras: dict = {}
     author, _people = _book_author_people(book, payload)
     if author:
@@ -2352,6 +2926,9 @@ def _article_page_extras(payload: dict, book: dict | None) -> dict:
     source_url = _http_url((book or {}).get("source_url") or payload.get("source_url"))
     if source_url:
         extras["URL"] = source_url
+    book_id = _payload_book_id(payload, book)
+    if book_id:
+        extras["readwise_book_id"] = book_id
     return extras
 
 
@@ -2394,9 +2971,11 @@ def _new_article_page_markdown(
         lines.append("People:")
         for link in people_links:
             lines.append(f'  - "{link}"')
-    url = extras.get("URL")
-    if url and str(url).strip():
-        lines.append(f"URL: {url}")
+    for key in ("URL", "readwise_id", "readwise_book_id"):
+        value = extras.get(key)
+        if value is None or (isinstance(value, str) and not str(value).strip()):
+            continue
+        lines.append(f"{key}: {value}")
     lines.extend(["---", "", ARTICLE_HIGHLIGHTS_HEADER, bullet, "", f"# {stem}", ""])
     return "\n".join(lines)
 
@@ -2416,7 +2995,8 @@ def _append_article_page(
     book = _resolve_highlight_book(payload)
     if not _is_article_highlight(book, payload):
         return None
-    stem = _article_page_stem(book, payload)
+    resolved = _resolved_hub_for_payload(dbx, hub_path, payload, book)
+    stem = (resolved.stem if resolved else None) or _article_page_stem(book, payload)
     if not stem:
         return None
     bullet = _format_article_page_bullet(payload, book)
@@ -2427,11 +3007,44 @@ def _append_article_page(
     extras["title"] = stem
     _author, people_links = _book_author_people(book, payload)
     filename = _hub_note_filename(stem)
-    file_path = f"{hub_path}/{filename}"
+    file_path = (resolved.path if resolved else None) or f"{hub_path}/{filename}"
     with lock_readwise_target(
         readwise_target_identity(payload, book=book, dropbox_target=file_path)
     ):
-        existing = _download_hub_note(dbx, hub_path, filename)
+        existing = None
+        if resolved and resolved.path:
+            try:
+                existing = _download_text_with_rev(dbx, resolved.path)
+            except FileNotFoundError:
+                existing = None
+            except ValueError:
+                logger.error(
+                    "No Dropbox rev on download for %s; skipping KH note write.",
+                    resolved.path,
+                )
+                return None
+        if existing is None:
+            existing = _download_hub_note(dbx, hub_path, filename)
+            if existing is not None and _note_identity_conflicts(
+                existing.content,
+                url=extras.get("URL"),
+                readwise_id=extras.get("readwise_id"),
+                readwise_book_id=extras.get("readwise_book_id"),
+            ):
+                existing = None
+                stem = _disambiguate_hub_stem(
+                    dbx,
+                    hub_path,
+                    stem,
+                    title=_nonempty((book or {}).get("title")) or _nonempty(payload.get("title")),
+                    readable_title=_payload_readable_title(payload, book),
+                    url=extras.get("URL"),
+                    readwise_id=extras.get("readwise_id"),
+                    readwise_book_id=extras.get("readwise_book_id"),
+                )
+                extras["title"] = stem
+                filename = _hub_note_filename(stem)
+                file_path = f"{hub_path}/{filename}"
         if existing is None:
             markdown = _new_article_page_markdown(stem, bullet, extras, people_links)
             if not _rev_safe_create(
@@ -2442,15 +3055,17 @@ def _append_article_page(
             ):
                 return "deferred"
             logger.info("Article page created path=%s", file_path)
+            remember_hub_path_for_book_id(extras.get("readwise_book_id"), file_path)
             return "created"
 
         def apply(content: str) -> tuple[str | None, str]:
             updated, action = insert_article_highlights_bullet(content, bullet, keys)
-            url_only = {}
-            if extras.get("URL"):
-                url_only["URL"] = extras["URL"]
-            if url_only:
-                updated = _ensure_book_page_frontmatter(updated, url_only, [])
+            fill = {}
+            for key in ("URL", "readwise_id", "readwise_book_id"):
+                if extras.get(key):
+                    fill[key] = extras[key]
+            if fill:
+                updated = _ensure_book_page_frontmatter(updated, fill, [])
             if updated == content:
                 return None, action
             return updated, action
@@ -2471,6 +3086,7 @@ def _append_article_page(
                 logger.info("Article page %s path=%s", action, existing.path)
         elif action == "skipped":
             logger.info("Article page skipped (duplicate) path=%s", existing.path)
+        remember_hub_path_for_book_id(extras.get("readwise_book_id"), existing.path)
         return action
 
 
@@ -2728,6 +3344,12 @@ def write_highlights_by_journal(
 
     dbx = _get_dropbox_client()
     journal_folder = _resolve_journal_folder(dbx)
+    if format_fn is format_readwise_bullet:
+        try:
+            hub_path = _resolve_knowledge_hub_folder(dbx)
+            _attach_resolved_hub_notes(dbx, hub_path, payloads)
+        except Exception:
+            logger.exception("KH identity resolve failed; journal will use title stems")
 
     by_path: dict[str, list[dict]] = {}
     for payload in payloads:
@@ -2932,7 +3554,10 @@ def _append_reader_document_knowledge_hub(
     """
     url = document_page_url(payload)
     title = _nonempty(payload.get("title"))
-    stem = reader_knowledge_hub_note_stem(title, _reader_author(payload))
+    readable_title = _nonempty(payload.get("readable_title"))
+    stem = reader_knowledge_hub_note_stem(
+        title, _reader_author(payload), readable_title=readable_title
+    )
     journal_date = document_journal_date(payload, now=now)
     youtube_url = _youtube_url_for_document(payload, url)
     extras = reader_document_extra_frontmatter(payload) or None
@@ -2965,6 +3590,7 @@ def _append_reader_document_knowledge_hub(
                 journal_date=journal_date,
                 youtube_url=youtube_url,
                 extras=extras,
+                readable_title=readable_title,
             )
     except Exception:
         if claimed and normalized:
@@ -2986,6 +3612,7 @@ def _write_reader_document_knowledge_hub(
     journal_date: str,
     youtube_url: str | None,
     extras: dict | None,
+    readable_title: str | None = None,
 ) -> dict:
     """KH + journal + Raindrop for one parent Reader document. Caller holds the lock."""
     if not youtube_url and not stem:
@@ -3016,6 +3643,7 @@ def _write_reader_document_knowledge_hub(
                 title=stem,
                 journal_date=journal_date,
                 extra_frontmatter=extras,
+                readable_title=readable_title,
             )
     except Exception as exc:
         logger.exception(

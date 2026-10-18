@@ -22,4 +22,6 @@ redis_client = redis.Redis(
     port=int(os.getenv("REDIS_PORT", 6379)),
     password=os.getenv("REDIS_PASSWORD", None),
     decode_responses=True,
+    socket_connect_timeout=2,
+    socket_timeout=2,
 )

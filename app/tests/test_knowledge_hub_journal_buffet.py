@@ -83,7 +83,12 @@ date: 2026-08-22
 """
 
 
-def _existing_kh(*, journal_dates: list[str], title: str = "My Article") -> str:
+def _existing_kh(
+    *,
+    journal_dates: list[str],
+    title: str = "My Article",
+    url: str = "https://example.com/article",
+) -> str:
     journal_yaml = "\n".join(f'  - "[[{d}]]"' for d in journal_dates)
     return f"""---
 Journal:
@@ -92,7 +97,7 @@ created time: 2026-01-01T00:00:00+00:00
 modified time: 2026-01-01T00:00:00+00:00
 key words:
 People:
-URL: https://example.com/article
+URL: {url}
 author:
 Notes+Ideas:
 Experiences:
@@ -1042,7 +1047,11 @@ def test_reader_document_same_day_does_not_double_buffet_wikilink():
     stem = reader_knowledge_hub_note_stem(payload["title"], payload["author"])
     mock_dbx, uploads = _mock_dbx(
         kh_exists=True,
-        kh_content=_existing_kh(journal_dates=["Nov 28, 2025"], title=payload["title"]),
+        kh_content=_existing_kh(
+            journal_dates=["Nov 28, 2025"],
+            title=payload["title"],
+            url=payload["source_url"],
+        ),
         journal_content=JOURNAL_WITH_ITEM.replace("Already There", stem),
     )
     now = LA.localize(datetime(2026, 8, 22, 15, 0))

@@ -30,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 TARGET_LOCK_KEY_PREFIX = "readwise:target:lock:"
 READER_SINGLEFLIGHT_KEY_PREFIX = "readwise:reader:singleflight:"
+# Permanent book_id → Knowledge Hub path_display (seeded from YAML or
+# written after a successful document/highlight resolve).
+BOOK_PATH_KEY_PREFIX = "readwise:kh:book:"
 # Window long enough to cover the 2026-09-22 simultaneous Reader pair
 # (~same second) and the ~28s highlight double-fire, short enough that a
 # later legitimate retry / reconcile still writes.
@@ -89,6 +92,51 @@ def readwise_target_lock_key(identity: str) -> str:
 
 def reader_singleflight_key(normalized_url: str) -> str:
     return f"{READER_SINGLEFLIGHT_KEY_PREFIX}{normalized_url}"
+
+
+def readwise_book_path_key(book_id: str) -> str:
+    """Redis key for the KH ``path_display`` of one Readwise book."""
+    return f"{BOOK_PATH_KEY_PREFIX}{book_id}"
+
+
+def get_hub_path_for_book_id(book_id: str, *, client=None) -> str | None:
+    """Return the cached KH ``path_display`` for ``book_id``, or None.
+
+    Redis errors fail open (treat as a miss so Dropbox search can run).
+    """
+    text = (book_id or "").strip()
+    if not text:
+        return None
+    redis = client if client is not None else redis_client
+    try:
+        value = redis.get(readwise_book_path_key(text))
+    except Exception:
+        logger.exception(
+            "Readwise book path lookup failed book_id=%s; falling back to search",
+            text,
+        )
+        return None
+    if value is None:
+        return None
+    path = str(value).strip()
+    return path or None
+
+
+def set_hub_path_for_book_id(book_id: str, path_display: str, *, client=None) -> None:
+    """Remember ``book_id → path_display``. Redis errors are logged, not raised."""
+    key = (book_id or "").strip()
+    path = (path_display or "").strip()
+    if not key or not path:
+        return
+    redis = client if client is not None else redis_client
+    try:
+        redis.set(readwise_book_path_key(key), path)
+    except Exception:
+        logger.exception(
+            "Readwise book path store failed book_id=%s path=%s",
+            key,
+            path,
+        )
 
 
 def lock_readwise_target(identity: str, **kwargs):

@@ -160,11 +160,14 @@ def _find_knowledge_hub_path(dbx: dropbox.Dropbox, vault_path: str) -> str:
     result = dbx.files_list_folder(vault_path)
 
     while True:
-        for entry in result.entries:
+        entries = getattr(result, "entries", None)
+        if not isinstance(entries, (list, tuple)):
+            break
+        for entry in entries:
             if isinstance(entry, dropbox.files.FolderMetadata) and entry.name.endswith("_Knowledge-Hub"):
                 return entry.path_lower
 
-        if not result.has_more:
+        if getattr(result, "has_more", False) is not True:
             break
         result = dbx.files_list_folder_continue(result.cursor)
 
@@ -486,6 +489,7 @@ def add_shared_link(
     *,
     journal_date: str | None = None,
     extra_frontmatter: dict | None = None,
+    readable_title: str | None = None,
 ) -> dict:
     """Create a new markdown file for a shared link in Knowledge Hub.
 
@@ -500,6 +504,8 @@ def add_shared_link(
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
             Omitted on regular iOS share-link. On create they are written;
             on update they are set only when the existing key is empty.
+        readable_title: Optional Readwise ``readable_title`` used to pick
+            a stem when ``title`` is truncated and to disambiguate collisions.
 
     Returns:
         dict with keys:
@@ -542,6 +548,36 @@ def add_shared_link(
         # a "Title by Author" stem must stay plain text with no ``[[``).
         filename = _sanitize_filename(link_title) + '.md'
         file_path = f"{knowledge_hub_path}/{filename}"
+        note_stem = filename.removesuffix(".md")
+
+        if extra_frontmatter:
+            from services.obsidian.add_readwise_buffet import (
+                remember_hub_path_for_book_id,
+                resolve_readwise_hub_note,
+            )
+
+            extras_url = extra_frontmatter.get("URL") or url
+            extras_id = extra_frontmatter.get("readwise_id")
+            extras_book = extra_frontmatter.get("readwise_book_id")
+            resolved = resolve_readwise_hub_note(
+                dbx,
+                knowledge_hub_path,
+                stem=note_stem,
+                url=str(extras_url) if extras_url else url,
+                readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+                readwise_book_id=(
+                    str(extras_book) if extras_book not in (None, "") else None
+                ),
+                title=link_title,
+                readable_title=readable_title,
+            )
+            if resolved is not None:
+                note_stem = resolved.stem
+                if resolved.path:
+                    file_path = resolved.path
+                else:
+                    filename = _sanitize_filename(note_stem) + ".md"
+                    file_path = f"{knowledge_hub_path}/{filename}"
 
         # Calculate relative path within vault for Obsidian URL
         relative_file_path = file_path.replace(vault_path.lower(), '').lstrip('/')
@@ -557,7 +593,6 @@ def add_shared_link(
             formatted_local_date = str(journal_date).removesuffix(".md").strip()
         else:
             formatted_local_date = journal_filename(get_effective_date(now_local)).removesuffix(".md")
-        note_stem = filename.removesuffix(".md")
 
         defer_payload = {
             "url": url,
@@ -570,6 +605,41 @@ def add_shared_link(
             note = download_text_with_rev(dbx, file_path)
         except FileNotFoundError:
             note = None
+
+        if note is not None and extra_frontmatter:
+            from services.obsidian.add_readwise_buffet import (
+                _disambiguate_hub_stem,
+                _note_identity_conflicts,
+            )
+
+            extras_url = extra_frontmatter.get("URL") or url
+            extras_id = extra_frontmatter.get("readwise_id")
+            extras_book = extra_frontmatter.get("readwise_book_id")
+            if _note_identity_conflicts(
+                note.content,
+                url=str(extras_url) if extras_url else url,
+                readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+                readwise_book_id=(
+                    str(extras_book) if extras_book not in (None, "") else None
+                ),
+            ):
+                note_stem = _disambiguate_hub_stem(
+                    dbx,
+                    knowledge_hub_path,
+                    note_stem,
+                    title=link_title,
+                    readable_title=readable_title,
+                    url=str(extras_url) if extras_url else url,
+                    readwise_id=str(extras_id) if extras_id not in (None, "") else None,
+                    readwise_book_id=(
+                        str(extras_book) if extras_book not in (None, "") else None
+                    ),
+                )
+                filename = _sanitize_filename(note_stem) + ".md"
+                file_path = f"{knowledge_hub_path}/{filename}"
+                relative_file_path = file_path.replace(vault_path.lower(), "").lstrip("/")
+                result["file_path"] = relative_file_path
+                note = None
 
         if note is not None:
             logger.info("File already exists, checking journal date: %s", file_path)
@@ -634,6 +704,13 @@ def add_shared_link(
             if status == "updated":
                 logger.info("Updated existing file with new journal date: %s", file_path)
                 append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+            if extra_frontmatter and extra_frontmatter.get("readwise_book_id"):
+                from services.obsidian.add_readwise_buffet import remember_hub_path_for_book_id
+
+                remember_hub_path_for_book_id(
+                    extra_frontmatter.get("readwise_book_id"),
+                    note.path,
+                )
             result["success"] = True
             result["action"] = action or "skipped"
             return result
@@ -706,6 +783,13 @@ Tags:
 
         logger.info("Created shared link file: %s", file_path)
         append_wikilink_to_journal_buffet(note_stem, formatted_local_date, dbx=dbx)
+        if extra_frontmatter and extra_frontmatter.get("readwise_book_id"):
+            from services.obsidian.add_readwise_buffet import remember_hub_path_for_book_id
+
+            remember_hub_path_for_book_id(
+                extra_frontmatter.get("readwise_book_id"),
+                file_path,
+            )
         result["success"] = True
         result["action"] = "created"
 
