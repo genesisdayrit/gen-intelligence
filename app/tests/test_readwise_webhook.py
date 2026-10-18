@@ -35,6 +35,7 @@ from services.obsidian.add_readwise_buffet import (
     ARTICLE_HIGHLIGHTS_HEADER,
     BOOK_HIGHLIGHTS_HEADER,
     BOOKMARKED_TWEETS_HEADER,
+    preferred_knowledge_hub_title,
     _ensure_tweet_page_people,
     _format_article_page_bullet,
     _format_book_page_bullet,
@@ -1663,6 +1664,26 @@ def test_knowledge_hub_note_stem_matches_shared_link_filename():
     assert knowledge_hub_note_stem("|#^]]") is None
 
 
+def test_preferred_title_uses_readable_when_truncated():
+    readable = "Pmarchive - Guide to Career Planning, Part 1: Opportunity"
+    assert preferred_knowledge_hub_title(
+        "Pmarca Guide to Career Planning:", readable
+    ) == readable
+    assert preferred_knowledge_hub_title(
+        "Pmarca Guide to Career Planning-", readable
+    ) == readable
+    assert preferred_knowledge_hub_title(
+        "Pmarca Guide to Career Planning",
+        "Pmarca Guide to Career Planning, Part 2: Skills",
+    ) == "Pmarca Guide to Career Planning, Part 2: Skills"
+    assert preferred_knowledge_hub_title("Deep Work", "Deep Work (Cal Newport)") == (
+        "Deep Work"
+    )
+    assert knowledge_hub_note_stem(
+        "Pmarca Guide to Career Planning:", readable_title=readable
+    ) == _sanitize_filename(readable)
+
+
 def test_reader_knowledge_hub_note_stem_adds_author():
     assert reader_knowledge_hub_note_stem("Deep Work", "Cal Newport") == (
         "Deep Work by Cal Newport"
@@ -3159,6 +3180,7 @@ def test_book_highlight_creates_title_by_author_page():
     assert frontmatter["People"] == ["[[Cal Newport]]"]
     assert frontmatter["URL"] == "https://www.amazon.com/dp/example"
     assert str(frontmatter["readwise_id"]) == "8237"
+    assert str(frontmatter["readwise_book_id"]) == "8237"
     assert frontmatter["category"] == "books"
     assert frontmatter["source"] == "kindle"
     assert BOOK_HIGHLIGHTS_HEADER in page
@@ -3437,6 +3459,196 @@ def test_title_only_book_page_when_author_missing():
     assert "[[Deep Work]]:" in store[JOURNAL_NOV_PATH]
 
 
+PMARCA_TITLE = "Pmarca Guide to Career Planning:"
+PMARCA_BOOKS = (
+    {
+        "book_id": 64421671,
+        "url": "https://pmarchive.com/guide_to_career_planning_part1.html",
+        "readable_title": "Pmarchive - Guide to Career Planning, Part 1: Opportunity",
+        "stem": "Pmarchive - Guide to Career Planning, Part 1_ Opportunity",
+    },
+    {
+        "book_id": 64421779,
+        "url": "https://pmarchive.com/guide_to_career_planning_part2.html",
+        "readable_title": "Pmarchive - Guide to Career Planning, Part 2: Skills and Education",
+        "stem": "Pmarchive - Guide to Career Planning, Part 2_ Skills and Education",
+    },
+    {
+        "book_id": 64422269,
+        "url": "https://pmarchive.com/guide_to_career_planning_part3.html",
+        "readable_title": "Pmarchive - Guide to Career Planning, Part 3: Where to Go and Why",
+        "stem": "Pmarchive - Guide to Career Planning, Part 3_ Where to Go and Why",
+    },
+)
+COLLIDED_STEM = "Pmarca Guide to Career Planning_"
+
+
+def _pmarca_highlight(part, **overrides):
+    data = {
+        "title": PMARCA_TITLE,
+        "readable_title": part["readable_title"],
+        "author": None,
+        "category": "books",
+        "source": "reader",
+        "source_url": part["url"],
+        "book_id": part["book_id"],
+        "id": part["book_id"],
+        "text": f"Quote for {part['book_id']}",
+    }
+    data.update(overrides)
+    return _book_highlight(**data)
+
+
+def test_three_same_title_books_write_three_notes():
+    clear_book_cache()
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        for part in PMARCA_BOOKS:
+            result = append_readwise_buffet(_pmarca_highlight(part), now=now)
+            assert result["success"] is True
+
+    collided = f"{KH_FOLDER}/{COLLIDED_STEM}.md"
+    assert collided not in store
+    journal = store[JOURNAL_NOV_PATH]
+    for part in PMARCA_BOOKS:
+        path = f"{KH_FOLDER}/{part['stem']}.md"
+        assert path in store
+        frontmatter, body = _extract_frontmatter(store[path])
+        assert str(frontmatter["readwise_book_id"]) == str(part["book_id"])
+        assert frontmatter["URL"] == part["url"]
+        assert f'Quote for {part["book_id"]}' in body
+        assert f"- [[{part['stem']}]]:" in journal
+        for other in PMARCA_BOOKS:
+            if other is part:
+                continue
+            assert f'Quote for {other["book_id"]}' not in body
+
+
+def test_later_highlight_from_same_book_appends_existing_note():
+    clear_book_cache()
+    part = PMARCA_BOOKS[0]
+    mock_dbx, _uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        first = append_readwise_buffet(_pmarca_highlight(part), now=now)
+        second = append_readwise_buffet(
+            _pmarca_highlight(part, id=954481, text="A later highlight"),
+            now=now,
+        )
+    assert first["success"] is True
+    assert second["success"] is True
+    path = f"{KH_FOLDER}/{part['stem']}.md"
+    page = store[path]
+    assert f'Quote for {part["book_id"]}' in page
+    assert "A later highlight" in page
+    assert page.count("### Book highlights") == 1
+    assert f"{KH_FOLDER}/{COLLIDED_STEM}.md" not in store
+
+
+def test_legacy_note_without_book_id_matched_by_url():
+    clear_book_cache()
+    part = PMARCA_BOOKS[1]
+    path = f"{KH_FOLDER}/{part['stem']}.md"
+    existing = f"""---
+title: "{part['stem']}"
+URL: {part['url']}
+---
+
+# {part['stem']}
+
+Kept body.
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_pmarca_highlight(part), now=now)
+
+    assert result["success"] is True
+    page = store[path]
+    assert "Kept body." in page
+    assert f'Quote for {part["book_id"]}' in page
+    assert f"{KH_FOLDER}/{COLLIDED_STEM}.md" not in store
+    assert f"- [[{part['stem']}]]:" in store[JOURNAL_NOV_PATH]
+
+
+def test_name_only_match_with_different_url_is_not_appended():
+    clear_book_cache()
+    owner = PMARCA_BOOKS[0]
+    incoming = PMARCA_BOOKS[2]
+    collided_path = f"{KH_FOLDER}/{COLLIDED_STEM}.md"
+    existing = f"""---
+title: "{COLLIDED_STEM}"
+URL: {owner['url']}
+readwise_book_id: {owner['book_id']}
+---
+
+# {COLLIDED_STEM}
+
+### Book highlights
+- "owner quote" ([Link](https://readwise.io/open/1))
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        collided_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _pmarca_highlight(incoming, readable_title=None),
+            now=now,
+        )
+
+    assert result["success"] is True
+    collided = store[collided_path]
+    assert "owner quote" in collided
+    assert f'Quote for {incoming["book_id"]}' not in collided
+    new_paths = [
+        path
+        for path in store
+        if path.startswith(KH_FOLDER) and path != collided_path
+    ]
+    assert new_paths
+    written = store[new_paths[0]]
+    assert f'Quote for {incoming["book_id"]}' in written
+    frontmatter, _body = _extract_frontmatter(written)
+    assert str(frontmatter["readwise_book_id"]) == str(incoming["book_id"])
+    assert frontmatter["URL"] == incoming["url"]
+    assert f"- [[{COLLIDED_STEM}]]:" not in store[JOURNAL_NOV_PATH]
+
+
+def test_existing_part_notes_win_over_truncated_stem():
+    """book_id / URL resolve to the Part notes, never recreate the collided file."""
+    clear_book_cache()
+    store_files = {JOURNAL_NOV_PATH: SAMPLE_JOURNAL}
+    for part in PMARCA_BOOKS:
+        store_files[f"{KH_FOLDER}/{part['stem']}.md"] = f"""---
+title: "{part['stem']}"
+URL: {part['url']}
+readwise_book_id: {part['book_id']}
+---
+
+# {part['stem']}
+"""
+    mock_dbx, _uploaded, store = _mock_vault_dbx(store_files)
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        for part in PMARCA_BOOKS:
+            append_readwise_buffet(
+                _pmarca_highlight(part, readable_title=None),
+                now=now,
+            )
+
+    assert f"{KH_FOLDER}/{COLLIDED_STEM}.md" not in store
+    for part in PMARCA_BOOKS:
+        page = store[f"{KH_FOLDER}/{part['stem']}.md"]
+        assert f'Quote for {part["book_id"]}' in page
+        assert f"- [[{part['stem']}]]:" in store[JOURNAL_NOV_PATH]
+
+
 # ---------------------------------------------------------------------------
 # Title by Author Knowledge Hub article page
 # ---------------------------------------------------------------------------
@@ -3662,7 +3874,7 @@ def test_article_highlight_creates_title_by_author_page():
     assert frontmatter["author"] == "[[The Verge]]"
     assert frontmatter["People"] == ["[[The Verge]]"]
     assert frontmatter["URL"] == "https://www.theverge.com/long-essay"
-    assert "readwise_id" not in frontmatter
+    assert str(frontmatter["readwise_book_id"]) == "8237"
     assert ARTICLE_HIGHLIGHTS_HEADER in page
     assert (
         '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'

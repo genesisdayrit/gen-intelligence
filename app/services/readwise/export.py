@@ -46,6 +46,7 @@ def highlight_from_export(book: dict, highlight: dict) -> dict:
         **highlight,
         "book_id": book_id,
         "title": title,
+        "readable_title": _nonempty(book.get("readable_title")),
         "author": _nonempty(book.get("author")),
         "category": _nonempty(book.get("category")),
         "source": _nonempty(book.get("source")),
