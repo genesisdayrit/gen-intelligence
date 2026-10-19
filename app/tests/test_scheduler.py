@@ -331,7 +331,7 @@ def _assert_cron(job_id, *, hour=None, minute=None, day_of_week=None):
 
 def test_obsidian_cron_migration_jobs_use_system_timezone_hours(client):
     """Migrated crontab jobs use fixed SYSTEM_TZ hours (DST-stable)."""
-    _assert_cron("create_weeks", day_of_week="sun", hour="23", minute="0")
+    _assert_cron("create_weeks", day_of_week="sat", hour="2", minute="40")
     _assert_cron("create_newsletter_page", day_of_week="thu", hour="23", minute="30")
     _assert_cron("create_new_cycle_page", day_of_week="tue", hour="1", minute="30")
     _assert_cron("create_weekly_health_review_page", day_of_week="tue", hour="2", minute="0")

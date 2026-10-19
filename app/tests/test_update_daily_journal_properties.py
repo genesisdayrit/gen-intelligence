@@ -7,8 +7,9 @@ default) and today (``--today`` / ``use_today=True``), with mocked dates.
 import os
 import sys
 from datetime import datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import dropbox
 import pytz
 import yaml
 
@@ -218,3 +219,165 @@ def test_update_daily_journal_properties_rev_conflict_enqueues():
     assert mock_dbx.files_upload.call_count == 2
     mock_enqueue.assert_called()
     assert mock_enqueue.call_args.kwargs["source"] == "journal_properties"
+
+
+# Sunday 18:10 PT → tomorrow's Monday journal. The next Week-Ending note
+# is not created until Saturday 02:40 of the following week-prep, so a
+# Sunday properties run historically left Weeks: null. Self-heal creates
+# Week-Ending-2026-11-01 once and links it.
+SUNDAY_1810 = LA.localize(datetime(2026, 10, 25, 18, 10))
+MONDAY_JOURNAL = "Oct 26, 2026.md"
+WEEK_ENDING_STEM = "Week-Ending-2026-11-01"
+WEEK_ENDING_FILE = f"{WEEK_ENDING_STEM}.md"
+VAULT = "/test/vault"
+DAILY = f"{VAULT}/01_Daily"
+JOURNAL_FOLDER = f"{DAILY}/_Journal"
+JOURNAL_PATH_DISPLAY = f"{JOURNAL_FOLDER}/{MONDAY_JOURNAL}"
+WEEKLY = f"{VAULT}/02_Weekly"
+WEEKS_FOLDER = f"{WEEKLY}/_Weeks"
+WEEK_PATH = f"{WEEKS_FOLDER}/{WEEK_ENDING_FILE}"
+
+
+def _sunday_target(use_today: bool = False) -> datetime:
+    return SUNDAY_1810 if use_today else SUNDAY_1810 + timedelta(days=1)
+
+
+def _folder_meta(name: str, path_display: str):
+    return dropbox.files.FolderMetadata(
+        name=name,
+        id=f"id:{name}",
+        path_lower=path_display.lower(),
+        path_display=path_display,
+    )
+
+
+def _file_meta(name: str, path_display: str, rev="aaaaaaaaaaaaaaaa"):
+    from datetime import datetime as dt
+
+    return dropbox.files.FileMetadata(
+        name=name,
+        id=f"id:{name}",
+        client_modified=dt(2026, 10, 25, 18, 10),
+        server_modified=dt(2026, 10, 25, 18, 10),
+        rev=rev,
+        size=64,
+        path_lower=path_display.lower(),
+        path_display=path_display,
+    )
+
+
+def _list_result(entries):
+    result = MagicMock()
+    result.entries = entries
+    result.has_more = False
+    return result
+
+
+def _sunday_listings(*, week_files=None):
+    week_files = week_files if week_files is not None else []
+    journal = [_file_meta(MONDAY_JOURNAL, JOURNAL_PATH_DISPLAY)]
+    mapping = {
+        VAULT: [
+            _folder_meta("01_Daily", DAILY),
+            _folder_meta("02_Weekly", WEEKLY),
+        ],
+        DAILY: [_folder_meta("_Journal", JOURNAL_FOLDER)],
+        JOURNAL_FOLDER: journal,
+        WEEKLY: [_folder_meta("_Weeks", WEEKS_FOLDER)],
+        WEEKS_FOLDER: week_files,
+    }
+    return {key.lower(): value for key, value in mapping.items()} | mapping
+
+
+def _mock_sunday_dbx(listings):
+    mock_dbx = MagicMock()
+
+    def list_folder(path):
+        for key, entries in listings.items():
+            if key.lower() == path.lower():
+                return _list_result(entries)
+        return _list_result([])
+
+    mock_dbx.files_list_folder.side_effect = list_folder
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = JOURNAL_PATH_DISPLAY
+    response = MagicMock()
+    response.content = (
+        "---\nDay of Week: null\nDate: null\nWeeks: null\n"
+        "Previous Day: null\nNext Day: null\n---\n\n# Journal\n"
+    ).encode("utf-8")
+    mock_dbx.files_download.return_value = (metadata, response)
+    mock_dbx.files_upload.return_value = MagicMock(rev="bbbbbbbbbbbbbbbb")
+    return mock_dbx
+
+
+def test_sunday_1810_self_heals_missing_week_ending_and_links_monday_journal():
+    """Sunday 18:10 PT, no week note yet → Monday journal gets Weeks once."""
+    listings = _sunday_listings()
+    mock_dbx = _mock_sunday_dbx(listings)
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._get_target_day", side_effect=_sunday_target),
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    add_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_add()
+    ]
+    assert len(add_uploads) == 1
+    week_bytes, week_path = add_uploads[0].args[:2]
+    assert week_path == WEEK_PATH
+    assert add_uploads[0].kwargs["autorename"] is False
+    assert not add_uploads[0].kwargs["mode"].is_overwrite()
+    week_content = week_bytes.decode("utf-8")
+    assert "# Weekly Artifacts: 2026-10-26 to 2026-11-01" in week_content
+
+    update_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_update()
+    ]
+    assert len(update_uploads) == 1
+    journal_yaml = yaml.safe_load(
+        update_uploads[0].args[0].decode("utf-8").split("---", 2)[1]
+    )
+    assert journal_yaml["Weeks"] == [f"[[{WEEK_ENDING_STEM}]]"]
+    assert journal_yaml["Date"] == "2026-10-26"
+    assert journal_yaml["Day of Week"] == "Monday"
+
+
+def test_sunday_1810_does_not_recreate_existing_week_ending_note():
+    """If the week note already exists (any casing), do not create a duplicate."""
+    existing = _file_meta(
+        "week-ending-2026-11-01.md",
+        f"{WEEKS_FOLDER}/week-ending-2026-11-01.md",
+    )
+    mock_dbx = _mock_sunday_dbx(_sunday_listings(week_files=[existing]))
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._get_target_day", side_effect=_sunday_target),
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    add_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_add()
+    ]
+    assert add_uploads == []
+    update_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_update()
+    ]
+    assert len(update_uploads) == 1
+    journal_yaml = yaml.safe_load(
+        update_uploads[0].args[0].decode("utf-8").split("---", 2)[1]
+    )
+    assert journal_yaml["Weeks"] == ["[[week-ending-2026-11-01]]"]
+

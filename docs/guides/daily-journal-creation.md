@@ -8,7 +8,7 @@ Three staggered jobs run every evening in `SYSTEM_TIMEZONE` (default `America/Lo
 
 1. **18:00** `create_daily_journal` — copy `_Templates/daily-templates/daily_note_properties.md` into `_Daily/_Journal/{Mon D, YYYY}.md`
 2. **18:05** `create_daily_action` — create `DA YYYY-MM-DD.md` with YAML links to journal, weekly cycle, long cycle, and weekly map
-3. **18:10** `update_daily_journal_properties` — rewrite tomorrow's journal frontmatter with those same relationship links, plus Day of Week, Date, Daily Action, On this Day, Previous Day, and Next Day
+3. **18:10** `update_daily_journal_properties` — rewrite tomorrow's journal frontmatter with those same relationship links, plus Day of Week, Date, Daily Action, On this Day, Previous Day, and Next Day. If the Week-Ending note for that journal's week is missing under `02_Weekly/_Weeks`, this job creates it (same template as `create_weeks`) and then links `Weeks`.
 
 Default mode creates **tomorrow's** files, so they exist before midnight. All three skip work if the target file already exists (journal/action) or if the journal is missing (properties). Safe to re-run.
 
