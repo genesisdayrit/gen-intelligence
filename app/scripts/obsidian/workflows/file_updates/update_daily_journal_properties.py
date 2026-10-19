@@ -190,7 +190,7 @@ def _find_folder_in_path(dbx: dropbox.Dropbox, base_path: str, search_term: str)
     for entry in entries:
         if isinstance(entry, dropbox.files.FolderMetadata):
             if search_term.lower() in entry.name.lower():
-                return entry.path_lower
+                return getattr(entry, "path_display", None) or entry.path_lower
     logger.warning(f"No folder containing '{search_term}' found in '{base_path}'.")
     return None
 
@@ -311,7 +311,32 @@ def _get_dynamic_mappings(dbx: dropbox.Dropbox, vault_path: str, use_today: bool
         result = _process_mapping(dbx, mapping, vault_path)
         if result:
             dynamic_mappings[result["key"]] = result["relationship"]
+        elif mapping["key"] == "Weeks":
+            stem = _ensure_missing_week_ending(dbx, vault_path, week_ending)
+            if stem:
+                dynamic_mappings["Weeks"] = f"[[{stem}]]"
     return dynamic_mappings
+
+
+def _ensure_missing_week_ending(
+    dbx: dropbox.Dropbox, vault_path: str, week_ending: str
+) -> str | None:
+    """Create the target journal's Week-Ending note when the lookup missed.
+
+    Uses the same create_weeks template and rev-safe Dropbox create for
+    that specific Sunday (the week containing the journal date), not the
+    scheduled "next Monday's week" target.
+    """
+    from scripts.obsidian.workflows.file_creation.create_weeks import (
+        ensure_week_ending_file,
+    )
+
+    logger.warning(
+        "Week-Ending file for %s not found; creating it so the journal can link Weeks.",
+        week_ending,
+    )
+    week_ending_date = datetime.strptime(week_ending, "%Y-%m-%d")
+    return ensure_week_ending_file(dbx, vault_path, week_ending_date)
 
 
 # ===== YAML Metadata =====

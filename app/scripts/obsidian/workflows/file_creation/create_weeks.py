@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Create weekly summary file in Obsidian vault via Dropbox.
 
-Creates a Week-Ending file for the upcoming Sunday with dataview queries
-linking journal entries, outgoing/incoming links, and categorized content.
-Skips creation if the file already exists.
+Creates a Week-Ending file for the Sunday that ends the week starting the
+next Monday (never this week's Sunday). Dataview queries link journal
+entries, outgoing/incoming links, and categorized content. Skips creation
+if the file already exists (case-insensitive).
+
+Scheduled Saturday 02:40 ``SYSTEM_TZ`` so the note exists before Sunday
+18:10 ``update_daily_journal_properties`` fills Monday's ``Weeks`` link.
+``ensure_week_ending_file`` can also create a specific week's note when
+that job self-heals a missing lookup.
 
 Usage:
     python -m scripts.obsidian.workflows.file_creation.create_weeks
@@ -13,13 +19,15 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import dropbox
 import pytz
 import redis
 import requests
 from dotenv import load_dotenv
+
+from services.obsidian.utils.dropbox_rev_safe import create_or_defer
 
 load_dotenv()
 
@@ -72,13 +80,78 @@ def _get_dropbox_client() -> dropbox.Dropbox:
     return dropbox.Dropbox(access_token)
 
 
+def _folder_path_display(entry: dropbox.files.FolderMetadata) -> str:
+    """Prefer Dropbox path_display so creates keep vault casing."""
+    return getattr(entry, "path_display", None) or entry.path_lower
+
+
+def _list_folder_entries(dbx: dropbox.Dropbox, folder_path: str) -> list:
+    """List all entries in a Dropbox folder, handling pagination."""
+    entries = []
+    result = dbx.files_list_folder(folder_path)
+    entries.extend(result.entries)
+    while result.has_more:
+        result = dbx.files_list_folder_continue(result.cursor)
+        entries.extend(result.entries)
+    return entries
+
+
 def _find_weekly_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
-    """Find folder ending with '_Weekly' in the vault."""
-    result = dbx.files_list_folder(vault_path)
-    for entry in result.entries:
+    """Find folder ending with '_Weekly' in the vault (path_display)."""
+    for entry in _list_folder_entries(dbx, vault_path):
         if isinstance(entry, dropbox.files.FolderMetadata) and entry.name.endswith("_Weekly"):
-            return entry.path_lower
+            return _folder_path_display(entry)
     raise FileNotFoundError("Could not find a folder ending with '_Weekly' in Dropbox")
+
+
+def _resolve_weeks_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
+    """Return the ``_Weeks`` folder path_display under ``*_Weekly``."""
+    weekly_folder_path = _find_weekly_folder(dbx, vault_path)
+    for entry in _list_folder_entries(dbx, weekly_folder_path):
+        if isinstance(entry, dropbox.files.FolderMetadata) and entry.name.endswith("_Weeks"):
+            return _folder_path_display(entry)
+    raise FileNotFoundError("'_Weeks' subfolder not found")
+
+
+def _as_datetime(value: datetime | date) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.combine(value, datetime.min.time())
+
+
+def _stem(filename: str) -> str:
+    if filename.lower().endswith(".md"):
+        return filename[:-3]
+    return filename
+
+
+def _now() -> datetime:
+    return datetime.now(pytz.timezone(timezone_str))
+
+
+def next_week_ending_sunday(now: datetime) -> datetime:
+    """Sunday that ends the week starting the next Monday.
+
+    Next Monday is never ``now``'s date: a Monday run still targets the
+    following week. Saturday 2026-10-24 and Sunday 2026-10-25 both yield
+    2026-11-01 — the same file a Sunday-23:00 run on Oct 25 would create.
+    """
+    days_until_next_monday = (0 - now.weekday()) % 7
+    if days_until_next_monday == 0:
+        days_until_next_monday = 7
+    next_monday = now + timedelta(days=days_until_next_monday)
+    return next_monday + timedelta(days=6)
+
+
+def _find_existing_week_filename(
+    dbx: dropbox.Dropbox, weeks_folder_path: str, file_name: str
+) -> str | None:
+    """Return the on-disk filename if a Week-Ending note exists (case-insensitive)."""
+    target = file_name.lower()
+    for entry in _list_folder_entries(dbx, weeks_folder_path):
+        if isinstance(entry, dropbox.files.FileMetadata) and entry.name.lower() == target:
+            return entry.name
+    return None
 
 
 def _format_date_short(dt: datetime) -> str:
@@ -166,10 +239,67 @@ SORT file.mtime DESC
     return content
 
 
-def create_weeks() -> bool:
-    """Create a weekly summary file in the Obsidian vault.
+def ensure_week_ending_file(
+    dbx: dropbox.Dropbox,
+    vault_path: str,
+    week_ending: datetime | date,
+) -> str | None:
+    """Create ``Week-Ending-YYYY-MM-DD.md`` for ``week_ending`` if missing.
 
-    Creates a Week-Ending file for the next upcoming Sunday.
+    Uses the on-disk ``path_display`` of ``*_Weekly/_Weeks`` so the upload
+    path keeps vault casing. Checks existence case-insensitively before a
+    rev-safe ``WriteMode.add`` create. Returns the wikilink stem (filename
+    without ``.md``), preserving existing casing when the file is already
+    there. ``None`` on error.
+    """
+    sunday = _as_datetime(week_ending)
+    monday = sunday - timedelta(days=6)
+    file_name = f"Week-Ending-{sunday.strftime('%Y-%m-%d')}.md"
+
+    try:
+        weeks_folder_path = _resolve_weeks_folder(dbx, vault_path)
+    except FileNotFoundError as e:
+        logger.error("Error: %s", e)
+        return None
+
+    existing_name = _find_existing_week_filename(dbx, weeks_folder_path, file_name)
+    if existing_name:
+        logger.info(
+            "File '%s' already exists in Dropbox. Skipping creation.",
+            existing_name,
+        )
+        return _stem(existing_name)
+
+    upload_path = f"{weeks_folder_path}/{file_name}"
+    logger.info("File '%s' does not exist in Dropbox. Creating it now.", file_name)
+    file_content = _build_week_content(monday, sunday)
+    created = create_or_defer(
+        dbx,
+        upload_path,
+        file_content,
+        defer={
+            "source": "create_weeks",
+            "kind": "week_ending",
+            "payload_ref": file_name,
+            "target": upload_path,
+        },
+    )
+    if not created:
+        # Race: another writer created the path. Link the existing note.
+        existing_name = _find_existing_week_filename(dbx, weeks_folder_path, file_name)
+        if existing_name:
+            return _stem(existing_name)
+        logger.warning("Could not create or find week-ending file '%s'.", file_name)
+        return None
+
+    logger.info("Successfully created file '%s' with content in Dropbox.", file_name)
+    return _stem(file_name)
+
+
+def create_weeks() -> bool:
+    """Create the next Week-Ending summary file in the Obsidian vault.
+
+    Target is the Sunday that ends the week starting the next Monday.
 
     Returns:
         True if the file was created or already exists, False on error.
@@ -181,46 +311,9 @@ def create_weeks() -> bool:
 
     try:
         dbx = _get_dropbox_client()
-        weekly_folder_path = _find_weekly_folder(dbx, dropbox_vault_path)
-        weekly_notes_folder_path = f"{weekly_folder_path}/_Weeks"
-
-        # Verify _Weeks folder exists
-        try:
-            dbx.files_get_metadata(weekly_notes_folder_path)
-        except dropbox.exceptions.ApiError as e:
-            if isinstance(e.error, dropbox.files.GetMetadataError):
-                raise FileNotFoundError("'_Weeks' subfolder not found")
-            raise
-
-        # Calculate the nearest upcoming Sunday
-        system_tz = pytz.timezone(timezone_str)
-        today = datetime.now(system_tz)
-        days_until_sunday = (6 - today.weekday()) % 7
-        if days_until_sunday == 0:
-            days_until_sunday = 7
-        upcoming_sunday = today + timedelta(days=days_until_sunday)
-        preceding_monday = upcoming_sunday - timedelta(days=6)
-
-        formatted_sunday = upcoming_sunday.strftime("%Y-%m-%d")
-        file_name = f"Week-Ending-{formatted_sunday}.md"
-        dropbox_file_path = f"{weekly_notes_folder_path}/{file_name}"
-
-        # Check if file already exists
-        try:
-            dbx.files_get_metadata(dropbox_file_path)
-            logger.info(f"File '{file_name}' already exists in Dropbox. Skipping creation.")
-            return True
-        except dropbox.exceptions.ApiError as e:
-            if not isinstance(e.error, dropbox.files.GetMetadataError):
-                raise
-
-        # File doesn't exist — create it
-        logger.info(f"File '{file_name}' does not exist in Dropbox. Creating it now.")
-        file_content = _build_week_content(preceding_monday, upcoming_sunday)
-        dbx.files_upload(file_content.encode('utf-8'), dropbox_file_path)
-        logger.info(f"Successfully created file '{file_name}' with content in Dropbox.")
-        return True
-
+        target_sunday = next_week_ending_sunday(_now())
+        stem = ensure_week_ending_file(dbx, dropbox_vault_path, target_sunday)
+        return stem is not None
     except FileNotFoundError as e:
         logger.error(f"Error: {e}")
         return False

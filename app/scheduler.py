@@ -515,10 +515,14 @@ SCHEDULED_JOBS = [
         "name": "Create Week-Ending Page",
         "func": _create_weeks,
         # crontab_generation.py: 0 6 * * 1 (commented Mon 1:00am CT / CDT).
+        # Sat 02:40 so next week's Week-Ending note exists before Sunday
+        # 18:10 update_daily_journal_properties (Monday's Weeks link).
+        # Avoids Sat 04:00 cycle/cooling, */15 jobs, 5/20/35/50 Spotify,
+        # and :12 reconcile.
         "trigger": CronTrigger(
-            day_of_week="sun",
-            hour=23,
-            minute=0,
+            day_of_week="sat",
+            hour=2,
+            minute=40,
             timezone=SYSTEM_TZ,
         ),
     },
