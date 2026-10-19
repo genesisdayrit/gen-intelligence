@@ -22,6 +22,12 @@ from scripts.obsidian.workflows.file_creation import create_weeks as mod
 MODULE = "scripts.obsidian.workflows.file_creation.create_weeks"
 LA = pytz.timezone("America/Los_Angeles")
 VAULT = "/test/vault"
+
+
+@pytest.fixture(autouse=True)
+def _pin_vault_path(monkeypatch):
+    """Full-suite imports may have set DROPBOX_OBSIDIAN_VAULT_PATH first."""
+    monkeypatch.setenv("DROPBOX_OBSIDIAN_VAULT_PATH", VAULT)
 WEEKLY = "/test/vault/02_Weekly"
 WEEKS = "/test/vault/02_Weekly/_Weeks"
 WEEK_FILE = f"{WEEKS}/Week-Ending-2026-11-01.md"

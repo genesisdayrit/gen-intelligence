@@ -312,8 +312,9 @@ def _mock_sunday_dbx(listings):
     return mock_dbx
 
 
-def test_sunday_1810_self_heals_missing_week_ending_and_links_monday_journal():
+def test_sunday_1810_self_heals_missing_week_ending_and_links_monday_journal(monkeypatch):
     """Sunday 18:10 PT, no week note yet → Monday journal gets Weeks once."""
+    monkeypatch.setenv("DROPBOX_OBSIDIAN_VAULT_PATH", VAULT)
     listings = _sunday_listings()
     mock_dbx = _mock_sunday_dbx(listings)
 
@@ -350,8 +351,9 @@ def test_sunday_1810_self_heals_missing_week_ending_and_links_monday_journal():
     assert journal_yaml["Day of Week"] == "Monday"
 
 
-def test_sunday_1810_does_not_recreate_existing_week_ending_note():
+def test_sunday_1810_does_not_recreate_existing_week_ending_note(monkeypatch):
     """If the week note already exists (any casing), do not create a duplicate."""
+    monkeypatch.setenv("DROPBOX_OBSIDIAN_VAULT_PATH", VAULT)
     existing = _file_meta(
         "week-ending-2026-11-01.md",
         f"{WEEKS_FOLDER}/week-ending-2026-11-01.md",
