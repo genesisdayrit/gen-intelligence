@@ -37,6 +37,8 @@ from services.obsidian.add_readwise_buffet import (
     BOOKMARKED_TWEETS_HEADER,
     preferred_knowledge_hub_title,
     _ensure_tweet_page_people,
+    _ensure_tweet_page_x_profile,
+    _handle_from_tweet_page,
     _format_article_page_bullet,
     _format_book_page_bullet,
     _format_tweet_page_bullet,
@@ -2412,11 +2414,14 @@ def test_new_tweet_page_markdown_is_minimal():
     )
     assert markdown.startswith("---\ntitle: \"Tweets from @georgiedorothea\"\n")
     assert '  - "[[@georgiedorothea]]"' in markdown
+    assert 'X Profile: "https://x.com/georgiedorothea"' in markdown
+    assert markdown.index("People:") < markdown.index('X Profile: "https://x.com/georgiedorothea"')
     assert "# Tweets from @georgiedorothea" in markdown
     assert BOOKMARKED_TWEETS_HEADER in markdown
     assert '- "quote" ([Link](https://readwise.io/open/954480))' in markdown
     frontmatter, _body = _extract_frontmatter(markdown)
     assert frontmatter["People"] == ["[[@georgiedorothea]]"]
+    assert frontmatter["X Profile"] == "https://x.com/georgiedorothea"
     assert "Journal:" not in markdown
     assert "[[Tweets from @georgiedorothea]]" not in markdown
     assert "_People/" not in markdown
@@ -2441,6 +2446,7 @@ def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
     ) in journal
     page = store[TWEET_PAGE_PATH]
     assert 'title: "Tweets from @georgiedorothea"' in page
+    assert 'X Profile: "https://x.com/georgiedorothea"' in page
     assert "# Tweets from @georgiedorothea" in page
     assert BOOKMARKED_TWEETS_HEADER in page
     assert (
@@ -2450,6 +2456,7 @@ def test_tweet_highlight_creates_handle_page_with_bookmarked_section():
     assert "- [[Tweets from @georgiedorothea]]:" not in page
     frontmatter, _body = _extract_frontmatter(page)
     assert frontmatter["People"] == ["[[@georgiedorothea]]"]
+    assert frontmatter["X Profile"] == "https://x.com/georgiedorothea"
     assert not any("_People/" in item["path"] for item in uploaded)
     assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
 
@@ -2892,7 +2899,187 @@ def test_new_tweet_page_yaml_people_is_share_link_wikilink_list():
     )
     frontmatter, _body = _extract_frontmatter(markdown)
     assert frontmatter["People"] == ["[[@InternetH0F]]"]
+    assert frontmatter["X Profile"] == "https://x.com/InternetH0F"
     assert '  - "[[@InternetH0F]]"' in markdown
+    assert 'X Profile: "https://x.com/InternetH0F"' in markdown
+    people_at = markdown.index('  - "[[@InternetH0F]]"')
+    profile_at = markdown.index('X Profile: "https://x.com/InternetH0F"')
+    assert people_at < profile_at
+
+
+def test_new_tweet_page_yaml_includes_x_profile_after_people():
+    markdown = _new_tweet_page_markdown(
+        "Tweets from @poteto",
+        '- "quote" ([Link](https://readwise.io/open/1))',
+        "poteto",
+    )
+    assert markdown == (
+        "---\n"
+        'title: "Tweets from @poteto"\n'
+        "People:\n"
+        '  - "[[@poteto]]"\n'
+        'X Profile: "https://x.com/poteto"\n'
+        "---\n"
+        "\n"
+        "# Tweets from @poteto\n"
+        "\n"
+        f"{BOOKMARKED_TWEETS_HEADER}\n"
+        '- "quote" ([Link](https://readwise.io/open/1))\n'
+    )
+
+
+def test_ensure_tweet_page_x_profile_inserts_after_people_preserves_yaml_and_body():
+    content = """---
+title: "Tweets from @poteto"
+People:
+  - "[[@poteto]]"
+
+Journal:
+  - "[[Oct 8, 2026]]"
+---
+
+# Tweets from @poteto
+
+Kept body exactly.
+"""
+    updated = _ensure_tweet_page_x_profile(content, "poteto")
+    assert updated == """---
+title: "Tweets from @poteto"
+People:
+  - "[[@poteto]]"
+X Profile: "https://x.com/poteto"
+
+Journal:
+  - "[[Oct 8, 2026]]"
+---
+
+# Tweets from @poteto
+
+Kept body exactly.
+"""
+    again = _ensure_tweet_page_x_profile(updated, "poteto")
+    assert again == updated
+    assert again.count("X Profile:") == 1
+
+
+def test_ensure_tweet_page_x_profile_is_idempotent_when_present():
+    content = """---
+title: "Tweets from @georgiedorothea"
+People:
+  - "[[@georgiedorothea]]"
+X Profile: "https://x.com/georgiedorothea"
+---
+
+# Tweets from @georgiedorothea
+"""
+    assert _ensure_tweet_page_x_profile(content, "georgiedorothea") == content
+
+
+def test_ensure_tweet_page_x_profile_keeps_title_handle_casing():
+    content = """---
+title: "Tweets from @InternetH0F"
+People:
+  - "[[@InternetH0F]]"
+---
+
+# Tweets from @InternetH0F
+"""
+    handle = _handle_from_tweet_page(
+        content,
+        path=f"{KH_FOLDER}/Tweets from @InternetH0F.md",
+        fallback="interneth0f",
+    )
+    assert handle == "InternetH0F"
+    updated = _ensure_tweet_page_x_profile(content, handle)
+    assert 'X Profile: "https://x.com/InternetH0F"' in updated
+    assert "https://x.com/interneth0f" not in updated
+    assert _ensure_tweet_page_x_profile(updated, handle) == updated
+
+
+def test_existing_tweet_page_missing_x_profile_gets_it_on_next_bookmark():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @georgiedorothea"
+People:
+  - "[[@georgiedorothea]]"
+
+Journal:
+  - "[[Oct 8, 2026]]"
+---
+
+# Tweets from @georgiedorothea
+
+Kept body.
+
+### Bookmarked Tweets
+- "old" ([Link](https://readwise.io/open/1))
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        TWEET_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_tweet_highlight(), now=now)
+
+    assert result["success"] is True
+    page = store[TWEET_PAGE_PATH]
+    assert 'X Profile: "https://x.com/georgiedorothea"' in page
+    assert page.count("X Profile:") == 1
+    people_at = page.index("People:")
+    profile_at = page.index('X Profile: "https://x.com/georgiedorothea"')
+    journal_at = page.index("Journal:")
+    assert people_at < profile_at < journal_at
+    assert '  - "[[@georgiedorothea]]"' in page
+    assert '  - "[[Oct 8, 2026]]"' in page
+    assert "Kept body." in page
+    assert "old" in page
+    assert any(item["path"] == TWEET_PAGE_PATH for item in uploaded)
+
+
+def test_existing_tweet_page_x_profile_not_duplicated():
+    clear_book_cache()
+    existing = """---
+title: "Tweets from @InternetH0F"
+People:
+  - "[[@InternetH0F]]"
+X Profile: "https://x.com/InternetH0F"
+---
+
+# Tweets from @InternetH0F
+
+Body stays.
+
+### Bookmarked Tweets
+- "old" ([Link](https://readwise.io/open/1))
+"""
+    page_path = f"{KH_FOLDER}/Tweets from @InternetH0F.md"
+    mock_dbx, _uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        page_path: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(
+            _highlight_payload(
+                id=1047167879,
+                text=LIVE_INTERNET_HOF_TEXT,
+                title="Tweets From InternetH0F",
+                author="@InternetH0F on Twitter",
+                category="tweets",
+                source="twitter",
+                source_url="https://twitter.com/interneth0f",
+            ),
+            now=now,
+        )
+
+    assert result["success"] is True
+    page = store[page_path]
+    assert page.count("X Profile:") == 1
+    assert 'X Profile: "https://x.com/InternetH0F"' in page
+    assert "https://x.com/interneth0f" not in page
+    assert "Body stays." in page
+    assert "old" in page
 
 
 def test_existing_tweet_page_missing_people_gets_link_on_next_bookmark():

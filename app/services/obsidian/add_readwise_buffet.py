@@ -84,6 +84,10 @@ _book_cache: dict[str, dict | None] = {}
 _AUTHOR_TWITTER_SUFFIX = re.compile(r"\s+on twitter\s*$", re.I)
 _AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
 _TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
+_TWEETS_FROM_AT_TITLE = re.compile(r"^tweets from @(.+)$", re.I)
+_X_PROFILE_KEY = re.compile(r"^X Profile\s*:")
+_PEOPLE_KEY = re.compile(r"^People\s*:")
+_TITLE_KEY = re.compile(r"^title\s*:", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
 
 # Same image-embed rules as the journal tweet strip (separate PR). Used
@@ -1530,18 +1534,199 @@ def _ensure_tweet_page_people(content: str, handle: str) -> str:
     return _rebuild_markdown(frontmatter, body)
 
 
+def _strip_yaml_scalar_quotes(text: str) -> str:
+    stripped = text.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in {'"', "'"}:
+        return stripped[1:-1].strip()
+    return stripped
+
+
+def _tweets_from_handle_label(label: str | None) -> str | None:
+    """Handle from ``Tweets from @{handle}`` (title or filename). Casing kept."""
+    text = _nonempty(label)
+    if not text:
+        return None
+    if text.lower().endswith(".md"):
+        text = text[:-3].strip()
+    match = _TWEETS_FROM_AT_TITLE.match(text)
+    if not match:
+        return None
+    handle = match.group(1).strip()
+    handle = handle.lstrip("@").strip()
+    return handle or None
+
+
+def _tweet_x_profile_url(handle: str) -> str:
+    """``https://x.com/{handle}`` — handle without ``@``."""
+    return f"https://x.com/{handle.lstrip('@')}"
+
+
+def _tweet_x_profile_yaml_line(handle: str) -> str:
+    return f'X Profile: "{_tweet_x_profile_url(handle)}"'
+
+
+def _handle_from_people_entry(entry: object) -> str | None:
+    """Handle from a People / author value using ``_AUTHOR_HANDLE``."""
+    text = str(entry).strip()
+    if text.startswith("[[") and text.endswith("]]"):
+        text = text[2:-2].strip()
+        if "|" in text:
+            text = text.split("|", 1)[0].strip()
+    match = _AUTHOR_HANDLE.search(text)
+    if match:
+        return match.group(1)
+    if text.startswith("@"):
+        token = text[1:].strip()
+        return token or None
+    return None
+
+
+def _handle_from_tweet_page(
+    content: str,
+    *,
+    path: str | None = None,
+    fallback: str | None = None,
+) -> str | None:
+    """Prefer title/filename casing, then author/URL helpers, then ``fallback``.
+
+    Title ``Tweets from @InternetH0F`` keeps ``InternetH0F`` even when a
+    source URL path is lowercased. Uses ``_tweet_handle`` /
+    ``_twitter_handle_from_url`` / ``_AUTHOR_HANDLE`` for YAML author and URL.
+    """
+    from services.obsidian.add_shared_link import _extract_frontmatter
+
+    frontmatter, _body = _extract_frontmatter(content)
+    title = frontmatter.get("title")
+    if isinstance(title, str):
+        handle = _tweets_from_handle_label(_strip_yaml_scalar_quotes(title))
+        if handle:
+            return handle
+
+    lines = content.split("\n")
+    body_start = _frontmatter_body_start(lines)
+    if body_start > 0:
+        for line in lines[1 : body_start - 1]:
+            match = _TITLE_KEY.match(line)
+            if not match:
+                continue
+            raw = _strip_yaml_scalar_quotes(line.split(":", 1)[1])
+            handle = _tweets_from_handle_label(raw)
+            if handle:
+                return handle
+
+    if path:
+        handle = _tweets_from_handle_label(path.rsplit("/", 1)[-1])
+        if handle:
+            return handle
+
+    source_url = None
+    for key in ("source_url", "URL", "url"):
+        source_url = _http_url(frontmatter.get(key))
+        if source_url:
+            break
+    book = {
+        "title": title if isinstance(title, str) else None,
+        "author": frontmatter.get("author"),
+        "source_url": source_url,
+        "category": "tweets",
+    }
+    handle = _tweet_handle(book) or _twitter_handle_from_url(source_url)
+    if handle:
+        return handle
+
+    for item in _people_list(frontmatter.get("People")):
+        handle = _handle_from_people_entry(item)
+        if handle:
+            return handle
+
+    if fallback:
+        token = fallback.lstrip("@").strip()
+        return token or None
+    return None
+
+
+def _yaml_has_x_profile(yaml_lines: list[str]) -> bool:
+    return any(_X_PROFILE_KEY.match(line) for line in yaml_lines)
+
+
+def _is_yaml_block_continuation(line: str) -> bool:
+    """True for indented YAML or a top-level list item (``yaml.dump`` style)."""
+    if not line.strip():
+        return False
+    if line[0] in " \t":
+        return True
+    stripped = line.lstrip()
+    return stripped.startswith("-")
+
+
+def _people_block_insert_index(yaml_lines: list[str]) -> int | None:
+    """Index immediately after the People block, or None if People is missing."""
+    people_idx = None
+    for index, line in enumerate(yaml_lines):
+        if _PEOPLE_KEY.match(line):
+            people_idx = index
+            break
+    if people_idx is None:
+        return None
+    after_colon = yaml_lines[people_idx].split(":", 1)[1].strip()
+    if after_colon:
+        return people_idx + 1
+    index = people_idx + 1
+    while index < len(yaml_lines) and _is_yaml_block_continuation(yaml_lines[index]):
+        index += 1
+    return index
+
+
+def _title_block_insert_index(yaml_lines: list[str]) -> int:
+    """Index after ``title``, else the start of YAML."""
+    for index, line in enumerate(yaml_lines):
+        if _TITLE_KEY.match(line):
+            return index + 1
+    return 0
+
+
+def _ensure_tweet_page_x_profile(content: str, handle: str | None) -> str:
+    """Insert ``X Profile`` after People when missing. Other YAML/body stay put.
+
+    Surgical line insert — does not parse-and-dump YAML. Idempotent: an
+    existing ``X Profile`` key is left unchanged (no duplicate).
+    """
+    token = (handle or "").lstrip("@").strip()
+    if not token:
+        return content
+    lines = content.split("\n")
+    body_start = _frontmatter_body_start(lines)
+    if body_start <= 0:
+        return content
+    yaml_start = 1
+    yaml_end = body_start - 1
+    yaml_lines = lines[yaml_start:yaml_end]
+    if _yaml_has_x_profile(yaml_lines):
+        return content
+    insert_at = _people_block_insert_index(yaml_lines)
+    if insert_at is None:
+        insert_at = _title_block_insert_index(yaml_lines)
+    updated_yaml = (
+        yaml_lines[:insert_at] + [_tweet_x_profile_yaml_line(token)] + yaml_lines[insert_at:]
+    )
+    return "\n".join(lines[:yaml_start] + updated_yaml + lines[yaml_end:])
+
+
 def _new_tweet_page_markdown(title: str, bullet: str, handle: str) -> str:
-    """Minimal handle page: YAML title + People, H1, Bookmarked Tweets, first bullet.
+    """Minimal handle page: YAML title + People + X Profile, H1, first bullet.
 
     People is a list of wikilinks, same shape share-link uses
     (``People: ["[[@handle]]"]`` / block list of ``[[name]]`` items).
+    ``X Profile`` is a quoted ``https://x.com/{handle}`` (no ``@``).
     """
     people_link = _tweet_people_wikilink(handle)
+    profile_handle = handle.lstrip("@")
     return (
         f"---\n"
         f'title: "{title}"\n'
         f"People:\n"
         f'  - "{people_link}"\n'
+        f"{_tweet_x_profile_yaml_line(profile_handle)}\n"
         f"---\n"
         f"\n"
         f"# {title}\n"
@@ -2464,6 +2649,10 @@ def _append_tweet_page(
         def apply(content: str) -> tuple[str | None, str]:
             updated, action = insert_bookmarked_tweets_bullet(content, bullet, keys)
             updated = _ensure_tweet_page_people(updated, handle)
+            profile_handle = _handle_from_tweet_page(
+                updated, path=existing.path, fallback=handle
+            )
+            updated = _ensure_tweet_page_x_profile(updated, profile_handle or handle)
             if updated == content:
                 return None, action
             return updated, action
@@ -2479,7 +2668,7 @@ def _append_tweet_page(
             return "deferred"
         if status == "updated":
             if action == "skipped":
-                logger.info("Tweet page people backfill path=%s", existing.path)
+                logger.info("Tweet page yaml backfill path=%s", existing.path)
             else:
                 logger.info("Tweet page %s path=%s", action, existing.path)
         elif action == "skipped":
