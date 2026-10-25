@@ -1560,29 +1560,26 @@ def test_parent_document_create_mirrors_page_url_to_raindrop():
     assert "readwise.io/open" not in mock_bookmark.call_args.args[0]
 
 
-def test_same_day_document_skip_still_attempts_raindrop():
+@pytest.mark.parametrize("action", ["skipped", "updated"])
+def test_reader_kh_reuse_skips_raindrop(action):
+    """Reconcile replay / reused notes must not POST another Raindrop bookmark."""
     payload = _reader_payload()
     with patch(
         "services.obsidian.add_readwise_buffet._create_shared_link",
         return_value={
             "success": True,
-            "action": "skipped",
+            "action": action,
             "error": None,
             "file_path": "_Knowledge-Hub/x.md",
         },
     ), patch(
         "services.obsidian.add_readwise_buffet.create_bookmark",
-        return_value={"success": False, "bookmark_id": None, "error": "duplicate url"},
     ) as mock_bookmark:
         result = append_readwise_buffet(payload)
 
     assert result["success"] is True
-    assert result["action"] == "skipped"
-    mock_bookmark.assert_called_once_with(
-        "https://www.theverge.com/black-friday",
-        payload["title"],
-        "A sale.",
-    )
+    assert result["action"] == action
+    mock_bookmark.assert_not_called()
 
 
 def test_highlight_does_not_mirror_to_raindrop():
