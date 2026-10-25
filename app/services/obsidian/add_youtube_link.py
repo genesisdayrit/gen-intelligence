@@ -60,8 +60,6 @@ YOUTUBE_CHANNEL_PATTERNS = [
 ]
 
 YOUTUBE_OEMBED_URL = "https://www.youtube.com/oembed"
-SUPADATA_API_URL = "https://api.supadata.ai/v1/youtube/video"
-SUPADATA_TRANSCRIPT_URL = "https://api.supadata.ai/v1/youtube/transcript"
 # Skip summarization if transcript is too short to be meaningful (~100 tokens)
 MIN_TRANSCRIPT_CHARS = 400
 # Sentinel so add_youtube_link can reuse a prefetched transcript (including None)
@@ -212,83 +210,33 @@ def _extract_video_id(url: str) -> str | None:
     return None
 
 
-def _fetch_video_metadata_supadata(client: httpx.Client, video_id: str) -> dict | None:
-    """Fetch video metadata from Supadata API.
+def _fetch_video_metadata_ytdlp(video_id: str) -> dict | None:
+    """Fetch video metadata via yt-dlp through the Oxylabs proxy pool.
 
     Returns dict with title, author_name, description on success, or None on failure.
     """
-    api_key = os.getenv("SUPADATA_API_KEY")
-    if not api_key:
-        logger.warning("SUPADATA_API_KEY not set, cannot fetch video metadata")
-        return None
+    from services.youtube.proxy_pool import redact_secrets
+    from services.youtube.ytdlp_client import fetch_metadata
 
     try:
-        response = client.get(
-            SUPADATA_API_URL,
-            params={"id": video_id},
-            headers={"x-api-key": api_key},
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "title": data.get("title"),
-                "author_name": data.get("channel", {}).get("name"),
-                "description": data.get("description"),
-            }
-        else:
-            logger.warning(
-                "Supadata API returned %s for video %s",
-                response.status_code,
-                video_id,
-            )
-            return None
-
-    except httpx.RequestError as e:
-        logger.warning("Supadata API request failed for video %s: %s", video_id, e)
+        return fetch_metadata(video_id)
+    except Exception as e:
+        logger.warning("yt-dlp metadata failed for video %s: %s", video_id, redact_secrets(e))
         return None
 
 
 def _fetch_transcript(video_id: str) -> str | None:
-    """Fetch video transcript from Supadata API.
+    """Fetch video transcript via yt-dlp captions (same proxy as metadata).
 
     Returns the full transcript as a single string, or None if unavailable.
     """
-    api_key = os.getenv("SUPADATA_API_KEY")
-    if not api_key:
-        logger.warning("SUPADATA_API_KEY not set, cannot fetch transcript")
-        return None
+    from services.youtube.proxy_pool import redact_secrets
+    from services.youtube.ytdlp_client import fetch_transcript
 
     try:
-        with httpx.Client(timeout=15.0) as client:
-            response = client.get(
-                SUPADATA_TRANSCRIPT_URL,
-                params={"videoId": video_id, "lang": "en"},
-                headers={"x-api-key": api_key},
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                segments = data.get("content", [])
-                if not segments:
-                    logger.info("Transcript returned empty content for video %s", video_id)
-                    return None
-                transcript = " ".join(seg.get("text", "") for seg in segments)
-                return transcript.strip() or None
-
-            elif response.status_code == 404:
-                logger.info("No transcript available for video %s", video_id)
-                return None
-            else:
-                logger.info(
-                    "Supadata transcript API returned %s for video %s",
-                    response.status_code,
-                    video_id,
-                )
-                return None
-
-    except httpx.RequestError as e:
-        logger.warning("Transcript fetch failed for video %s: %s", video_id, e)
+        return fetch_transcript(video_id)
+    except Exception as e:
+        logger.warning("Transcript fetch failed for video %s: %s", video_id, redact_secrets(e))
         return None
 
 
@@ -312,7 +260,13 @@ def fetch_youtube_transcript(url: str) -> str | None:
         transcript = str(transcript).strip()
         return transcript or None
     except Exception as e:
-        logger.warning("Transcript fetch failed for YouTube share %s: %s", url[:100], e)
+        from services.youtube.proxy_pool import redact_secrets
+
+        logger.warning(
+            "Transcript fetch failed for YouTube share %s: %s",
+            url[:100],
+            redact_secrets(e),
+        )
         return None
 
 
@@ -429,9 +383,9 @@ def _chunked_summary(client: OpenAI, transcript: str, video_title: str) -> str |
 
 
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video/channel metadata from Supadata API (videos) or page scraping (channels).
+    """Fetch video/channel metadata from yt-dlp (videos) or page scraping (channels).
 
-    Falls back to YouTube oEmbed + page scraping if Supadata is unavailable.
+    Falls back to YouTube oEmbed + page scraping if the proxy pool fails.
 
     Returns:
         dict with keys: title, author_name, description (may be None if fetch fails)
@@ -440,14 +394,14 @@ def fetch_youtube_metadata(url: str) -> dict:
 
     try:
         with httpx.Client(timeout=10.0) as client:
-            # Channels: scrape page directly (Supadata doesn't support channels)
+            # Channels: scrape page directly (yt-dlp path is video-only)
             if _is_channel_url(url):
                 channel_meta = _fetch_channel_metadata(client, url)
                 result["title"] = channel_meta.get("title")
                 result["description"] = channel_meta.get("description")
                 return result
 
-            # Playlists: use oEmbed only (Supadata doesn't support playlists)
+            # Playlists: use oEmbed only
             if _is_playlist_url(url):
                 response = client.get(
                     YOUTUBE_OEMBED_URL,
@@ -459,15 +413,15 @@ def fetch_youtube_metadata(url: str) -> dict:
                     result["author_name"] = data.get("author_name")
                 return result
 
-            # Videos: use Supadata API as primary source
+            # Videos: yt-dlp through the proxy pool as the primary source
             video_id = _extract_video_id(url)
             if video_id:
-                supadata_result = _fetch_video_metadata_supadata(client, video_id)
-                if supadata_result is not None:
-                    return supadata_result
-                logger.info("Supadata failed for %s, falling back to oEmbed", url[:100])
+                ytdlp_result = _fetch_video_metadata_ytdlp(video_id)
+                if ytdlp_result is not None:
+                    return ytdlp_result
+                logger.info("yt-dlp failed for %s, falling back to oEmbed", url[:100])
 
-            # Fallback: oEmbed + page scraping (original approach)
+            # Fallback: oEmbed + page scraping
             response = client.get(
                 YOUTUBE_OEMBED_URL,
                 params={"url": url, "format": "json"},
@@ -614,8 +568,8 @@ def add_youtube_link(
         extra_frontmatter: Optional YAML keys (e.g. Reader ``readwise_id``).
         note_title: Preferred Reader list/webhook title.
         note_author: Preferred Reader author/creator.
-        transcript: Prefetched transcript text. When omitted, fetches from
-            Supadata. Pass ``None`` to skip a second fetch after a failed
+        transcript: Prefetched transcript text. When omitted, fetches via
+            yt-dlp. Pass ``None`` to skip a second fetch after a failed
             or empty lookup.
 
     Returns:
@@ -645,7 +599,7 @@ def add_youtube_link(
     timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
     try:
-        # Fetch metadata from Supadata API (with oEmbed fallback)
+        # Fetch metadata from yt-dlp (with oEmbed fallback)
         metadata = fetch_youtube_metadata(url)
         video_title = metadata["title"] or url  # Fallback to URL if title unavailable
         description = metadata["description"]

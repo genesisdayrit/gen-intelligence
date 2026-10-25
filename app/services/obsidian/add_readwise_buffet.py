@@ -517,7 +517,7 @@ def youtube_knowledge_hub_note_stem(
 
     Prefer Reader list/webhook ``title`` + a usable ``author``/``creator``.
     A site-host author (``youtube.com``) is ignored so the stem can use
-    the Supadata/oEmbed channel (``fallback_author``), same as before
+    the yt-dlp/oEmbed channel (``fallback_author``), same as before
     Reader existed. If Reader has no title yet, use the YouTube title
     and channel through the same ``reader_knowledge_hub_note_stem`` helper.
     """

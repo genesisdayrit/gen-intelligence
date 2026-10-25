@@ -384,7 +384,7 @@ def test_process_youtube_link_skips_reader_when_transcript_fetch_raises():
         "main.save_document"
     ) as mock_save, patch(
         "services.obsidian.add_youtube_link._fetch_transcript",
-        side_effect=RuntimeError("supadata down"),
+        side_effect=RuntimeError("ytdlp down"),
     ), patch("main._mirror_to_raindrop") as mock_raindrop:
         _process_youtube_link("https://www.youtube.com/watch?v=abcdefghijk")
 

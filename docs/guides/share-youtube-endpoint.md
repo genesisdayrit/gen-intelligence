@@ -2,9 +2,9 @@
 
 ## Overview
 
-The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description) from the Supadata API, with a fallback to YouTube's oEmbed API and page scraping if Supadata is unavailable.
+The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description, channel) with yt-dlp routed through an Oxylabs dedicated-ISP proxy pool, with a fallback to YouTube's oEmbed API and page scraping if the whole pool fails.
 
-It also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) when a usable transcript exists, so Genesis can highlight the video in Reader. Channels, playlists, empty/404/error transcript fetches, and whitespace-only transcripts skip Reader — Knowledge Hub, journal Content Buffet, and Raindrop still run. The Knowledge Hub filename and buffet wikilink use the same `reader_knowledge_hub_note_stem` helper as other Reader docs: `Title by Author` when author/creator exists, otherwise title-only. After a Reader save, the note prefers Reader's list title + author; if Reader is skipped or has no title yet, it falls back to the YouTube title (and channel) through that same helper. `/share/link` routes YouTube URLs through this path; regular article shares are unchanged.
+It also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) when a usable transcript exists, so Genesis can highlight the video in Reader. Channels, playlists, empty/error transcript fetches, and whitespace-only transcripts skip Reader — Knowledge Hub, journal Content Buffet, and Raindrop still run. The Knowledge Hub filename and buffet wikilink use the same `reader_knowledge_hub_note_stem` helper as other Reader docs: `Title by Author` when author/creator exists, otherwise title-only. After a Reader save, the note prefers Reader's list title + author; if Reader is skipped or has no title yet, it falls back to the YouTube title (and channel) through that same helper. `/share/link` routes YouTube URLs through this path; regular article shares are unchanged.
 
 ## Endpoint Details
 
@@ -47,6 +47,8 @@ POST /share/youtube
 | File | Purpose |
 |------|---------|
 | `app/main.py` | Endpoint definition, `YouTubeShareRequest` model, auth, URL validation, transcript gate, optional Reader save, then KH write |
+| `app/services/youtube/ytdlp_client.py` | yt-dlp extract + English caption flatten, one call at a time |
+| `app/services/youtube/proxy_pool.py` | Oxylabs ISP port pool + optional `PROXY_URLS`, 60s bench, random failover |
 | `app/services/obsidian/add_youtube_link.py` | YouTube metadata fetching, Dropbox file creation, YAML extras merge |
 | `app/services/readwise/reader.py` | `save_document` (`POST /api/v3/save/`) and `get_document` (`GET /api/v3/list/?id=`) |
 
@@ -55,8 +57,8 @@ POST /share/youtube
 1. **Authentication**: Validates `X-API-Key` header against `LINK_SHARE_API_KEY` env var
 2. **URL Validation**: Checks URL matches known YouTube patterns (returns 422 if invalid)
 3. **Background Processing**: Returns 202 immediately, processes via `BackgroundTasks`
-4. **Metadata Fetching**: Calls Supadata API for video metadata (title, description, channel name). Falls back to YouTube oEmbed + page scraping if Supadata is unavailable
-5. **Transcript Fetching**: Calls Supadata transcript API once (skipped for channels/playlists). Empty/404/error/whitespace = no transcript. This fetch is reused for the AI summary — no second Supadata transcript call.
+4. **Metadata Fetching**: Runs yt-dlp (`skip_download`, JSON info) through a random healthy Oxylabs dedicated-ISP port. A bot-walled port often returns title/channel only (no formats, no duration) plus a "Sign in to confirm you're not a bot" warning — that is treated as a failure, the port is benched for 60s, and another port is tried. If the whole pool fails, falls back to YouTube oEmbed + page scraping. Channels scrape the page; playlists use oEmbed only.
+5. **Transcript Fetching**: On the same endpoint that returned metadata, picks an English caption track (manual `en` / `en-*`, then automatic `en-orig`, then `en` / other `en-*`) and fetches json3 (or vtt) through the same proxy. Empty/error/whitespace = no transcript. This fetch is reused for the AI summary — no second yt-dlp extract when the share path already gated on it. Missing track or all ports failing returns no transcript (existing Reader-skip path).
 6. **Reader save (transcript required)**: Only when stripped transcript text exists (auto-captions count; `MIN_TRANSCRIPT_CHARS` is only for AI summary). POSTs the YouTube URL to Reader Document CREATE with `category: video` and `saved_using: gen-intelligence` (title is left for Reader to scrape). `201` (new) and `200` (already exists) are both success. Failures are logged; the KH write still happens. No transcript → skip Reader and omit `readwise_id` / `readwise_url`.
 7. **Reader list**: After a successful save, GETs `/api/v3/list/?id=` for title + author/creator. Save only returns `{id, url}`.
 8. **AI Summarization**: Sends the same transcript to OpenAI gpt-5.2 for structured summarization (skipped if transcript is missing, shorter than `MIN_TRANSCRIPT_CHARS`, or OPENAI_API_KEY is not set)
@@ -110,10 +112,16 @@ Later YouTube / Reader `category=video` highlights append `- "quote" ([Link](htt
 | `DROPBOX_REFRESH_TOKEN` | Yes | Dropbox OAuth refresh token |
 | `REDIS_HOST` | No | Redis host (default: localhost) |
 | `REDIS_PORT` | No | Redis port (default: 6379) |
-| `SUPADATA_API_KEY` | Yes | API key for Supadata YouTube metadata API |
+| `OXYLABS_ISP_HOST` | Yes (prod) | Oxylabs dedicated-ISP gateway (e.g. `isp.oxylabs.io`) |
+| `OXYLABS_ISP_USERNAME` | Yes (prod) | Oxylabs proxy username |
+| `OXYLABS_ISP_PASSWORD` | Yes (prod) | Oxylabs proxy password |
+| `OXYLABS_ISP_PORTS` | Yes (prod) | Port range (`8001-8005`) and/or list (`8001,8004`). Every port is used; rotate IPs by changing this value. |
+| `PROXY_URLS` | No | Comma-separated full proxy URLs so extra IPs/providers can rotate by config only. Empty pool (local dev) fetches YouTube directly. |
 | `OPENAI_API_KEY` | No | API key for OpenAI transcript summarization (summary skipped if not set) |
 | `READWISE_TOKEN` | Yes (for Reader save) | Readwise access token for `POST /api/v3/save/` (same token as highlight export). Missing token is logged; KH write still succeeds. |
 | `SYSTEM_TIMEZONE` | No | Timezone for dates (default: US/Eastern) |
+
+`SUPADATA_API_KEY` is unused and can be removed from the host after deploy.
 
 ## Key Functions in `add_youtube_link.py`
 
@@ -122,7 +130,7 @@ def is_valid_youtube_url(url: str) -> bool:
     """Check if URL is a valid YouTube URL."""
 
 def fetch_youtube_metadata(url: str) -> dict:
-    """Fetch video metadata from Supadata API (with oEmbed fallback).
+    """Fetch video metadata from yt-dlp (with oEmbed fallback).
     Returns: dict with keys: title, author_name, description"""
 
 def add_youtube_link(url: str) -> dict:
@@ -164,5 +172,5 @@ curl -X POST http://localhost:8000/share/youtube \
 
 - **Link sharing endpoint**: `/share/link` - Same authentication pattern, similar file format
 - **Dropbox utilities**: Reuses `_get_dropbox_client`, `_find_knowledge_hub_path`, etc. from `add_shared_link.py`
-- **Supadata API**: Primary video metadata source at `https://api.supadata.ai/v1/youtube/video`
+- **yt-dlp + Oxylabs**: Primary video metadata + transcript source (`app/services/youtube/`)
 - **oEmbed API**: YouTube's public metadata API at `https://www.youtube.com/oembed` (fallback for videos, primary for playlists)
