@@ -3720,9 +3720,10 @@ def _append_document_markdown_fallback(payload: dict, now: datetime | None = Non
     )
 
 
-# Keep the Reader debounce claim after a successful KH write (including
-# same-day skip, which still attempted Raindrop). Release on failure /
-# defer so a retry or hourly reconcile can run before the 45s TTL.
+# Keep the Reader debounce claim after a successful KH write (create,
+# update, or same-day skip). Raindrop only runs on ``created``. Release
+# on failure / defer so a retry or hourly reconcile can run before the
+# 45s TTL.
 _READER_SINGLEFLIGHT_KEEP_ACTIONS = frozenset({"created", "updated", "skipped"})
 
 
@@ -3732,9 +3733,10 @@ def _append_reader_document_knowledge_hub(
 ) -> dict:
     """Create/update a Knowledge Hub note and buffet wikilink for a parent document.
 
-    After a successful KH create or update (including same-day skip), also
-    bookmark the document page URL in Raindrop Unsorted. Raindrop errors
-    never fail the webhook or undo the KH write.
+    After a successful KH create, bookmark the document page URL in
+    Raindrop Unsorted. Reused notes (skipped / updated) do not bookmark,
+    matching ``/share/youtube``. Raindrop errors never fail the webhook
+    or undo the KH write.
 
     Same normalized URL within 45s is single-flighted: the first event
     writes + Raindrops; later arrivals no-op immediately (they do not
@@ -3803,7 +3805,10 @@ def _write_reader_document_knowledge_hub(
     extras: dict | None,
     readable_title: str | None = None,
 ) -> dict:
-    """KH + journal + Raindrop for one parent Reader document. Caller holds the lock."""
+    """KH + journal for one parent Reader document; Raindrop only on create.
+
+    Caller holds the lock.
+    """
     if not youtube_url and not stem:
         logger.info(
             "Readwise document KH skipped (empty/junk title); writing markdown fallback"
@@ -3859,8 +3864,11 @@ def _write_reader_document_knowledge_hub(
         title or result.get("title"),
         journal_date,
     )
-    bookmark_title = title or _nonempty(result.get("title"))
-    _mirror_reader_document_to_raindrop(payload, url=url or youtube_url, title=bookmark_title)
+    if result.get("action") == "created":
+        bookmark_title = title or _nonempty(result.get("title"))
+        _mirror_reader_document_to_raindrop(
+            payload, url=url or youtube_url, title=bookmark_title
+        )
     return {
         "success": True,
         "action": result.get("action"),
@@ -3874,10 +3882,11 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
 
     Parent Reader documents create/update a Knowledge Hub note (with Reader
     YAML extras when present) and write a standalone ``- [[Title by Author]]``
-    (or ``- [[Title]]`` if no author) to that day's Content Buffet, then
-    bookmark the document page URL in Raindrop Unsorted. Concurrent Reader
-    ``*_document.created`` events for the same normalized URL within 45s
-    single-flight: later arrivals no-op (no second write or Raindrop).
+    (or ``- [[Title]]`` if no author) to that day's Content Buffet. A
+    newly created KH note is also bookmarked in Raindrop Unsorted.
+    Concurrent Reader ``*_document.created`` events for the same
+    normalized URL within 45s single-flight: later arrivals no-op
+    (no second write or Raindrop).
     Dropbox mutates take a Redis lock keyed by that URL (else the target
     path) so the same KH note cannot race itself. Highlights wikilink
     that same KH stem and are not bookmarked. ``readwise.highlight.created``
