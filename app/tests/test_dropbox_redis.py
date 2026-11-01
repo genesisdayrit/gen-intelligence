@@ -39,7 +39,7 @@ def refresh_access_token():
         print(f"Expires In: {expires_in} seconds")
 
         # Store the access token in Redis with an expiration time
-        r.set('DROPBOX_ACCESS_TOKEN', access_token, ex=expires_in)
+        r.set('DROPBOX_ACCESS_TOKEN', access_token, ex=max(1, int(expires_in or 0) - 300))
         return access_token
     else:
         print(f"Error: {response.status_code} - {response.content}")

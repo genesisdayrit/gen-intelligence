@@ -383,3 +383,151 @@ def test_sunday_1810_does_not_recreate_existing_week_ending_note(monkeypatch):
     )
     assert journal_yaml["Weeks"] == ["[[week-ending-2026-11-01]]"]
 
+
+# Tuesday 18:10 PT → tomorrow's Wednesday journal. The next weekly cycle
+# is created Tuesday 01:30; if that job missed (expired Dropbox token),
+# _Cycles stayed empty. Self-heal creates Cycle 151 once and links it.
+TUESDAY_1810 = LA.localize(datetime(2026, 10, 27, 18, 10))
+WEDNESDAY_JOURNAL = "Oct 28, 2026.md"
+CYCLE_150_NAME = "Cycle 150 (Oct. 21 - Oct. 27, 2026).md"
+CYCLE_151_STEM = "Cycle 151 (Oct. 28 - Nov. 03, 2026)"
+CYCLE_151_FILE = f"{CYCLE_151_STEM}.md"
+CYCLES = f"{VAULT}/04_Cycles"
+WEEKLY_CYCLES = f"{CYCLES}/_Weekly-Cycles"
+CYCLE_151_PATH = f"{WEEKLY_CYCLES}/{CYCLE_151_FILE}"
+WEDNESDAY_JOURNAL_PATH = f"{JOURNAL_FOLDER}/{WEDNESDAY_JOURNAL}"
+
+
+def _tuesday_target(use_today: bool = False) -> datetime:
+    return TUESDAY_1810 if use_today else TUESDAY_1810 + timedelta(days=1)
+
+
+def _tuesday_listings(*, cycle_files=None):
+    cycle_files = cycle_files if cycle_files is not None else [
+        _file_meta(CYCLE_150_NAME, f"{WEEKLY_CYCLES}/{CYCLE_150_NAME}")
+    ]
+    journal = [_file_meta(WEDNESDAY_JOURNAL, WEDNESDAY_JOURNAL_PATH)]
+    mapping = {
+        VAULT: [
+            _folder_meta("01_Daily", DAILY),
+            _folder_meta("04_Cycles", CYCLES),
+        ],
+        DAILY: [_folder_meta("_Journal", JOURNAL_FOLDER)],
+        JOURNAL_FOLDER: journal,
+        CYCLES: [_folder_meta("_Weekly-Cycles", WEEKLY_CYCLES)],
+        WEEKLY_CYCLES: cycle_files,
+    }
+    return {key.lower(): value for key, value in mapping.items()} | mapping
+
+
+def _mock_tuesday_dbx(listings):
+    mock_dbx = MagicMock()
+
+    def list_folder(path):
+        for key, entries in listings.items():
+            if key.lower() == path.lower():
+                return _list_result(entries)
+        return _list_result([])
+
+    mock_dbx.files_list_folder.side_effect = list_folder
+    metadata = MagicMock()
+    metadata.rev = "aaaaaaaaaaaaaaaa"
+    metadata.path_display = WEDNESDAY_JOURNAL_PATH
+    response = MagicMock()
+    response.content = (
+        "---\nDay of Week: null\nDate: null\n_Cycles: null\n"
+        "Previous Day: null\nNext Day: null\n---\n\n# Journal\n"
+    ).encode("utf-8")
+    mock_dbx.files_download.return_value = (metadata, response)
+    mock_dbx.files_upload.return_value = MagicMock(rev="bbbbbbbbbbbbbbbb")
+    return mock_dbx
+
+
+def test_tuesday_1810_self_heals_missing_cycle_and_links_wednesday_journal(monkeypatch):
+    """Tuesday 18:10 PT, no Cycle 151 yet → Wednesday journal gets _Cycles once."""
+    monkeypatch.setenv("DROPBOX_OBSIDIAN_VAULT_PATH", VAULT)
+    mock_dbx = _mock_tuesday_dbx(_tuesday_listings())
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._get_target_day", side_effect=_tuesday_target),
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    add_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_add()
+    ]
+    assert len(add_uploads) == 1
+    cycle_bytes, cycle_path = add_uploads[0].args[:2]
+    assert cycle_path == CYCLE_151_PATH
+    assert add_uploads[0].kwargs["autorename"] is False
+    assert not add_uploads[0].kwargs["mode"].is_overwrite()
+    cycle_content = cycle_bytes.decode("utf-8")
+    assert "Cycle Start Date: 2026-10-28" in cycle_content
+    assert "Cycle End Date: 2026-11-03" in cycle_content
+    for heading in (
+        "### Wednesday -",
+        "### Thursday -",
+        "### Friday -",
+        "### Saturday -",
+        "### Sunday -",
+        "### Monday -",
+        "### Tuesday -",
+    ):
+        assert heading in cycle_content.splitlines()
+
+    update_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_update()
+    ]
+    assert len(update_uploads) == 1
+    journal_yaml = yaml.safe_load(
+        update_uploads[0].args[0].decode("utf-8").split("---", 2)[1]
+    )
+    assert journal_yaml["_Cycles"] == [f"[[{CYCLE_151_STEM}]]"]
+    assert journal_yaml["Date"] == "2026-10-28"
+    assert journal_yaml["Day of Week"] == "Wednesday"
+
+
+def test_tuesday_1810_does_not_recreate_existing_cycle_note(monkeypatch):
+    """If the cycle note already exists (any casing), do not create a duplicate."""
+    monkeypatch.setenv("DROPBOX_OBSIDIAN_VAULT_PATH", VAULT)
+    existing = _file_meta(
+        "cycle 151 (oct. 28 - nov. 03, 2026).md",
+        f"{WEEKLY_CYCLES}/cycle 151 (oct. 28 - nov. 03, 2026).md",
+    )
+    mock_dbx = _mock_tuesday_dbx(
+        _tuesday_listings(
+            cycle_files=[
+                _file_meta(CYCLE_150_NAME, f"{WEEKLY_CYCLES}/{CYCLE_150_NAME}"),
+                existing,
+            ]
+        )
+    )
+
+    with (
+        patch(f"{MODULE}._get_dropbox_client", return_value=mock_dbx),
+        patch(f"{MODULE}._get_target_day", side_effect=_tuesday_target),
+    ):
+        assert mod.update_daily_journal_properties(use_today=False) is True
+
+    add_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_add()
+    ]
+    assert add_uploads == []
+    update_uploads = [
+        call
+        for call in mock_dbx.files_upload.call_args_list
+        if call.kwargs.get("mode") is not None and call.kwargs["mode"].is_update()
+    ]
+    assert len(update_uploads) == 1
+    journal_yaml = yaml.safe_load(
+        update_uploads[0].args[0].decode("utf-8").split("---", 2)[1]
+    )
+    assert journal_yaml["_Cycles"] == ["[[cycle 151 (oct. 28 - nov. 03, 2026)]]"]
+

@@ -1107,7 +1107,7 @@ def test_format_document_stays_markdown_link_even_for_twitter_source():
 # ---------------------------------------------------------------------------
 
 
-@patch("services.obsidian.add_readwise_buffet.dropbox.Dropbox")
+@patch("services.dropbox.client.dropbox.Dropbox")
 def test_dropbox_client_uses_refresh_token(mock_dropbox):
     _get_dropbox_client()
     mock_dropbox.assert_called_once_with(

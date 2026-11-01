@@ -20,64 +20,18 @@ from datetime import datetime, timedelta
 
 import dropbox
 import pytz
-import redis
-import requests
 import yaml
 from dotenv import load_dotenv
 
+from services.dropbox.client import get_dropbox_client as _get_dropbox_client
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Redis configuration
-redis_host = os.getenv('REDIS_HOST', 'localhost')
-redis_port = int(os.getenv('REDIS_PORT', 6379))
-redis_password = os.getenv('REDIS_PASSWORD', None)
-redis_client = redis.Redis(host=redis_host, port=redis_port, password=redis_password, decode_responses=True)
-
 # Timezone
 timezone_str = os.getenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
-
-
-# ===== Dropbox Client =====
-
-def _refresh_access_token() -> str:
-    """Refresh the Dropbox access token using the refresh token."""
-    client_id = os.getenv('DROPBOX_ACCESS_KEY')
-    client_secret = os.getenv('DROPBOX_ACCESS_SECRET')
-    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
-
-    if not all([client_id, client_secret, refresh_token]):
-        raise EnvironmentError("Missing Dropbox credentials in .env file")
-
-    response = requests.post(
-        'https://api.dropbox.com/oauth2/token',
-        data={
-            'grant_type': 'refresh_token',
-            'refresh_token': refresh_token,
-            'client_id': client_id,
-            'client_secret': client_secret
-        }
-    )
-
-    if response.status_code == 200:
-        data = response.json()
-        access_token = data.get('access_token')
-        expires_in = data.get('expires_in')
-        redis_client.set('DROPBOX_ACCESS_TOKEN', access_token, ex=expires_in)
-        return access_token
-    else:
-        raise EnvironmentError(f"Failed to refresh token: {response.status_code}")
-
-
-def _get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client."""
-    access_token = redis_client.get('DROPBOX_ACCESS_TOKEN')
-    if not access_token:
-        access_token = _refresh_access_token()
-    return dropbox.Dropbox(access_token)
 
 
 # ===== Date Helper Functions =====
@@ -315,6 +269,10 @@ def _get_dynamic_mappings(dbx: dropbox.Dropbox, vault_path: str, use_today: bool
             stem = _ensure_missing_week_ending(dbx, vault_path, week_ending)
             if stem:
                 dynamic_mappings["Weeks"] = f"[[{stem}]]"
+        elif mapping["key"] == "_Cycles":
+            stem = _ensure_missing_weekly_cycle(dbx, vault_path, use_today)
+            if stem:
+                dynamic_mappings["_Cycles"] = f"[[{stem}]]"
     return dynamic_mappings
 
 
@@ -337,6 +295,27 @@ def _ensure_missing_week_ending(
     )
     week_ending_date = datetime.strptime(week_ending, "%Y-%m-%d")
     return ensure_week_ending_file(dbx, vault_path, week_ending_date)
+
+
+def _ensure_missing_weekly_cycle(
+    dbx: dropbox.Dropbox, vault_path: str, use_today: bool = False
+) -> str | None:
+    """Create the target journal's weekly cycle note when the lookup missed.
+
+    Uses the same create_new_cycle_page template and rev-safe Dropbox create
+    for the Wed-Tue range containing the journal date, not the scheduled
+    "next Wednesday" target.
+    """
+    from scripts.obsidian.workflows.file_creation.create_new_cycle_page import (
+        ensure_weekly_cycle_file,
+    )
+
+    cycle_date_range = _get_cycle_date_range(use_today)
+    logger.warning(
+        "Weekly cycle file for %s not found; creating it so the journal can link _Cycles.",
+        cycle_date_range,
+    )
+    return ensure_weekly_cycle_file(dbx, vault_path, _get_target_day(use_today))
 
 
 # ===== YAML Metadata =====

@@ -15,9 +15,10 @@ import sys
 from datetime import datetime
 
 import dropbox
-import redis
 import requests
 from dotenv import load_dotenv
+
+from services.dropbox.client import get_dropbox_client
 
 load_dotenv()
 
@@ -29,14 +30,6 @@ logger = logging.getLogger(__name__)
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 LINEAR_API_KEY = os.getenv("LINEAR_API_KEY")
-
-# Redis configuration
-redis_host = os.getenv('REDIS_HOST', 'localhost')
-redis_port = int(os.getenv('REDIS_PORT', 6379))
-redis_password = os.getenv('REDIS_PASSWORD', None)
-redis_client = redis.Redis(
-    host=redis_host, port=redis_port, password=redis_password, decode_responses=True
-)
 
 # Workspace configuration
 WORKSPACE_NAME = os.getenv('OBSIDIAN_LINEAR_WORKSPACE_NAME', '_Chapters-Technology')
@@ -695,59 +688,6 @@ def fetch_all_initiative_data(include_archived: bool = False) -> list[dict]:
 # =============================================================================
 # Dropbox Utilities
 # =============================================================================
-
-
-def _refresh_access_token() -> str:
-    """Refresh the Dropbox access token using the refresh token."""
-    client_id = os.getenv('DROPBOX_ACCESS_KEY')
-    client_secret = os.getenv('DROPBOX_ACCESS_SECRET')
-    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
-
-    if not all([client_id, client_secret, refresh_token]):
-        raise EnvironmentError("Missing Dropbox credentials in .env file")
-
-    response = requests.post(
-        'https://api.dropbox.com/oauth2/token',
-        data={
-            'grant_type': 'refresh_token',
-            'refresh_token': refresh_token,
-            'client_id': client_id,
-            'client_secret': client_secret
-        }
-    )
-
-    if response.status_code == 200:
-        data = response.json()
-        access_token = data.get('access_token')
-        expires_in = data.get('expires_in')
-        redis_client.set('DROPBOX_ACCESS_TOKEN', access_token, ex=expires_in)
-        return access_token
-    else:
-        raise EnvironmentError(f"Failed to refresh token: {response.status_code}")
-
-
-def get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client.
-
-    When refresh-token credentials are available, construct a client that the
-    Dropbox SDK can auto-refresh on 401. Otherwise fall back to the legacy
-    Redis-cached access token (which the SDK cannot refresh on its own, so a
-    stale cache will fail mid-request — see GD-447 incident on 2026-05-17).
-    """
-    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
-    app_key = os.getenv('DROPBOX_ACCESS_KEY')
-    app_secret = os.getenv('DROPBOX_ACCESS_SECRET')
-    if refresh_token and app_key and app_secret:
-        return dropbox.Dropbox(
-            oauth2_refresh_token=refresh_token,
-            app_key=app_key,
-            app_secret=app_secret,
-        )
-
-    access_token = redis_client.get('DROPBOX_ACCESS_TOKEN')
-    if not access_token:
-        access_token = _refresh_access_token()
-    return dropbox.Dropbox(access_token)
 
 
 def create_folder_if_not_exists(dbx: dropbox.Dropbox, path: str) -> bool:
