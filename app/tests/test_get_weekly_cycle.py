@@ -57,7 +57,7 @@ def refresh_access_token():
         logger.info(f"Refreshed access token (expires in {expires_in} seconds)")
 
         # Store the access token in Redis with an expiration time
-        r.set('DROPBOX_ACCESS_TOKEN', access_token, ex=expires_in)
+        r.set('DROPBOX_ACCESS_TOKEN', access_token, ex=max(1, int(expires_in or 0) - 300))
         return access_token
     else:
         raise EnvironmentError(f"Failed to refresh token: {response.status_code} - {response.content}")

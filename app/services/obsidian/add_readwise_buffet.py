@@ -39,6 +39,7 @@ from services.obsidian.utils.readwise_concurrency import (
 )
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
 from services.raindrop.client import create_bookmark
+from services.dropbox.client import get_dropbox_client as _get_dropbox_client
 
 load_dotenv()
 
@@ -200,24 +201,6 @@ def get_document_journal_path(
     return f"{journal_folder_path}/{journal_filename(get_effective_date(local))}"
 
 
-def _get_dropbox_client() -> dropbox.Dropbox:
-    """Dropbox client that auto-refreshes via OAuth refresh token.
-
-    Prefer the SDK refresh-token constructor so a stale Redis-cached access
-    token cannot fail mid-request.
-    """
-    refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
-    app_key = os.getenv("DROPBOX_ACCESS_KEY")
-    app_secret = os.getenv("DROPBOX_ACCESS_SECRET")
-    if not all([refresh_token, app_key, app_secret]):
-        raise EnvironmentError(
-            "Missing one of DROPBOX_ACCESS_KEY / DROPBOX_ACCESS_SECRET / DROPBOX_REFRESH_TOKEN"
-        )
-    return dropbox.Dropbox(
-        oauth2_refresh_token=refresh_token,
-        app_key=app_key,
-        app_secret=app_secret,
-    )
 
 
 def _find_folder_by_suffix(dbx: dropbox.Dropbox, parent_path: str, suffix: str) -> str:

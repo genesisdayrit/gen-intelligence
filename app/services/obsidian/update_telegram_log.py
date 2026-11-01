@@ -6,10 +6,10 @@ import re
 import dropbox
 import pytz
 import redis
-import requests
 from dotenv import load_dotenv
 
 from services.obsidian.utils.dropbox_rev_safe import update_with_retry
+from services.dropbox.client import get_dropbox_client as _get_dropbox_client
 
 load_dotenv()
 
@@ -24,42 +24,6 @@ timezone_str = os.getenv("SYSTEM_TIMEZONE", "US/Eastern")
 
 TELEGRAM_LOGS_HEADER = "### Telegram Logs:"
 
-
-def _refresh_access_token() -> str:
-    """Refresh the Dropbox access token using the refresh token."""
-    client_id = os.getenv('DROPBOX_ACCESS_KEY')
-    client_secret = os.getenv('DROPBOX_ACCESS_SECRET')
-    refresh_token = os.getenv('DROPBOX_REFRESH_TOKEN')
-
-    if not all([client_id, client_secret, refresh_token]):
-        raise EnvironmentError("Missing Dropbox credentials in .env file")
-
-    response = requests.post(
-        'https://api.dropbox.com/oauth2/token',
-        data={
-            'grant_type': 'refresh_token',
-            'refresh_token': refresh_token,
-            'client_id': client_id,
-            'client_secret': client_secret
-        }
-    )
-
-    if response.status_code == 200:
-        data = response.json()
-        access_token = data.get('access_token')
-        expires_in = data.get('expires_in')
-        redis_client.set('DROPBOX_ACCESS_TOKEN', access_token, ex=expires_in)
-        return access_token
-    else:
-        raise EnvironmentError(f"Failed to refresh token: {response.status_code}")
-
-
-def _get_dropbox_client() -> dropbox.Dropbox:
-    """Get authenticated Dropbox client."""
-    access_token = redis_client.get('DROPBOX_ACCESS_TOKEN')
-    if not access_token:
-        access_token = _refresh_access_token()
-    return dropbox.Dropbox(access_token)
 
 
 def _find_daily_folder(dbx: dropbox.Dropbox, vault_path: str) -> str:
