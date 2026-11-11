@@ -90,6 +90,33 @@ _X_PROFILE_KEY = re.compile(r"^X Profile\s*:")
 _PEOPLE_KEY = re.compile(r"^People\s*:")
 _TITLE_KEY = re.compile(r"^title\s*:", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
+_TWITTER_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+_TWITTER_RESERVED_PATHS = frozenset(
+    {
+        "i",
+        "intent",
+        "home",
+        "search",
+        "hashtag",
+        "explore",
+        "settings",
+        "article",
+        "compose",
+        "notifications",
+        "messages",
+        "share",
+        "login",
+        "signup",
+        "tos",
+        "privacy",
+        "about",
+        "download",
+        "account",
+        "web",
+        "status",
+    }
+)
+_X_ARTICLE_KEY = "_x_article"
 
 # Same image-embed rules as the journal tweet strip (separate PR). Used
 # locally for Bookmarked Tweets until ``tweet_highlight_quote`` is on main.
@@ -684,7 +711,7 @@ def _create_youtube_link(
 
 def _book_from_payload(payload: dict) -> dict:
     """Book fields already present on a webhook/export payload."""
-    return {
+    book = {
         "title": _nonempty(payload.get("title")),
         "readable_title": _nonempty(payload.get("readable_title")),
         "author": _nonempty(payload.get("author")) or _nonempty(payload.get("creator")),
@@ -692,6 +719,9 @@ def _book_from_payload(payload: dict) -> dict:
         "source": _nonempty(payload.get("source")),
         "source_url": _nonempty(payload.get("source_url")),
     }
+    if payload.get(_X_ARTICLE_KEY):
+        book[_X_ARTICLE_KEY] = True
+    return book
 
 
 def _payload_book_id(payload: dict, book: dict | None = None) -> str | None:
@@ -716,7 +746,8 @@ def _has_book_identity(book: dict | None) -> bool:
     return any(book.get(key) for key in ("title", "author", "category", "source", "source_url"))
 
 
-def _twitter_handle_from_url(url: object) -> str | None:
+def _twitter_host(url: object) -> str | None:
+    """``twitter.com`` / ``x.com`` host, or None. Strips ``www.``."""
     text = _nonempty(url)
     if not text:
         return None
@@ -726,8 +757,101 @@ def _twitter_handle_from_url(url: object) -> str | None:
         host = host[4:]
     if host not in _TWITTER_HOSTS:
         return None
-    parts = [part for part in parsed.path.split("/") if part]
-    return parts[-1] if parts else None
+    return host
+
+
+def _twitter_path_parts(url: object) -> list[str]:
+    """Path segments with query string and trailing slashes stripped."""
+    text = _nonempty(url)
+    if not text:
+        return []
+    parsed = urlparse(text)
+    return [part for part in parsed.path.split("/") if part]
+
+
+def _twitter_handle_from_url(url: object) -> str | None:
+    """Handle from ``x.com/<handle>`` or ``x.com/<handle>/status/<id>``.
+
+    Reserved first segments (``i``, ``intent``, ``home``, ``article``, …)
+    and ``/i/article/`` / ``/i/web/status/`` URLs return None. The handle
+    must match ``^[A-Za-z0-9_]{1,15}$`` and must not be purely numeric.
+    """
+    if not _twitter_host(url):
+        return None
+    parts = _twitter_path_parts(url)
+    if not parts:
+        return None
+    if parts[0].lower() in _TWITTER_RESERVED_PATHS:
+        return None
+    handle = parts[0]
+    lowered = [part.lower() for part in parts]
+    if "status" in lowered:
+        idx = lowered.index("status")
+        if idx == 0:
+            return None
+        handle = parts[idx - 1]
+        if handle.lower() in _TWITTER_RESERVED_PATHS:
+            return None
+    handle = handle.lstrip("@")
+    if not _TWITTER_HANDLE_RE.fullmatch(handle):
+        return None
+    if handle.isdigit():
+        return None
+    return handle
+
+
+def _x_url_is_article_path(url: object) -> bool:
+    """True for ``x.com/i/article/...`` and ``x.com/article/...``."""
+    if not _twitter_host(url):
+        return False
+    parts = [part.lower() for part in _twitter_path_parts(url)]
+    if len(parts) >= 2 and parts[0] == "i" and parts[1] == "article":
+        return True
+    return bool(parts) and parts[0] == "article"
+
+
+def _looks_like_tweet_or_handle_title(title: str) -> bool:
+    """True for ``Tweets from …`` or a bare @handle-style title."""
+    if _TWEETS_FROM_TITLE.search(title):
+        return True
+    token = title.strip().lstrip("@")
+    return bool(_TWITTER_HANDLE_RE.fullmatch(token))
+
+
+def _looks_like_article_title(title: object) -> bool:
+    """True for a real article title, not tweet text or a handle-style title."""
+    text = _nonempty(title)
+    if not text or _looks_like_tweet_or_handle_title(text):
+        return False
+    if re.search(r"https?://|\bt\.co/", text, re.I):
+        return False
+    return len(text.split()) >= 2
+
+
+def _author_has_tweet_handle(author: object) -> bool:
+    text = _nonempty(author)
+    return bool(text and _AUTHOR_HANDLE.search(text))
+
+
+def _is_x_article_book(book: dict | None) -> bool:
+    """True for an X Article misfiled as a tweet, or an attach-time URL match.
+
+    Signals, in order: an existing-KH override flag; an ``/i/article/``
+    (or ``/article/``) path; otherwise an x.com/twitter.com book whose
+    title looks like an article and whose author has no ``@handle``.
+    """
+    if not book:
+        return False
+    if book.get(_X_ARTICLE_KEY):
+        return True
+    url = book.get("source_url")
+    if not _twitter_host(url):
+        return False
+    if _x_url_is_article_path(url):
+        return True
+    if _author_has_tweet_handle(book.get("author")):
+        return False
+    return _looks_like_article_title(book.get("title"))
 
 
 def _tweet_handle(book: dict | None) -> str | None:
@@ -744,8 +868,14 @@ def _tweet_handle(book: dict | None) -> str | None:
 
 
 def _is_tweet_book(book: dict | None) -> bool:
-    """True for Readwise tweet sources (category/source/title/author/url)."""
+    """True for Readwise tweet sources (category/source/title/author/url).
+
+    X Articles on x.com/twitter.com are excluded so they take the
+    ``### Article highlights`` path instead of ``Tweets from @handle``.
+    """
     if not book:
+        return False
+    if _is_x_article_book(book):
         return False
     category = (_nonempty(book.get("category")) or "").lower()
     source = (_nonempty(book.get("source")) or "").lower()
@@ -1888,6 +2018,16 @@ def _readwise_ids_same_kind(want: str, have: str) -> bool:
     return _is_numeric_readwise_id(want) == _is_numeric_readwise_id(have)
 
 
+def _twitter_url_path_key(url: str) -> str | None:
+    """Host + path identity for an X/Twitter URL. Query and trailing slash ignored."""
+    if not _twitter_host(url):
+        return None
+    path = urlparse(url).path.rstrip("/").lower()
+    if not path:
+        return None
+    return f"x.com{path}"
+
+
 def _urls_equivalent(want_url: str | None, note_url: str | None) -> bool:
     """True when two KH URLs name the same page (YouTube video id counts)."""
     if not want_url or not note_url:
@@ -1897,6 +2037,10 @@ def _urls_equivalent(want_url: str | None, note_url: str | None) -> bool:
     if _strip_tracking_query(want_url).rstrip("/") == _strip_tracking_query(
         note_url
     ).rstrip("/"):
+        return True
+    want_twitter = _twitter_url_path_key(want_url)
+    have_twitter = _twitter_url_path_key(note_url)
+    if want_twitter and have_twitter and want_twitter == have_twitter:
         return True
     from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
@@ -2021,6 +2165,9 @@ def _identity_search_terms(
     if href:
         stripped = _strip_tracking_query(href) or href
         add("url", stripped)
+        twitter_key = _twitter_url_path_key(href)
+        if twitter_key:
+            add("url", twitter_key)
         from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
         if is_valid_youtube_url(stripped):
@@ -2561,6 +2708,49 @@ def _resolved_hub_for_payload(
     )
 
 
+def _mark_x_article_if_existing_hub_note(
+    dbx: dropbox.Dropbox,
+    hub_path: str,
+    payload: dict,
+    book: dict | None,
+) -> bool:
+    """Treat an x.com tweet book as an article when a KH note already matches.
+
+    Existing-note URL identity is the main X Article signal. ``@handle on
+    twitter`` authors stay on the tweet path. Returns True when the book
+    was reclassified.
+    """
+    if not book or not _twitter_host(
+        book.get("source_url") or payload.get("source_url")
+    ):
+        return False
+    if _author_has_tweet_handle(book.get("author") or payload.get("author")):
+        return False
+    stem = reader_knowledge_hub_note_stem(
+        _nonempty(book.get("title")) or _nonempty(payload.get("title")),
+        _reader_author(book) or _reader_author(payload),
+        readable_title=_payload_readable_title(payload, book),
+    )
+    if not stem:
+        return False
+    resolved = resolve_readwise_hub_note(
+        dbx,
+        hub_path,
+        stem=stem,
+        url=_identity_url(payload, book=book),
+        readwise_book_id=_payload_book_id(payload, book),
+        title=_nonempty(book.get("title")) or _nonempty(payload.get("title")),
+        readable_title=_payload_readable_title(payload, book),
+    )
+    if not resolved or not resolved.path:
+        return False
+    payload[_X_ARTICLE_KEY] = True
+    book[_X_ARTICLE_KEY] = True
+    payload[_RESOLVED_STEM_KEY] = resolved.stem
+    payload[_RESOLVED_PATH_KEY] = resolved.path
+    return True
+
+
 def _attach_resolved_hub_notes(
     dbx: dropbox.Dropbox,
     hub_path: str,
@@ -2573,7 +2763,9 @@ def _attach_resolved_hub_notes(
             continue
         book = _resolve_highlight_book(payload)
         if _is_tweet_book(book):
-            continue
+            if not _mark_x_article_if_existing_hub_note(dbx, hub_path, payload, book):
+                continue
+            book = _resolve_highlight_book(payload)
         resolved = _resolved_hub_for_payload(
             dbx, hub_path, payload, book, pending=pending
         )
