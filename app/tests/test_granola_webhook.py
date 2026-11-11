@@ -33,6 +33,8 @@ def _force_secrets(monkeypatch):
     monkeypatch.setenv("GRANOLA_WEBHOOK_SECRET", GRANOLA_WEBHOOK_SECRET)
     monkeypatch.setenv("GRANOLA_API_KEY", "test-granola-key")
     monkeypatch.setenv("SYSTEM_TIMEZONE", "America/Los_Angeles")
+    monkeypatch.delenv("GRANOLA_FOLLOWUP_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("GRANOLA_FOLLOWUP_WEBHOOK_KEY", raising=False)
 
 
 from fastapi.testclient import TestClient
@@ -40,9 +42,12 @@ from fastapi.testclient import TestClient
 from main import app
 from services.granola.webhook import (
     EVENT_DEDUP_TTL_SECONDS,
+    FOLLOWUP_TIMEOUT_SECONDS,
     WEBHOOK_TOLERANCE_SECONDS,
+    build_granola_followup_payload,
     claim_granola_event_id,
     event_dedup_key,
+    forward_granola_followup,
     is_granola_timestamp_valid,
     process_granola_webhook_event,
     verify_granola_signature,
@@ -64,6 +69,39 @@ SAMPLE_NOTE = {
     "summary_markdown": "## Takeaways\n- Buy more yoghurt",
     "created_at": "2026-01-27T15:00:00Z",
 }
+
+FOLLOWUP_URL = "https://followup.example.invalid/granola?token=should-not-be-logged"
+FOLLOWUP_KEY = "followup-test-bearer-key"
+
+WRITE_SUMMARY = {
+    "selected": 1,
+    "inserted": 1,
+    "replaced": 0,
+    "skipped": 0,
+    "skipped_missing_journal": 0,
+    "files_written": 1,
+    "errors": [],
+    "paths": ["/journal/Jan 27, 2026.md"],
+}
+
+
+def _immediate_thread(target=None, args=(), kwargs=None, daemon=None, name=None):
+    """Stand-in for threading.Thread that runs the target on start()."""
+
+    class _Thread:
+        def start(self):
+            target(*args, **(kwargs or {}))
+
+    return _Thread()
+
+
+@pytest.fixture
+def followup_configured(monkeypatch):
+    monkeypatch.setenv("GRANOLA_FOLLOWUP_WEBHOOK_URL", FOLLOWUP_URL)
+    monkeypatch.setenv("GRANOLA_FOLLOWUP_WEBHOOK_KEY", FOLLOWUP_KEY)
+    monkeypatch.setattr(
+        "services.granola.webhook.threading.Thread", _immediate_thread
+    )
 
 
 def _sign(
@@ -381,6 +419,270 @@ def test_process_does_not_raise_on_write_failure():
         side_effect=RuntimeError("dropbox down"),
     ):
         assert process_granola_webhook_event(SAMPLE_EVENT) is None
+
+
+# ---------------------------------------------------------------------------
+# Optional follow-up webhook
+# ---------------------------------------------------------------------------
+
+
+def test_followup_payload_from_incoming_event():
+    payload = build_granola_followup_payload(SAMPLE_EVENT)
+    assert payload == {
+        "event_type": "note.generated",
+        "note_id": "not_1d3tmYTlCICgjy",
+        "event_id": SAMPLE_EVENT["event_id"],
+        "occurred_at": SAMPLE_EVENT["occurred_at"],
+    }
+    for extra in ("title", "attendees", "calendar_event", "summary", "transcript", "url"):
+        assert extra not in payload
+
+
+def test_followup_payload_omits_missing_event_id_and_timestamp():
+    payload = build_granola_followup_payload(
+        {"event_type": "note.edited", "note_id": "not_1d3tmYTlCICgjy"}
+    )
+    assert payload == {
+        "event_type": "note.edited",
+        "note_id": "not_1d3tmYTlCICgjy",
+    }
+
+
+def test_followup_payload_includes_timestamp_when_present():
+    payload = build_granola_followup_payload(
+        {
+            "event_type": "note.generated",
+            "note_id": "not_1d3tmYTlCICgjy",
+            "event_id": "evt-1",
+            "timestamp": "2026-01-27T15:30:00Z",
+        }
+    )
+    assert payload["event_id"] == "evt-1"
+    assert payload["timestamp"] == "2026-01-27T15:30:00Z"
+
+
+def test_forward_posts_bearer_json_and_timeout(followup_configured):
+    mock_response = MagicMock()
+    mock_response.status_code = 204
+    with patch(
+        "services.granola.webhook.requests.post", return_value=mock_response
+    ) as mock_post:
+        forward_granola_followup(SAMPLE_EVENT)
+    mock_post.assert_called_once()
+    args, kwargs = mock_post.call_args
+    assert args[0] == FOLLOWUP_URL
+    assert kwargs["headers"]["Authorization"] == f"Bearer {FOLLOWUP_KEY}"
+    assert kwargs["headers"]["Content-Type"] == "application/json"
+    assert kwargs["timeout"] == FOLLOWUP_TIMEOUT_SECONDS
+    assert kwargs["json"] == {
+        "event_type": "note.generated",
+        "note_id": SAMPLE_EVENT["note_id"],
+        "event_id": SAMPLE_EVENT["event_id"],
+        "occurred_at": SAMPLE_EVENT["occurred_at"],
+    }
+
+
+def test_forward_skipped_when_unconfigured():
+    with patch("services.granola.webhook.requests.post") as mock_post:
+        forward_granola_followup(SAMPLE_EVENT)
+    mock_post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "url,key",
+    [
+        (FOLLOWUP_URL, ""),
+        ("", FOLLOWUP_KEY),
+        ("  ", FOLLOWUP_KEY),
+        (FOLLOWUP_URL, "  "),
+    ],
+)
+def test_forward_skipped_when_either_env_missing(monkeypatch, url, key):
+    monkeypatch.setenv("GRANOLA_FOLLOWUP_WEBHOOK_URL", url)
+    monkeypatch.setenv("GRANOLA_FOLLOWUP_WEBHOOK_KEY", key)
+    with patch("services.granola.webhook.requests.post") as mock_post:
+        forward_granola_followup(SAMPLE_EVENT)
+    mock_post.assert_not_called()
+
+
+def test_forward_does_not_log_key_or_url_query(followup_configured, caplog):
+    import logging
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    with caplog.at_level(logging.DEBUG), patch(
+        "services.granola.webhook.requests.post", return_value=mock_response
+    ):
+        forward_granola_followup(SAMPLE_EVENT)
+    combined = "\n".join(record.getMessage() for record in caplog.records)
+    assert FOLLOWUP_KEY not in combined
+    assert "Bearer " not in combined
+    assert "token=should-not-be-logged" not in combined
+    assert "followup.example.invalid/granola" in combined
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["note.generated", "note.edited", "note.access_granted"],
+)
+def test_process_forwards_processed_events(followup_configured, event_type):
+    event = {**SAMPLE_EVENT, "event_type": event_type}
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    with patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ) as mock_get, patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ) as mock_write, patch(
+        "services.granola.webhook.requests.post", return_value=mock_response
+    ) as mock_post:
+        result = process_granola_webhook_event(event)
+    assert result == WRITE_SUMMARY
+    mock_get.assert_called_once_with("not_1d3tmYTlCICgjy")
+    mock_write.assert_called_once_with(
+        [SAMPLE_NOTE], replace_existing=(event_type == "note.edited")
+    )
+    mock_post.assert_called_once()
+    posted = mock_post.call_args.kwargs["json"]
+    assert posted == {
+        "event_type": event_type,
+        "note_id": event["note_id"],
+        "event_id": event["event_id"],
+        "occurred_at": event["occurred_at"],
+    }
+
+
+def test_process_skips_forward_when_unconfigured():
+    with patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ), patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ), patch("services.granola.webhook.requests.post") as mock_post:
+        result = process_granola_webhook_event(SAMPLE_EVENT)
+    assert result == WRITE_SUMMARY
+    mock_post.assert_not_called()
+
+
+def test_process_does_not_forward_missing_note_id(followup_configured):
+    event = {**SAMPLE_EVENT, "note_id": None}
+    with patch("services.granola.webhook.get_note") as mock_get, patch(
+        "services.granola.webhook.requests.post"
+    ) as mock_post:
+        assert process_granola_webhook_event(event) is None
+    mock_get.assert_not_called()
+    mock_post.assert_not_called()
+
+
+def test_process_does_not_forward_unknown_event_type(followup_configured):
+    event = {**SAMPLE_EVENT, "event_type": "note.deleted"}
+    with patch("services.granola.webhook.get_note") as mock_get, patch(
+        "services.granola.webhook.write_notes_by_journal"
+    ) as mock_write, patch("services.granola.webhook.requests.post") as mock_post:
+        assert process_granola_webhook_event(event) is None
+    mock_get.assert_not_called()
+    mock_write.assert_not_called()
+    mock_post.assert_not_called()
+
+
+def test_process_forwards_incoming_event_even_when_note_fetch_fails(
+    followup_configured,
+):
+    from services.granola.client import GranolaNoteNotFound
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    with patch(
+        "services.granola.webhook.get_note",
+        side_effect=GranolaNoteNotFound("not_1d3tmYTlCICgjy"),
+    ), patch("services.granola.webhook.write_notes_by_journal") as mock_write, patch(
+        "services.granola.webhook.requests.post", return_value=mock_response
+    ) as mock_post:
+        assert process_granola_webhook_event(SAMPLE_EVENT) is None
+    mock_write.assert_not_called()
+    mock_post.assert_called_once()
+    assert mock_post.call_args.kwargs["json"] == {
+        "event_type": "note.generated",
+        "note_id": SAMPLE_EVENT["note_id"],
+        "event_id": SAMPLE_EVENT["event_id"],
+        "occurred_at": SAMPLE_EVENT["occurred_at"],
+    }
+
+
+def test_process_write_result_unchanged_when_forward_fails(followup_configured):
+    with patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ), patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ) as mock_write, patch(
+        "services.granola.webhook.requests.post",
+        side_effect=TimeoutError("follow-up timed out"),
+    ):
+        result = process_granola_webhook_event(SAMPLE_EVENT)
+    assert result == WRITE_SUMMARY
+    mock_write.assert_called_once_with([SAMPLE_NOTE], replace_existing=False)
+
+
+def test_webhook_forwards_when_configured(followup_configured):
+    mock_response = MagicMock()
+    mock_response.status_code = 204
+    with patch("main.claim_granola_event_id", return_value=True), patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ), patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ), patch(
+        "services.granola.webhook.requests.post", return_value=mock_response
+    ) as mock_post:
+        response, _ = _post_event()
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_post.assert_called_once()
+    headers = mock_post.call_args.kwargs["headers"]
+    assert headers["Authorization"] == f"Bearer {FOLLOWUP_KEY}"
+    assert headers["Content-Type"] == "application/json"
+    assert mock_post.call_args.kwargs["json"] == {
+        "event_type": "note.generated",
+        "note_id": SAMPLE_EVENT["note_id"],
+        "event_id": SAMPLE_EVENT["event_id"],
+        "occurred_at": SAMPLE_EVENT["occurred_at"],
+    }
+
+
+def test_webhook_skips_forward_when_unconfigured():
+    with patch("main.claim_granola_event_id", return_value=True), patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ), patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ), patch("services.granola.webhook.requests.post") as mock_post:
+        response, _ = _post_event()
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_post.assert_not_called()
+
+
+def test_webhook_response_unchanged_when_forward_times_out(followup_configured):
+    import requests as requests_lib
+
+    with patch("main.claim_granola_event_id", return_value=True), patch(
+        "services.granola.webhook.get_note", return_value=SAMPLE_NOTE
+    ), patch(
+        "services.granola.webhook.write_notes_by_journal", return_value=WRITE_SUMMARY
+    ) as mock_write, patch(
+        "services.granola.webhook.requests.post",
+        side_effect=requests_lib.exceptions.Timeout("slow peer"),
+    ):
+        response, _ = _post_event()
+    assert response.status_code == 202
+    assert response.json() == {"status": "accepted"}
+    mock_write.assert_called_once_with([SAMPLE_NOTE], replace_existing=False)
+
+
+def test_webhook_does_not_forward_unknown_event_type(followup_configured):
+    event = {**SAMPLE_EVENT, "event_type": "note.deleted", "event_id": "evt-unknown-fwd"}
+    with patch("services.granola.webhook.requests.post") as mock_post:
+        response, _ = _post_event(event)
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    mock_post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -32,9 +32,12 @@ Add these to `app/.env` (never log or print them):
 WEBHOOK_BASE_URL=https://your-ngrok-url.ngrok-free.app
 GRANOLA_API_KEY=your_granola_api_key
 GRANOLA_WEBHOOK_SECRET=whsec_your_granola_webhook_signing_secret
+# Optional follow-up webhook (both required; skipped if either is unset)
+# GRANOLA_FOLLOWUP_WEBHOOK_URL=https://example.invalid/granola-followup
+# GRANOLA_FOLLOWUP_WEBHOOK_KEY=your_followup_webhook_bearer_token
 ```
 
-Restart the app so it picks up the secret.
+Restart the app so it picks up the secret. Never log `GRANOLA_WEBHOOK_SECRET`, `GRANOLA_FOLLOWUP_WEBHOOK_KEY`, or follow-up URL query strings.
 
 ## 3. Verify setup
 
@@ -57,7 +60,8 @@ Look for `Granola webhook | event=… | note_id=…` and a write summary. The no
 2. The endpoint verifies the Standard Webhooks signature on the **raw body**, then rejects timestamps older than five minutes.
 3. Retries reuse `event_id`. The first delivery is claimed in Redis (`granola:webhook:event:{event_id}`, 7-day TTL). Duplicates return `200` `{"status":"duplicate"}` and do not write again.
 4. The handler acknowledges with `202` within Granola's 15s window, then `GET /v1/notes/{id}` with `GRANOLA_API_KEY` and reuses the same journal writers as the manual sync (`format_granola_block`, `### Transcript Notes`, 3am PT rollover). `note.generated` and `note.access_granted` skip an existing `<!-- granola:not_… -->` block. `note.edited` replaces that block in place (same position; neighboring notes stay put) or inserts if the original write was missed.
-5. Missing journal files are skipped (not created, not dumped onto today). Private notes / transcripts are never written.
+5. If `GRANOLA_FOLLOWUP_WEBHOOK_URL` and `GRANOLA_FOLLOWUP_WEBHOOK_KEY` are both set, the same processed events (`note.generated`, `note.edited`, `note.access_granted`) are also POSTed as JSON to that URL in a background thread (`Authorization: Bearer …`, 5s timeout). The body is the incoming event basics only (`event_type`, `note_id`, plus `event_id` / `occurred_at` when present). It does not wait on `GET /v1/notes/{id}` and does not include note content. Unknown event types, duplicates, and missing `note_id` are not forwarded. A forward failure or timeout is logged and never changes the `202` or the journal write.
+6. Missing journal files are skipped (not created, not dumped onto today). Private notes / transcripts are never written to the journal.
 
 ### Signature
 

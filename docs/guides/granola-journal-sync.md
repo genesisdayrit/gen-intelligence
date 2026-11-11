@@ -40,6 +40,9 @@ Required / optional variables in `app/.env`:
 GRANOLA_API_KEY=your_granola_api_key
 GRANOLA_WEBHOOK_SECRET=whsec_your_granola_webhook_signing_secret
 WEBHOOK_BASE_URL=https://your-ngrok-url.ngrok-free.app
+# Optional: fire-and-forget JSON POST of processed webhook events
+# GRANOLA_FOLLOWUP_WEBHOOK_URL=https://example.invalid/granola-followup
+# GRANOLA_FOLLOWUP_WEBHOOK_KEY=your_followup_webhook_bearer_token
 
 # Dropbox + vault (existing)
 DROPBOX_ACCESS_KEY=your_app_key
@@ -66,7 +69,7 @@ REDIS_PORT=6379
 # GRANOLA_BACKFILL_SINCE=2024-08-13
 ```
 
-Never log or print `GRANOLA_API_KEY` or `GRANOLA_WEBHOOK_SECRET`.
+Never log or print `GRANOLA_API_KEY`, `GRANOLA_WEBHOOK_SECRET`, `GRANOLA_FOLLOWUP_WEBHOOK_KEY`, or follow-up URL query strings.
 
 ## Redis cursor
 
