@@ -27,7 +27,7 @@ import requests
 
 from config import redis_client
 from services.granola.client import GranolaAPIError, GranolaNoteNotFound, get_note
-from services.granola.sync import note_summary_body, note_web_url, write_notes_by_journal
+from services.granola.sync import write_notes_by_journal
 
 logger = logging.getLogger(__name__)
 
@@ -168,72 +168,32 @@ def _nonempty_text(value: object) -> str | None:
     return text or None
 
 
-def _calendar_event_payload(note: dict) -> dict | None:
-    """Map already-fetched calendar fields to ``{title, start, end}``."""
-    raw = note.get("calendar_event")
-    event = raw if isinstance(raw, dict) else {}
-    title = _nonempty_text(event.get("event_title") or event.get("title"))
-    start = _nonempty_text(
-        event.get("scheduled_start_time")
-        or event.get("scheduledStartTime")
-        or note.get("meeting_start")
-        or note.get("meetingStartAt")
-    )
-    end = _nonempty_text(
-        event.get("scheduled_end_time") or event.get("scheduledEndTime")
-    )
-    payload: dict[str, str] = {}
-    if title:
-        payload["title"] = title
-    if start:
-        payload["start"] = start
-    if end:
-        payload["end"] = end
-    return payload or None
+def build_granola_followup_payload(event: dict) -> dict:
+    """JSON body for the follow-up webhook: incoming event basics only.
 
-
-def build_granola_followup_payload(event: dict, note: dict | None) -> dict:
-    """JSON body for the follow-up webhook.
-
-    Always includes ``event_type`` and ``note_id``. Other fields come from the
-    note already fetched by the receiver (no extra Granola API calls).
-    Transcript is included only when ``get_note`` already returned it —
-    the receiver does not pass ``include=transcript``.
+    Always includes ``event_type`` and ``note_id``. Adds ``event_id`` and
+    ``occurred_at`` / ``timestamp`` when the inbound webhook carried them.
+    Does not fetch or attach note content.
     """
-    note = note if isinstance(note, dict) else {}
-    note_id = _nonempty_text(event.get("note_id")) or _nonempty_text(note.get("id"))
     payload: dict = {
         "event_type": event.get("event_type"),
-        "note_id": note_id,
+        "note_id": event.get("note_id"),
     }
-    title = _nonempty_text(note.get("title"))
-    if title:
-        payload["title"] = title
-    attendees = note.get("attendees")
-    if isinstance(attendees, list):
-        payload["attendees"] = attendees
-    calendar_event = _calendar_event_payload(note)
-    if calendar_event:
-        payload["calendar_event"] = calendar_event
-    summary = note_summary_body(note) if note else ""
-    if summary:
-        payload["summary"] = summary
-    if "transcript" in note and note.get("transcript") is not None:
-        payload["transcript"] = note.get("transcript")
-    url = note_web_url(note) if note else None
-    if url:
-        payload["url"] = url
+    for key in ("event_id", "occurred_at", "timestamp"):
+        text = _nonempty_text(event.get(key))
+        if text is not None:
+            payload[key] = text
     return payload
 
 
-def forward_granola_followup(event: dict, note: dict | None = None) -> None:
+def forward_granola_followup(event: dict) -> None:
     """POST the follow-up payload. Never raises. Never logs the key or URL query."""
     config = _followup_config()
     if not config:
         logger.debug("Granola follow-up webhook not configured; skipping")
         return
     url, key = config
-    payload = build_granola_followup_payload(event, note)
+    payload = build_granola_followup_payload(event)
     target = _followup_target_for_log(url)
     try:
         response = requests.post(
@@ -269,7 +229,7 @@ def forward_granola_followup(event: dict, note: dict | None = None) -> None:
         )
 
 
-def schedule_granola_followup(event: dict, note: dict | None = None) -> None:
+def schedule_granola_followup(event: dict) -> None:
     """Fire-and-forget follow-up POST. Never raises; never blocks the caller."""
     try:
         if not _followup_config():
@@ -277,7 +237,7 @@ def schedule_granola_followup(event: dict, note: dict | None = None) -> None:
             return
         thread = threading.Thread(
             target=forward_granola_followup,
-            args=(event, note),
+            args=(event,),
             daemon=True,
             name="granola-followup",
         )
@@ -292,7 +252,7 @@ def process_granola_webhook_event(data: dict) -> dict | None:
     ``note.edited`` replaces an existing block for that granola id (or
     inserts if missing). Generated / access_granted still skip duplicates.
     The same processed events are forwarded to the optional follow-up
-    webhook without blocking this write.
+    webhook from the incoming event (no note body) without blocking this write.
 
     Logs errors; never raises. Returns the write summary, or None when skipped.
     """
@@ -314,24 +274,21 @@ def process_granola_webhook_event(data: dict) -> dict | None:
         logger.warning("Granola webhook missing note_id; skipping")
         return None
 
+    # Incoming event only; do not wait on GET /v1/notes/{id} or the journal write.
+    schedule_granola_followup(data)
+
     try:
         note = get_note(str(note_id))
     except GranolaNoteNotFound:
         logger.warning("Granola note %s 404; skipping (not inventing)", note_id)
-        schedule_granola_followup(data, None)
         return None
     except (GranolaAPIError, EnvironmentError, Exception):
         logger.exception("Granola webhook get note failed")
-        schedule_granola_followup(data, None)
         return None
 
     if not isinstance(note, dict):
         logger.warning("Granola note %s was not an object; skipping", note_id)
-        schedule_granola_followup(data, None)
         return None
-
-    # Reuse the already-fetched note; do not delay the journal write on POST.
-    schedule_granola_followup(data, note)
 
     try:
         result = write_notes_by_journal(
