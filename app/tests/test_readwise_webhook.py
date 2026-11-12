@@ -46,6 +46,7 @@ from services.obsidian.add_readwise_buffet import (
     _is_article_highlight,
     _is_book_highlight,
     _is_tweet_book,
+    _twitter_handle_from_url,
     _new_article_page_markdown,
     _new_book_page_markdown,
     _new_tweet_page_markdown,
@@ -1005,6 +1006,52 @@ def test_format_tweet_falls_back_to_x_com_url_handle():
         '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
     )
     assert " by " not in line
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        (
+            "https://x.com/indexnetwork_/status/2118382567032508430/?rw_tt_thread=True",
+            "indexnetwork_",
+        ),
+        (
+            "https://x.com/indexnetwork_/status/2118382567032508430/",
+            "indexnetwork_",
+        ),
+        ("https://twitter.com/forgebitz", "forgebitz"),
+        ("https://x.com/forgebitz?s=20", "forgebitz"),
+        ("https://x.com/i/article/0123456789", None),
+        ("https://x.com/i/web/status/2118382567032508430", None),
+        ("https://x.com/2118382567032508430", None),
+        ("https://x.com/intent/tweet", None),
+        ("https://x.com/home", None),
+        ("https://example.com/indexnetwork_/status/1", None),
+    ],
+)
+def test_twitter_handle_from_url_status_and_reserved_paths(url, expected):
+    assert _twitter_handle_from_url(url) == expected
+
+
+def test_unresolvable_tweet_url_does_not_create_garbage_handle_page():
+    """No valid handle → skip Tweets from @<status-id>; do not invent a page."""
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _highlight_payload(
+        title="Tweets From Klaas",
+        author="Klaas",
+        category="tweets",
+        source_url="https://x.com/i/web/status/2118382567032508430",
+    )
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert not any("Tweets from @" in path for path in store)
+    assert not any("Tweets from @" in item["path"] for item in uploaded)
+    assert f"{KH_FOLDER}/Tweets from @2118382567032508430.md" not in store
+    assert "Tweets from @" not in store[JOURNAL_NOV_PATH]
 
 
 def test_format_tweet_missing_handle_falls_back_to_kh_stem():
@@ -4254,6 +4301,159 @@ def test_tweet_and_book_highlights_do_not_write_article_highlights():
         '- [[Deep Work by Cal Newport]]: '
         '"A book sentence" ([Link](https://readwise.io/open/954482))'
     )
+
+
+INDEX_NETWORK_STATUS_URL = (
+    "https://x.com/indexnetwork_/status/2118382567032508430/?rw_tt_thread=True"
+)
+INDEX_NETWORK_NOTE_URL = "https://x.com/indexnetwork_/status/2118382567032508430"
+INDEX_NETWORK_PAGE_PATH = f"{KH_FOLDER}/The Economics of Good Luck by Index Network.md"
+INDEX_NETWORK_TWEET_PAGE_PATH = f"{KH_FOLDER}/Tweets from @indexnetwork_.md"
+INDEX_NETWORK_NUMERIC_TWEET_PAGE_PATH = (
+    f"{KH_FOLDER}/Tweets from @2118382567032508430.md"
+)
+
+
+def _index_network_highlight(**overrides):
+    data = {
+        "title": "The Economics of Good Luck",
+        "author": "Index Network",
+        "category": "tweets",
+        "source_url": INDEX_NETWORK_STATUS_URL,
+    }
+    data.update(overrides)
+    return _highlight_payload(**data)
+
+
+def test_index_network_x_article_is_not_a_tweet_book():
+    """category=tweets + x.com status URL still routes as an article."""
+    clear_book_cache()
+    payload = _index_network_highlight()
+    book = _resolve_highlight_book(payload)
+    assert _twitter_handle_from_url(INDEX_NETWORK_STATUS_URL) == "indexnetwork_"
+    assert _is_tweet_book(book) is False
+    assert _is_article_highlight(book, payload) is True
+    line = format_readwise_bullet(payload)
+    assert line == (
+        '- [[The Economics of Good Luck by Index Network]]: '
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    )
+    assert "Tweets from" not in line
+    assert _format_tweet_page_bullet(payload, book) is None
+    assert _format_article_page_bullet(payload, book) == (
+        '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    )
+
+
+def test_existing_kh_url_match_reclassifies_tweet_titled_x_article():
+    """Existing KH URL identity wins even when the Readwise title looks like a tweet."""
+    clear_book_cache()
+    payload = _index_network_highlight(title="Tweets From Index Network")
+    book = _resolve_highlight_book(payload)
+    assert _is_tweet_book(book) is True
+    existing = f"""---
+title: "The Economics of Good Luck by Index Network"
+author: "[[Index Network]]"
+URL: {INDEX_NETWORK_NOTE_URL}
+---
+
+# The Economics of Good Luck by Index Network
+
+Saved from share-link.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        INDEX_NETWORK_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert INDEX_NETWORK_PAGE_PATH in store
+    assert INDEX_NETWORK_TWEET_PAGE_PATH not in store
+    assert INDEX_NETWORK_NUMERIC_TWEET_PAGE_PATH not in store
+    assert not any("Tweets from @" in path for path in store)
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[The Economics of Good Luck by Index Network]]: '
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    ) in journal
+    page = store[INDEX_NETWORK_PAGE_PATH]
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+    assert BOOKMARKED_TWEETS_HEADER not in page
+
+
+def test_index_network_x_article_appends_existing_note_not_tweet_page():
+    """Highlights land on the existing KH article note, never Tweets from @id."""
+    clear_book_cache()
+    existing = f"""---
+title: "The Economics of Good Luck by Index Network"
+author: "[[Index Network]]"
+URL: {INDEX_NETWORK_NOTE_URL}
+---
+
+# The Economics of Good Luck by Index Network
+
+Saved from share-link.
+"""
+    mock_dbx, uploaded, store = _mock_vault_dbx({
+        JOURNAL_NOV_PATH: SAMPLE_JOURNAL,
+        INDEX_NETWORK_PAGE_PATH: existing,
+    })
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(_index_network_highlight(), now=now)
+
+    assert result["success"] is True
+    assert INDEX_NETWORK_PAGE_PATH in store
+    assert INDEX_NETWORK_TWEET_PAGE_PATH not in store
+    assert INDEX_NETWORK_NUMERIC_TWEET_PAGE_PATH not in store
+    assert not any("Tweets from @" in path for path in store)
+    assert not any("Tweets from @" in item["path"] for item in uploaded)
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[The Economics of Good Luck by Index Network]]: '
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    ) in journal
+    assert "Tweets from @" not in journal
+    page = store[INDEX_NETWORK_PAGE_PATH]
+    frontmatter, body = _extract_frontmatter(page)
+    assert frontmatter["URL"] == INDEX_NETWORK_NOTE_URL
+    assert "Saved from share-link." in body
+    assert ARTICLE_HIGHLIGHTS_HEADER in page
+    assert page.count(ARTICLE_HIGHLIGHTS_HEADER) == 1
+    assert page.index(ARTICLE_HIGHLIGHTS_HEADER) < page.index(
+        "# The Economics of Good Luck by Index Network"
+    )
+    assert '- "Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))' in page
+    assert BOOKMARKED_TWEETS_HEADER not in page
+    assert not any(item["path"] == INDEX_NETWORK_TWEET_PAGE_PATH for item in uploaded)
+
+
+def test_normal_tweet_status_url_still_writes_handle_page():
+    """A real tweet/thread with @handle on twitter still uses Tweets from @handle."""
+    clear_book_cache()
+    mock_dbx, uploaded, store = _mock_vault_dbx({JOURNAL_NOV_PATH: SAMPLE_JOURNAL})
+    now = LA.localize(datetime(2026, 8, 22, 15, 0))
+    payload = _tweet_highlight(
+        source_url="https://x.com/georgiedorothea/status/1234567890123456789",
+    )
+    with _journal_and_hub(mock_dbx):
+        result = append_readwise_buffet(payload, now=now)
+
+    assert result["success"] is True
+    assert TWEET_PAGE_PATH in store
+    assert ARTICLE_HIGHLIGHTS_HEADER not in store[TWEET_PAGE_PATH]
+    assert BOOKMARKED_TWEETS_HEADER in store[TWEET_PAGE_PATH]
+    assert not any(ARTICLE_HIGHLIGHTS_HEADER in item["content"] for item in uploaded)
+    journal = store[JOURNAL_NOV_PATH]
+    assert (
+        '- [[Tweets from @georgiedorothea]]: '
+        '"Most Amazing Highlight Ever" ([Link](https://readwise.io/open/954480))'
+    ) in journal
+    assert "The Economics of Good Luck" not in journal
 
 
 def test_youtube_highlight_does_not_write_article_highlights():
