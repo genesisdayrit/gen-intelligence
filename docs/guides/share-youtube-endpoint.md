@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. It automatically fetches video metadata (title, description, channel) with yt-dlp routed through an Oxylabs dedicated-ISP proxy pool, with a fallback to YouTube's oEmbed API and page scraping if the whole pool fails.
+The `/share/youtube` endpoint receives YouTube video URLs (typically from iOS Shortcuts) and saves them as individual markdown files in the Obsidian Knowledge Hub folder in Dropbox. Video metadata and English transcripts come from yt-dlp through an Oxylabs dedicated-ISP proxy pool (`OXYLABS_ISP_HOST` / `USERNAME` / `PASSWORD` / `PORTS`): each try picks a random port, fails over on errors, and treats a YouTube bot-wall (title/channel only, or “Sign in to confirm you’re not a bot”) as a failed port. Caption preference is manual English, then automatic `en-orig`, then `en` / other `en-*`. If the whole pool fails, metadata falls back to YouTube’s oEmbed API and page scraping.
 
 It also POSTs the YouTube URL to Readwise Reader (`POST https://readwise.io/api/v3/save/`, `category: video`) when a usable transcript exists, so Genesis can highlight the video in Reader. Channels, playlists, empty/error transcript fetches, and whitespace-only transcripts skip Reader — Knowledge Hub, journal Content Buffet, and Raindrop still run. The Knowledge Hub filename and buffet wikilink use the same `reader_knowledge_hub_note_stem` helper as other Reader docs: `Title by Author` when author/creator exists, otherwise title-only. After a Reader save, the note prefers Reader's list title + author; if Reader is skipped or has no title yet, it falls back to the YouTube title (and channel) through that same helper. `/share/link` routes YouTube URLs through this path; regular article shares are unchanged.
 
@@ -120,8 +120,6 @@ Later YouTube / Reader `category=video` highlights append `- "quote" ([Link](htt
 | `OPENAI_API_KEY` | No | API key for OpenAI transcript summarization (summary skipped if not set) |
 | `READWISE_TOKEN` | Yes (for Reader save) | Readwise access token for `POST /api/v3/save/` (same token as highlight export). Missing token is logged; KH write still succeeds. |
 | `SYSTEM_TIMEZONE` | No | Timezone for dates (default: US/Eastern) |
-
-`SUPADATA_API_KEY` is unused and can be removed from the host after deploy.
 
 ## Key Functions in `add_youtube_link.py`
 

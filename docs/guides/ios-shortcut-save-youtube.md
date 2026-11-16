@@ -10,7 +10,7 @@ This guide walks through creating an iOS Shortcut that sends YouTube video URLs 
 
 ## Why a Separate YouTube Shortcut?
 
-The iOS Share Sheet for the YouTube app only provides the video URL - it does not include the title. The `/share/youtube` endpoint solves this by fetching the video title server-side using YouTube's oEmbed API.
+The iOS Share Sheet for the YouTube app only provides the video URL - it does not include the title. The `/share/youtube` endpoint solves this by fetching the video title server-side with yt-dlp through the Oxylabs ISP proxy pool (oEmbed is the metadata fallback).
 
 This makes the shortcut much simpler than the general link shortcut since there's no title to capture or edit.
 
@@ -141,7 +141,7 @@ The API accepts all common YouTube URL formats:
 
 ### Video Title is Wrong or Missing
 
-- The server uses YouTube's oEmbed API which is very reliable
+- The server fetches the title with yt-dlp through the Oxylabs ISP proxy pool; oEmbed is the fallback if the pool fails
 - If a title is wrong, it's how YouTube returns it
 - Deleted or private videos may not have titles available
 
