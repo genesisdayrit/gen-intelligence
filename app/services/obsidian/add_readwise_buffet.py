@@ -38,6 +38,21 @@ from services.obsidian.utils.readwise_concurrency import (
     strip_tracking_query,
 )
 from services.obsidian.utils.tweet_highlight_quote import tweet_highlight_quote
+from services.obsidian.utils.substack_note import (
+    BOOKMARKED_SUBSTACK_NOTES_HEADER,
+    attach_substack_titles,
+    canonical_substack_note_url,
+    format_substack_journal_bullet,
+    format_substack_page_entry,
+    is_substack_note_payload,
+    is_substack_note_url,
+    maybe_rename_reader_document,
+    new_substack_page_markdown,
+    source_url_from_payload,
+    substack_dedup_keys,
+    substack_note_page_title,
+    substack_profile_url,
+)
 from services.raindrop.client import create_bookmark
 from services.dropbox.client import get_dropbox_client as _get_dropbox_client
 
@@ -87,6 +102,7 @@ _AUTHOR_HANDLE = re.compile(r"@([^\s]+)")
 _TWEETS_FROM_TITLE = re.compile(r"^tweets from\b", re.I)
 _TWEETS_FROM_AT_TITLE = re.compile(r"^tweets from @(.+)$", re.I)
 _X_PROFILE_KEY = re.compile(r"^X Profile\s*:")
+_SUBSTACK_PROFILE_KEY = re.compile(r"^Substack Profile\s*:")
 _PEOPLE_KEY = re.compile(r"^People\s*:")
 _TITLE_KEY = re.compile(r"^title\s*:", re.I)
 _TWITTER_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
@@ -875,6 +891,8 @@ def _is_tweet_book(book: dict | None) -> bool:
     """
     if not book:
         return False
+    if is_substack_note_payload(book) or is_substack_note_url(book.get("source_url")):
+        return False
     if _is_x_article_book(book):
         return False
     category = (_nonempty(book.get("category")) or "").lower()
@@ -1005,6 +1023,8 @@ def format_document_bullet(payload: dict) -> str | None:
 
 
 def _format_highlight(payload: dict, book: dict | None = None) -> str | None:
+    if is_substack_note_payload(payload, book):
+        return _format_substack_journal_bullet(payload, book)
     text = _nonempty(payload.get("text"))
     if not text:
         return None
@@ -1261,13 +1281,21 @@ def _title_heading_index(lines: list[str], body_start: int) -> int | None:
 
 
 def _is_highlight_section_line(line: str) -> bool:
-    """True for blanks, empty ``-`` placeholders, and list bullets."""
+    """True for blanks, empty ``-`` placeholders, list bullets, and nests.
+
+    Indented continuations (blockquotes / source links under a Substack
+    note bullet) stay in the section so dedup sees the source URL and a
+    later insert lands after the whole entry, not between title and quote.
+    Unindented scraped body still ends the section.
+    """
     stripped = line.strip()
     if not stripped:
         return True
     if EMPTY_PLACEHOLDER.match(stripped):
         return True
-    return stripped.startswith("-")
+    if stripped.startswith("-"):
+        return True
+    return line[:1] in " \t"
 
 
 def _highlight_section_end(lines: list[str], header_idx: int) -> int:
@@ -1384,6 +1412,21 @@ def insert_bookmarked_tweets_bullet(
     handle or title).
     """
     return _insert_heading_bullet(content, BOOKMARKED_TWEETS_HEADER, bullet, keys)
+
+
+def insert_bookmarked_substack_notes_bullet(
+    content: str,
+    bullet: str,
+    keys: list[str] | None = None,
+) -> tuple[str, str]:
+    """Insert ``bullet`` under ``### Bookmarked Substack Notes``.
+
+    Same placement/dedup rules as ``insert_bookmarked_tweets_bullet``.
+    Dedup keys are the Substack source URL and Readwise ids.
+    """
+    return _insert_heading_bullet(
+        content, BOOKMARKED_SUBSTACK_NOTES_HEADER, bullet, keys
+    )
 
 
 def insert_book_highlights_bullet(
@@ -2042,6 +2085,10 @@ def _urls_equivalent(want_url: str | None, note_url: str | None) -> bool:
     have_twitter = _twitter_url_path_key(note_url)
     if want_twitter and have_twitter and want_twitter == have_twitter:
         return True
+    want_substack = canonical_substack_note_url(want_url)
+    have_substack = canonical_substack_note_url(note_url)
+    if want_substack and have_substack and want_substack.casefold() == have_substack.casefold():
+        return True
     from services.obsidian.add_youtube_link import _extract_video_id, is_valid_youtube_url
 
     if is_valid_youtube_url(want_url) and is_valid_youtube_url(note_url):
@@ -2660,7 +2707,7 @@ def resolve_readwise_hub_note(
 
 def _candidate_hub_stem(payload: dict, book: dict | None) -> str | None:
     """Preferred Title-by-Author stem before identity resolve."""
-    if _is_tweet_book(book):
+    if _is_tweet_book(book) or is_substack_note_payload(payload, book):
         return None
     title = _nonempty((book or {}).get("title")) or _nonempty(payload.get("title"))
     readable = _payload_readable_title(payload, book)
@@ -2762,6 +2809,8 @@ def _attach_resolved_hub_notes(
         if not is_highlight_event(payload):
             continue
         book = _resolve_highlight_book(payload)
+        if is_substack_note_payload(payload, book):
+            continue
         if _is_tweet_book(book):
             if not _mark_x_article_if_existing_hub_note(dbx, hub_path, payload, book):
                 continue
@@ -2882,6 +2931,230 @@ def _append_tweet_pages_after_journal(
                 "Tweet page write failed; journal write kept (highlight %s)",
                 payload.get("id"),
             )
+
+
+def _substack_journal_link(payload: dict, book: dict | None = None) -> str | None:
+    """Prefer a Readwise permalink, else the canonical Substack URL."""
+    if is_highlight_event(payload):
+        return _highlight_permalink(payload) or source_url_from_payload(payload, book)
+    return _reader_personal_url(payload) or source_url_from_payload(payload, book)
+
+
+def _format_substack_journal_bullet(
+    payload: dict,
+    book: dict | None = None,
+) -> str | None:
+    """Journal buffet line for a Substack note (document or later highlight)."""
+    titles = attach_substack_titles(payload, book)
+    if not titles:
+        return None
+    return format_substack_journal_bullet(
+        titles, _substack_journal_link(payload, book)
+    )
+
+
+def _yaml_has_substack_profile(yaml_lines: list[str]) -> bool:
+    return any(_SUBSTACK_PROFILE_KEY.match(line) for line in yaml_lines)
+
+
+def _substack_profile_yaml_line(handle: str) -> str:
+    return f'Substack Profile: "{substack_profile_url(handle)}"'
+
+
+def _people_entry_has_name(entry: object, name: str) -> bool:
+    text = str(entry).strip()
+    if text.startswith("[[") and text.endswith("]]"):
+        text = text[2:-2].strip()
+    if "|" in text:
+        text = text.split("|", 1)[0].strip()
+    return bool(text) and text.casefold() == name.casefold()
+
+
+def _ensure_substack_page_people(content: str, author: str) -> str:
+    """Add ``[[{author}]]`` to YAML People when that name is missing."""
+    from services.obsidian.add_shared_link import _extract_frontmatter, _rebuild_markdown
+
+    people_link = f"[[{author}]]"
+    frontmatter, body = _extract_frontmatter(content)
+    people = _people_list(frontmatter.get("People"))
+    if any(_people_entry_has_name(item, author) for item in people):
+        return content
+    frontmatter["People"] = [*people, people_link]
+    return _rebuild_markdown(frontmatter, body)
+
+
+def _ensure_substack_page_profile(content: str, handle: str | None) -> str:
+    """Insert ``Substack Profile`` after People when missing."""
+    token = (handle or "").lstrip("@").strip()
+    if not token:
+        return content
+    lines = content.split("\n")
+    body_start = _frontmatter_body_start(lines)
+    if body_start <= 0:
+        return content
+    yaml_start = 1
+    yaml_end = body_start - 1
+    yaml_lines = lines[yaml_start:yaml_end]
+    if _yaml_has_substack_profile(yaml_lines):
+        return content
+    insert_at = _people_block_insert_index(yaml_lines)
+    if insert_at is None:
+        insert_at = _title_block_insert_index(yaml_lines)
+    updated_yaml = (
+        yaml_lines[:insert_at]
+        + [_substack_profile_yaml_line(token)]
+        + yaml_lines[insert_at:]
+    )
+    return "\n".join(lines[:yaml_start] + updated_yaml + lines[yaml_end:])
+
+
+def _append_substack_note_page(
+    dbx: dropbox.Dropbox,
+    payload: dict,
+    hub_path: str,
+    book: dict | None = None,
+) -> str | None:
+    """Create or append one Substack note on the author's Knowledge Hub page."""
+    titles = attach_substack_titles(payload, book)
+    if not titles:
+        return None
+    source_url = source_url_from_payload(payload, book)
+    readwise_url = _substack_journal_link(payload, book)
+    entry = format_substack_page_entry(
+        titles, source_url=source_url, readwise_url=readwise_url
+    )
+    keys = substack_dedup_keys(payload, book, source_url=source_url)
+    if is_highlight_event(payload):
+        highlight_url = _highlight_permalink(payload)
+        if highlight_url and highlight_url not in keys:
+            keys.append(highlight_url)
+    target = substack_note_page_title(titles.author)
+    filename = _hub_note_filename(target)
+    file_path = f"{hub_path}/{filename}"
+    with lock_readwise_target(
+        readwise_target_identity(payload, book=book, dropbox_target=file_path)
+    ):
+        existing = _download_hub_note(dbx, hub_path, filename)
+        if existing is None:
+            markdown = new_substack_page_markdown(titles, entry)
+            if not _rev_safe_create(
+                dbx,
+                file_path,
+                markdown,
+                defer=_readwise_defer_spec(payload, file_path, "kh_substack"),
+            ):
+                return "deferred"
+            logger.info("Substack notes page created path=%s", file_path)
+            return "created"
+
+        def apply(content: str) -> tuple[str | None, str]:
+            updated, action = insert_bookmarked_substack_notes_bullet(
+                content, entry, keys
+            )
+            updated = _ensure_substack_page_people(updated, titles.author)
+            updated = _ensure_substack_page_profile(updated, titles.handle)
+            if updated == content:
+                return None, action
+            return updated, action
+
+        status, action, _updated = _rev_safe_update_with_retry(
+            dbx,
+            existing.path,
+            apply,
+            downloaded=existing,
+            defer=_readwise_defer_spec(payload, existing.path, "kh_substack"),
+        )
+        if status == "deferred":
+            return "deferred"
+        if status == "updated":
+            logger.info("Substack notes page %s path=%s", action, existing.path)
+        elif action == "skipped":
+            logger.info(
+                "Substack notes page skipped (duplicate) path=%s", existing.path
+            )
+        return action
+
+
+def _append_substack_note_pages_after_journal(
+    dbx: dropbox.Dropbox,
+    payloads: list[dict],
+) -> None:
+    """Best-effort author-page writes after a successful Substack journal pass.
+
+    Failures are logged and never undo the journal write. Tweets, books,
+    and generic articles stay on their own page writers.
+    """
+    hub_path: str | None = None
+    for payload in payloads:
+        book = (
+            _resolve_highlight_book(payload)
+            if is_highlight_event(payload)
+            else _book_from_payload(payload)
+        )
+        if not is_substack_note_payload(payload, book):
+            continue
+        try:
+            if hub_path is None:
+                hub_path = _resolve_knowledge_hub_folder(dbx)
+            _append_substack_note_page(dbx, payload, hub_path, book)
+        except Exception:
+            logger.exception(
+                "Substack notes page write failed; journal write kept (id=%s)",
+                payload.get("id"),
+            )
+
+
+def _write_substack_note_document(
+    payload: dict,
+    now: datetime | None = None,
+) -> dict:
+    """Journal + author page for a Reader ``*_document.created`` Substack note.
+
+    Skips ``add_shared_link``. PATCHes the Reader title once. Page writes
+    run only after a successful journal pass, matching the tweet flow.
+    """
+    titles = attach_substack_titles(payload)
+    if not titles:
+        logger.info("Substack note skipped (no author/title); id=%s", payload.get("id"))
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+    maybe_rename_reader_document(payload, titles)
+    if not _format_substack_journal_bullet(payload):
+        return {"success": True, "action": "ignored", "error": None, "file_path": None}
+
+    def format_fn(item: dict) -> str | None:
+        return _format_substack_journal_bullet(item)
+
+    def keys_fn(item: dict) -> list[str]:
+        keys = substack_dedup_keys(item)
+        permalink = _reader_personal_url(item)
+        if permalink and permalink not in keys:
+            keys.append(permalink)
+        return keys
+
+    result = _write_buffet_bullet(
+        payload,
+        now=now,
+        write_kwargs={
+            "journal_path_fn": get_document_journal_path,
+            "format_fn": format_fn,
+            "keys_fn": keys_fn,
+        },
+    )
+    if result.get("action") in {
+        "inserted",
+        "replaced",
+        "skipped",
+        "updated",
+    }:
+        try:
+            dbx = _get_dropbox_client()
+            _append_substack_note_pages_after_journal(dbx, [payload])
+        except Exception:
+            logger.exception(
+                "Substack notes page write failed; journal write kept (id=%s)",
+                payload.get("id"),
+            )
+    return result
 
 
 def _is_book_highlight(book: dict | None) -> bool:
@@ -3251,8 +3524,12 @@ def _is_article_highlight(book: dict | None, payload: dict | None = None) -> boo
     non-youtube/video parent documents (email, pdfs, …) count. A category
     is required so uncategorized export books stay journal-only.
     YouTube/video highlights are left for ``### Transcript Highlights``.
+    Substack notes (``substack.com/@handle/note/c-``) use the Substack
+    author page instead of ``### Article highlights``.
     """
     if not book or _is_tweet_book(book) or _is_book_highlight(book):
+        return False
+    if is_substack_note_payload(payload or {}, book):
         return False
     if _is_youtube_or_video_highlight(book, payload):
         return False
@@ -3691,9 +3968,11 @@ def write_highlights_by_journal(
     Reader-video highlights append ``### Transcript Highlights`` after
     the title header, when ``format_fn`` is ``format_readwise_bullet``
     (webhook ``readwise.highlight.created`` and the existing highlight
-    backfill, which already calls this writer). Document fallback / other
-    formatters skip those page writes. Page failures are logged and never
-    undo the journal write.
+    backfill, which already calls this writer). Substack note highlights
+    create or append ``Substack Notes from {author}`` under
+    ``### Bookmarked Substack Notes`` instead of the article path.
+    Document fallback / other formatters skip those page writes. Page
+    failures are logged and never undo the journal write.
     """
     if journal_path_fn is None:
         journal_path_fn = get_highlight_journal_path
@@ -3801,6 +4080,7 @@ def write_highlights_by_journal(
 
             if format_fn is format_readwise_bullet:
                 _append_tweet_pages_after_journal(dbx, buffet_payloads)
+                _append_substack_note_pages_after_journal(dbx, buffet_payloads)
                 _append_book_pages_after_journal(dbx, buffet_payloads)
                 _append_article_pages_after_journal(dbx, buffet_payloads)
                 _append_youtube_pages_after_journal(dbx, buffet_payloads)
@@ -3946,18 +4226,21 @@ def _append_reader_document_knowledge_hub(
         claimed = True
 
     try:
-        with lock_readwise_target(identity):
-            result = _write_reader_document_knowledge_hub(
-                payload,
-                now=now,
-                url=url,
-                title=title,
-                stem=stem,
-                journal_date=journal_date,
-                youtube_url=youtube_url,
-                extras=extras,
-                readable_title=readable_title,
-            )
+        if is_substack_note_url(url) or is_substack_note_payload(payload):
+            result = _write_substack_note_document(payload, now=now)
+        else:
+            with lock_readwise_target(identity):
+                result = _write_reader_document_knowledge_hub(
+                    payload,
+                    now=now,
+                    url=url,
+                    title=title,
+                    stem=stem,
+                    journal_date=journal_date,
+                    youtube_url=youtube_url,
+                    extras=extras,
+                    readable_title=readable_title,
+                )
     except Exception:
         if claimed and normalized:
             release_reader_document_singleflight(normalized)
@@ -4066,7 +4349,10 @@ def append_readwise_buffet(payload: dict, now: datetime | None = None) -> dict:
     path) so the same KH note cannot race itself. Highlights wikilink
     that same KH stem and are not bookmarked. ``readwise.highlight.created``
     tweet highlights also create or append ``Tweets from @handle`` under
-    ``### Bookmarked Tweets`` after the journal write. Book highlights
+    ``### Bookmarked Tweets`` after the journal write. Substack note
+    Reader documents and later highlights on the same URL write
+    ``Substack Notes from {author}`` (not the generic article scrape).
+    Book highlights
     (``category == books``, not tweets) create or append
     ``Title by Author`` under ``### Book highlights``. Article highlights
     (not tweets, not books, not YouTube/video) create or append the same
