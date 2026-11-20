@@ -15,10 +15,12 @@ os.environ.setdefault("READWISE_TOKEN", "test-readwise-token")
 from services.readwise.reader import (  # noqa: E402
     LIST_URL,
     SAVE_URL,
+    UPDATE_URL,
     document_title_author,
     get_document,
     reader_permalink,
     save_document,
+    update_document_title,
 )
 
 
@@ -131,6 +133,73 @@ def test_get_document_lists_by_id():
     mock_get.assert_called_once()
     assert mock_get.call_args.args[0] == LIST_URL
     assert mock_get.call_args.kwargs["params"] == {"id": "01doc"}
+
+
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+def test_get_document_with_html_content_sets_query_flag():
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b'{"results":[{"id":"01doc","html_content":"<p>Hi</p>"}]}'
+    response.json.return_value = {
+        "results": [{"id": "01doc", "html_content": "<p>Hi</p>"}],
+    }
+
+    with patch("services.readwise.reader.requests.get", return_value=response) as mock_get:
+        document = get_document("01doc", with_html_content=True)
+
+    assert document["html_content"] == "<p>Hi</p>"
+    assert mock_get.call_args.kwargs["params"] == {
+        "id": "01doc",
+        "withHtmlContent": "true",
+    }
+
+
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+def test_update_document_title_patches_title_only():
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b"{}"
+    response.text = "{}"
+
+    with patch("services.readwise.reader.requests.patch", return_value=response) as mock_patch, patch(
+        "services.readwise.reader.requests.post"
+    ) as mock_post:
+        result = update_document_title(
+            "01doc", "Taste And Judgment - Substack Note by Celine Nguyen"
+        )
+
+    assert result["success"] is True
+    assert result["status_code"] == 200
+    mock_patch.assert_called_once()
+    assert mock_patch.call_args.args[0] == UPDATE_URL.format(document_id="01doc")
+    assert mock_patch.call_args.kwargs["json"] == {
+        "title": "Taste And Judgment - Substack Note by Celine Nguyen"
+    }
+    assert "location" not in mock_patch.call_args.kwargs["json"]
+    assert "tags" not in mock_patch.call_args.kwargs["json"]
+    mock_post.assert_not_called()
+
+
+@patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})
+def test_update_document_title_retries_on_429():
+    busy = MagicMock()
+    busy.status_code = 429
+    busy.headers = {"Retry-After": "1"}
+    busy.text = "slow down"
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.content = b"{}"
+    ok.text = "{}"
+
+    with patch(
+        "services.readwise.reader.requests.patch", side_effect=[busy, ok]
+    ) as mock_patch, patch("services.readwise.reader.time.sleep") as mock_sleep:
+        result = update_document_title("01doc", "A Title - Substack Note by Author")
+
+    assert result["success"] is True
+    assert mock_patch.call_count == 2
+    mock_sleep.assert_called_once()
+    assert mock_sleep.call_args.args[0] == 1
 
 
 @patch.dict(os.environ, {"READWISE_TOKEN": "test-readwise-token"})

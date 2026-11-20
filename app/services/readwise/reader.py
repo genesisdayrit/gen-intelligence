@@ -3,11 +3,13 @@
 Official endpoints:
 - GET https://readwise.io/api/v3/list/
 - POST https://readwise.io/api/v3/save/
+- PATCH https://readwise.io/api/v3/update/<document_id>/
 Docs: https://readwise.io/reader_api
 """
 
 import logging
 import os
+import time
 from typing import TypedDict
 
 import requests
@@ -21,7 +23,10 @@ logger = logging.getLogger(__name__)
 
 LIST_URL = "https://readwise.io/api/v3/list/"
 SAVE_URL = "https://readwise.io/api/v3/save/"
+UPDATE_URL = "https://readwise.io/api/v3/update/{document_id}/"
 READER_DOC_URL = "https://read.readwise.io/read/{document_id}"
+_UPDATE_MAX_ATTEMPTS = 3
+_UPDATE_RETRY_CAP_SECONDS = 5
 READER_ANNOTATION_CATEGORIES = {"highlight", "note"}
 SAVED_USING = "gen-intelligence"
 
@@ -32,6 +37,14 @@ class ReaderSaveResult(TypedDict):
     success: bool
     id: str | None
     url: str | None
+    error: str | None
+    status_code: int | None
+
+
+class ReaderUpdateResult(TypedDict):
+    """Result of a Reader document PATCH (title only)."""
+
+    success: bool
     error: str | None
     status_code: int | None
 
@@ -132,11 +145,17 @@ def save_document(
         return result
 
 
-def get_document(document_id: str | None) -> dict | None:
+def get_document(
+    document_id: str | None,
+    *,
+    with_html_content: bool = False,
+) -> dict | None:
     """GET one Reader document by id via ``/api/v3/list/?id=``.
 
     Save only returns ``{id, url}``. Title/author/creator come from list.
     Missing token, empty id, and HTTP errors return None and never raise.
+    ``with_html_content=True`` adds ``withHtmlContent=true`` so Substack
+    note text is available on ``html_content``.
     """
     doc_id = str(document_id).strip() if document_id is not None else ""
     if not doc_id:
@@ -146,10 +165,13 @@ def get_document(document_id: str | None) -> dict | None:
     except EnvironmentError as exc:
         logger.error("Reader list skipped: %s", exc)
         return None
+    params: dict[str, str] = {"id": doc_id}
+    if with_html_content:
+        params["withHtmlContent"] = "true"
     try:
         response = requests.get(
             LIST_URL,
-            params={"id": doc_id},
+            params=params,
             headers=headers,
             timeout=60,
         )
@@ -163,6 +185,83 @@ def get_document(document_id: str | None) -> dict | None:
     except requests.RequestException as exc:
         logger.error("Failed to fetch Reader document id=%s: %s", doc_id, exc)
         return None
+
+
+def update_document_title(document_id: str | None, title: str) -> ReaderUpdateResult:
+    """PATCH Reader ``/api/v3/update/<id>/`` with ``{"title": title}`` only.
+
+    Never sends location/tags and never uses ``/api/v3/save/``. 429s retry
+    with ``Retry-After`` (capped). Failures are returned, never raised.
+    """
+    result: ReaderUpdateResult = {
+        "success": False,
+        "error": None,
+        "status_code": None,
+    }
+    doc_id = str(document_id).strip() if document_id is not None else ""
+    title_text = str(title).strip() if title is not None else ""
+    if not doc_id:
+        result["error"] = "Reader update skipped: empty document id"
+        return result
+    if not title_text:
+        result["error"] = "Reader update skipped: empty title"
+        return result
+    try:
+        headers = _headers()
+    except EnvironmentError as exc:
+        result["error"] = str(exc)
+        logger.error("Reader title PATCH skipped: %s", exc)
+        return result
+
+    url = UPDATE_URL.format(document_id=doc_id)
+    last_error = None
+    for attempt in range(1, _UPDATE_MAX_ATTEMPTS + 1):
+        try:
+            response = requests.patch(
+                url,
+                headers=headers,
+                json={"title": title_text},
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            logger.error("Failed to PATCH Reader title id=%s: %s", doc_id, exc)
+            result["error"] = last_error
+            return result
+        result["status_code"] = response.status_code
+        if response.status_code == 429:
+            raw = response.headers.get("Retry-After") or "1"
+            try:
+                wait = min(max(int(float(raw)), 1), _UPDATE_RETRY_CAP_SECONDS)
+            except (TypeError, ValueError):
+                wait = 1
+            logger.info(
+                "Reader title PATCH 429 id=%s attempt=%s sleep=%ss",
+                doc_id,
+                attempt,
+                wait,
+            )
+            if attempt < _UPDATE_MAX_ATTEMPTS:
+                time.sleep(wait)
+                continue
+            result["error"] = f"Reader title PATCH returned 429 after {attempt} attempts"
+            logger.warning("Reader title PATCH gave up on 429 id=%s", doc_id)
+            return result
+        if response.status_code not in (200, 204):
+            result["error"] = (
+                f"Reader title PATCH returned {response.status_code}: {response.text}"
+            )
+            logger.warning(
+                "Reader title PATCH failed id=%s status=%s",
+                doc_id,
+                response.status_code,
+            )
+            return result
+        result["success"] = True
+        logger.info("Reader title PATCH ok id=%s", doc_id)
+        return result
+    result["error"] = last_error or "Reader title PATCH failed"
+    return result
 
 
 def document_title_author(document: dict | None) -> tuple[str | None, str | None]:

@@ -39,6 +39,11 @@ def _noop_readwise_concurrency(request, monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(
+        "services.obsidian.migrate_substack_note.lock_readwise_target",
+        _immediate_lock,
+        raising=False,
+    )
+    monkeypatch.setattr(
         "services.obsidian.add_readwise_buffet.claim_reader_document_singleflight",
         lambda *_args, **_kwargs: True,
         raising=False,
